@@ -5,10 +5,10 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
+import { useAuthStore } from "@/store/auth";
 
 const loginSchema = z.object({
   email: z.string().email({ message: "Please enter a valid email address" }),
@@ -19,23 +19,24 @@ export default function Login() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
+  const login = useAuthStore((s) => s.login);
 
   const form = useForm<z.infer<typeof loginSchema>>({
     resolver: zodResolver(loginSchema),
     defaultValues: {
-      email: "admin@financeos.co",
-      password: "password123",
+      email: "",
+      password: "",
     },
   });
 
   async function onSubmit(values: z.infer<typeof loginSchema>) {
     setIsLoading(true);
-    // Simulate API call
     setTimeout(() => {
       setIsLoading(false);
+      login(values.email);
       toast({
-        title: "Logged in successfully",
-        description: "Welcome back to FinanceOS.",
+        title: "Signed in successfully",
+        description: `Welcome back, ${values.email}`,
       });
       setLocation("/");
     }, 800);
@@ -54,8 +55,8 @@ export default function Login() {
 
         <Card className="border-border/50 shadow-lg bg-card/50 backdrop-blur-sm">
           <CardHeader>
-            <CardTitle>Authentication</CardTitle>
-            <CardDescription>Enter your credentials to access the system.</CardDescription>
+            <CardTitle>Sign In</CardTitle>
+            <CardDescription>Enter your email and password to access the system.</CardDescription>
           </CardHeader>
           <CardContent>
             <Form {...form}>
@@ -67,7 +68,13 @@ export default function Login() {
                     <FormItem>
                       <FormLabel>Email Address</FormLabel>
                       <FormControl>
-                        <Input placeholder="name@company.com" {...field} />
+                        <Input
+                          type="email"
+                          placeholder="name@company.com"
+                          autoComplete="email"
+                          data-testid="input-email"
+                          {...field}
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -80,20 +87,31 @@ export default function Login() {
                     <FormItem>
                       <FormLabel>Password</FormLabel>
                       <FormControl>
-                        <Input type="password" placeholder="••••••••" {...field} />
+                        <Input
+                          type="password"
+                          placeholder="••••••••"
+                          autoComplete="current-password"
+                          data-testid="input-password"
+                          {...field}
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
                 />
-                <Button type="submit" className="w-full mt-6" disabled={isLoading}>
-                  {isLoading ? "Authenticating..." : "Sign In"}
+                <Button
+                  type="submit"
+                  className="w-full mt-6"
+                  disabled={isLoading}
+                  data-testid="button-signin"
+                >
+                  {isLoading ? "Signing in..." : "Sign In"}
                 </Button>
               </form>
             </Form>
           </CardContent>
         </Card>
-        
+
         <p className="text-center text-xs text-muted-foreground mt-8">
           Protected by enterprise-grade security. <br />
           &copy; {new Date().getFullYear()} FinanceOS Inc.

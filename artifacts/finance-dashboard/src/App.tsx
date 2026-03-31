@@ -1,8 +1,9 @@
-import { Switch, Route, Router as WouterRouter } from "wouter";
+import { Switch, Route, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/components/theme-provider";
+import { useAuthStore } from "@/store/auth";
 import NotFound from "@/pages/not-found";
 
 import Login from "@/pages/login";
@@ -16,15 +17,31 @@ import Transactions from "@/pages/transactions";
 const queryClient = new QueryClient();
 
 function Router() {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+
   return (
     <Switch>
-      <Route path="/login" component={Login} />
-      <Route path="/" component={Dashboard} />
-      <Route path="/employees" component={Employees} />
-      <Route path="/salary" component={Salary} />
-      <Route path="/funds" component={Funds} />
-      <Route path="/expenses" component={Expenses} />
-      <Route path="/transactions" component={Transactions} />
+      <Route path="/login">
+        {isAuthenticated ? <Redirect to="/" /> : <Login />}
+      </Route>
+      <Route path="/">
+        {isAuthenticated ? <Dashboard /> : <Redirect to="/login" />}
+      </Route>
+      <Route path="/employees">
+        {isAuthenticated ? <Employees /> : <Redirect to="/login" />}
+      </Route>
+      <Route path="/salary">
+        {isAuthenticated ? <Salary /> : <Redirect to="/login" />}
+      </Route>
+      <Route path="/funds">
+        {isAuthenticated ? <Funds /> : <Redirect to="/login" />}
+      </Route>
+      <Route path="/expenses">
+        {isAuthenticated ? <Expenses /> : <Redirect to="/login" />}
+      </Route>
+      <Route path="/transactions">
+        {isAuthenticated ? <Transactions /> : <Redirect to="/login" />}
+      </Route>
       <Route component={NotFound} />
     </Switch>
   );

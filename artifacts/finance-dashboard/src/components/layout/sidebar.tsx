@@ -1,7 +1,9 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, Users, CreditCard, Wallet, Receipt, ReceiptText, ChevronLeft, ChevronRight } from "lucide-react";
+import { LayoutDashboard, Users, CreditCard, Wallet, Receipt, ReceiptText, ChevronLeft, ChevronRight, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useUIStore } from "@/store/ui";
+import { useAuthStore } from "@/store/auth";
+import { useToast } from "@/hooks/use-toast";
 
 const navItems = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
@@ -12,9 +14,28 @@ const navItems = [
   { href: "/expenses", label: "Expenses", icon: Receipt },
 ];
 
+function getInitials(email: string): string {
+  const local = email.split("@")[0];
+  const parts = local.split(/[._-]/);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[1][0]).toUpperCase();
+  }
+  return local.slice(0, 2).toUpperCase();
+}
+
 export function Sidebar() {
-  const [location] = useLocation();
+  const [location, setLocation] = useLocation();
   const { sidebarCollapsed, toggleSidebar } = useUIStore();
+  const { userEmail, logout } = useAuthStore();
+  const { toast } = useToast();
+
+  const initials = userEmail ? getInitials(userEmail) : "??";
+
+  function handleLogout() {
+    logout();
+    toast({ title: "Signed out", description: "You have been signed out successfully." });
+    setLocation("/login");
+  }
 
   return (
     <aside
@@ -69,16 +90,28 @@ export function Sidebar() {
         </button>
       </div>
 
-      <div className="p-4 border-t border-sidebar-border flex items-center gap-3">
-        <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center shrink-0">
-          <span className="text-sm font-medium text-secondary-foreground">AD</span>
-        </div>
-        {!sidebarCollapsed && (
-          <div className="flex flex-col">
-            <span className="text-sm font-medium text-sidebar-foreground leading-none">Admin User</span>
-            <span className="text-xs text-muted-foreground mt-1">admin@financeos.co</span>
+      <div className="p-3 border-t border-sidebar-border">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-full bg-primary/20 border border-primary/30 flex items-center justify-center shrink-0">
+            <span className="text-xs font-semibold text-primary">{initials}</span>
           </div>
-        )}
+          {!sidebarCollapsed && (
+            <div className="flex flex-col flex-1 min-w-0">
+              <span className="text-xs font-medium text-sidebar-foreground leading-none truncate">{userEmail}</span>
+            </div>
+          )}
+          <button
+            onClick={handleLogout}
+            title="Sign out"
+            data-testid="button-logout"
+            className={cn(
+              "p-1.5 rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors shrink-0",
+              sidebarCollapsed && "mx-auto"
+            )}
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
+        </div>
       </div>
     </aside>
   );
