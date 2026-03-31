@@ -48,14 +48,14 @@ export function Sidebar() {
         {!sidebarCollapsed && (
           <div className="flex items-center gap-2">
             <div className="w-6 h-6 rounded bg-primary flex items-center justify-center">
-              <span className="text-primary-foreground font-bold text-xs">F</span>
+              <span className="text-primary-foreground font-bold text-xs">Y</span>
             </div>
-            <span className="font-bold text-sidebar-foreground tracking-tight">FinanceOS</span>
+            <span className="font-bold text-sidebar-foreground tracking-tight">Yojak</span>
           </div>
         )}
         {sidebarCollapsed && (
           <div className="w-8 h-8 rounded bg-primary flex items-center justify-center mx-auto">
-            <span className="text-primary-foreground font-bold text-sm">F</span>
+            <span className="text-primary-foreground font-bold text-sm">Y</span>
           </div>
         )}
       </div>

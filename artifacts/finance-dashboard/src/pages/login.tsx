@@ -47,9 +47,9 @@ export default function Login() {
       <div className="w-full max-w-[400px]">
         <div className="mb-8 flex flex-col items-center">
           <div className="w-12 h-12 rounded-xl bg-primary flex items-center justify-center mb-4">
-            <span className="text-primary-foreground font-bold text-xl">F</span>
+            <span className="text-primary-foreground font-bold text-xl">Y</span>
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">FinanceOS</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">Yojak</h1>
           <p className="text-muted-foreground mt-2 text-sm">Sign in to your institutional dashboard</p>
         </div>
 
@@ -114,7 +114,7 @@ export default function Login() {
 
         <p className="text-center text-xs text-muted-foreground mt-8">
           Protected by enterprise-grade security. <br />
-          &copy; {new Date().getFullYear()} FinanceOS Inc.
+          &copy; {new Date().getFullYear()} Yojak Inc.
         </p>
       </div>
     </div>
