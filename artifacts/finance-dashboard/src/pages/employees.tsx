@@ -196,7 +196,7 @@ export default function Employees() {
                       <Badge variant="outline" className="font-normal">{employee.department}</Badge>
                     </TableCell>
                     <TableCell className="text-right font-medium">
-                      {employee.salary.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })}
+                      {employee.salary.toLocaleString('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 })}
                     </TableCell>
                     <TableCell>
                       <Badge variant={employee.status === "Active" ? "default" : "secondary"} 

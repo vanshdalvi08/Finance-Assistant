@@ -113,7 +113,7 @@ export default function Funds() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <DashboardCard
             label="Total Capital Inflow"
-            value="$5,450,000"
+            value="₹4,50,00,000"
             trend={12.5}
             trendLabel="vs last year"
             icon={<Wallet className="w-5 h-5" />}
@@ -170,7 +170,7 @@ export default function Funds() {
                     <TableCell className="text-muted-foreground">{f.note || '-'}</TableCell>
                     <TableCell className="text-muted-foreground">{format(new Date(f.date), "MMM dd, yyyy")}</TableCell>
                     <TableCell className="text-right font-medium text-primary">
-                      +{f.amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}
+                      +{f.amount.toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}
                     </TableCell>
                   </TableRow>
                 ))}

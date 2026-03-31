@@ -102,11 +102,11 @@ export default function Transactions() {
                       <div className="flex items-center justify-end gap-2">
                         {tx.amount > 0 ? (
                           <span className="text-primary flex items-center">
-                            +{tx.amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}
+                            +{tx.amount.toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}
                           </span>
                         ) : (
                           <span className="text-foreground flex items-center">
-                            {tx.amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}
+                            {tx.amount.toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}
                           </span>
                         )}
                       </div>

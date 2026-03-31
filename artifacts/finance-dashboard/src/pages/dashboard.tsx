@@ -29,21 +29,21 @@ export default function Dashboard() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           <DashboardCard
             label="Total Funds"
-            value="$5,450,000"
+            value="₹4,50,00,000"
             trend={12.5}
             trendLabel="vs last month"
             icon={<Wallet className="w-5 h-5" />}
           />
           <DashboardCard
             label="Total Expenses"
-            value="$24,700"
+            value="₹20,50,000"
             trend={-2.4}
             trendLabel="vs last month"
             icon={<Receipt className="w-5 h-5" />}
           />
           <DashboardCard
             label="Total Salary Paid"
-            value="$21,250"
+            value="₹17,65,000"
             trend={0}
             trendLabel="stable"
             icon={<DollarSign className="w-5 h-5" />}
@@ -78,7 +78,7 @@ export default function Dashboard() {
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
                     <XAxis dataKey="month" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
-                    <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `$${value / 1000}k`} />
+                    <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `₹${value / 1000}k`} />
                     <Tooltip 
                       contentStyle={{ backgroundColor: 'hsl(var(--card))', borderColor: 'hsl(var(--border))', color: 'hsl(var(--foreground))' }}
                       itemStyle={{ color: 'hsl(var(--foreground))' }}
@@ -101,7 +101,7 @@ export default function Dashboard() {
                   <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
                     <XAxis dataKey="month" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
-                    <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `$${value / 1000}k`} />
+                    <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(value) => `₹${value / 1000}k`} />
                     <Tooltip 
                       cursor={{ fill: 'hsl(var(--muted))' }}
                       contentStyle={{ backgroundColor: 'hsl(var(--card))', borderColor: 'hsl(var(--border))', color: 'hsl(var(--foreground))' }}
@@ -148,7 +148,7 @@ export default function Dashboard() {
                       {format(new Date(tx.date), "MMM dd, yyyy")}
                     </TableCell>
                     <TableCell className={`text-right font-medium ${tx.amount > 0 ? 'text-primary' : 'text-foreground'}`}>
-                      {tx.amount > 0 ? '+' : ''}{tx.amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}
+                      {tx.amount > 0 ? '+' : ''}{tx.amount.toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}
                     </TableCell>
                   </TableRow>
                 ))}

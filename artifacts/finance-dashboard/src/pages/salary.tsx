@@ -62,7 +62,7 @@ export default function Salary() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <DashboardCard
             label="Total Paid This Month"
-            value="$21,250"
+            value="₹17,65,000"
             trend={0}
             trendLabel="vs last month"
             icon={<CreditCard className="w-5 h-5" />}
@@ -136,7 +136,7 @@ export default function Salary() {
                         <TableCell className="text-muted-foreground">{format(new Date(s.date), "MMM dd, yyyy")}</TableCell>
                         <TableCell className="text-muted-foreground">{s.note}</TableCell>
                         <TableCell className="text-right font-medium text-foreground">
-                          {s.amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}
+                          {s.amount.toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}
                         </TableCell>
                       </TableRow>
                     );

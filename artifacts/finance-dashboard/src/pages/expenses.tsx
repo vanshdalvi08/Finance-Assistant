@@ -132,7 +132,7 @@ export default function Expenses() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <DashboardCard
             label="Total Expenses YTD"
-            value="$265,000"
+            value="₹22,00,000"
             trend={-4.2}
             trendLabel="vs last year"
             icon={<Receipt className="w-5 h-5" />}
@@ -160,7 +160,7 @@ export default function Expenses() {
                       ))}
                     </Pie>
                     <Tooltip 
-                      formatter={(value: number) => `$${value.toLocaleString()}`}
+                      formatter={(value: number) => `₹${value.toLocaleString('en-IN')}`}
                       contentStyle={{ backgroundColor: 'hsl(var(--card))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }}
                     />
                     <Legend verticalAlign="middle" align="right" layout="vertical" />
@@ -202,7 +202,7 @@ export default function Expenses() {
                     </TableCell>
                     <TableCell className="text-muted-foreground">{format(new Date(e.date), "MMM dd, yyyy")}</TableCell>
                     <TableCell className="text-right font-medium">
-                      {e.amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}
+                      {e.amount.toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}
                     </TableCell>
                   </TableRow>
                 ))}
