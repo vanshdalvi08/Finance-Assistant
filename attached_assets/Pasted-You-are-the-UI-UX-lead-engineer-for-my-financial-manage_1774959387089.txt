@@ -1,0 +1,206 @@
+You are the UI/UX lead engineer for my financial management system.
+Your job is to generate the entire frontend of the application with a professional, minimal, business-grade UI and clean React components.
+Only build the frontend — no backend logic.
+I will integrate my own backend API later.
+
+🔷 FRONTEND TECH STACK (REQUIRED)
+
+Use ONLY the following stack for the frontend:
+
+✔ Next.js (App Router)
+✔ TypeScript
+✔ TailwindCSS
+✔ shadcn/ui
+✔ Recharts (for subtle charts)
+✔ Zustand (for client-side UI state if needed)
+✔ Lucide React icons
+✔ React Hook Form + Zod for form validation
+
+Do NOT include:
+
+Backend logic
+Database setup
+Server actions
+Mongoose
+Prisma
+NextAuth
+
+You may create placeholder “API call” functions so I can later wire them to my backend.
+
+🔷 PURPOSE OF APPLICATION
+
+This is my internal finance dashboard for my small company.
+The frontend must contain screens for:
+
+Dashboard overview
+Employees
+Salary
+Funds
+Expenses
+Transactions
+Auth pages (login only — frontend)
+
+Make everything feel premium, minimal, professional, enterprise-level.
+
+🔷 UI / UX GOALS
+
+The UI must strongly resemble the aesthetics of:
+
+Stripe Dashboard
+Linear
+Notion
+Vercel Dashboard
+
+Absolutely no childish/gimmicky UI.
+Everything must be:
+
+minimal
+neutral
+clean
+edge-to-edge
+breathing room
+thin borders
+muted color palette
+elegant typography
+smooth subtle animations
+light + dark mode
+🔷 DESIGN SYSTEM REQUIREMENTS
+📌 Color Palette (Dark Mode)
+bg-primary: #0c0c0c
+bg-card: #141414
+bg-card-hover: #181818
+border: rgba(255,255,255,0.08)
+text-primary: #ffffff
+text-secondary: #9ca3af
+accent: muted teal or soft blue
+
+Prepare matching light mode colors.
+
+📌 Typography
+Titles: bold, tracking-tight
+Numbers: large + high contrast
+Body text: soft neutral
+Captions: extra subtle
+📌 Spacing
+Section padding: py-6 px-8
+Card gap: gap-6
+Sidebar width: ~240px
+Table row height: ~48px
+Icon size: 18–20px
+📌 Component Architecture
+
+Generate ALL components, reusable and clean:
+
+Sidebar.tsx – collapsible, minimal navigation
+Topbar.tsx – profile area + theme toggle
+DashboardCard.tsx – financial metric cards
+ChartWrapper.tsx
+DataTable.tsx – paginated
+TransactionRow.tsx
+Modal.tsx / Drawer.tsx
+FormInput.tsx, FormSelect.tsx, FormDate.tsx
+Badge.tsx
+Skeleton loaders
+
+Each component must use shadcn/ui + Tailwind directly.
+
+🔷 PAGE REQUIREMENTS
+🟩 1. Dashboard Page
+
+Include:
+
+Metric cards:
+Total Funds
+Total Salary Paid
+Total Expenses
+Active Employees
+Balance
+Subtle charts (Recharts)
+Funds vs Expenses over months
+Salary trend
+Recent transactions list (3–6 items)
+
+Design:
+
+Soft card backgrounds
+Thin borders
+Subtle glow or gradient accents
+Very breathable spacing
+Consistent alignment
+🟩 2. Employees Page
+Paginated table
+Add/Edit Employee modal
+Validation using react-hook-form + zod
+Clean form layout
+Small icons for actions
+🟩 3. Salary Page
+Pay Salary form
+Salary summary
+Salary history table
+Salary trend chart
+🟩 4. Funds Page
+Add Fund form
+Fund history table
+Inflow chart
+Clean card layout
+🟩 5. Expenses Page
+Add Expense form
+Expense categories
+Expense history
+Pie chart or minimal bar chart
+🟩 6. Transactions Page
+Full paginated log
+Category badges
+Icons per type
+Timestamp formatting (MMM DD, YYYY — HH:mm)
+Filters by type (funds / salary / expenses)
+🟩 7. Auth Pages (Frontend Only)
+
+Build:
+
+Login page
+Clean, minimal, centered form
+Use subtle typography
+
+Do not implement backend auth.
+Just create a placeholder login action.
+
+🔷 API Integration Approach
+
+All actual backend calls should be stub functions like:
+
+export async function getEmployees(page: number) {
+  // TODO: Connect to backend
+  return [];
+}
+
+I will connect them to my backend myself.
+
+🔷 FINAL OUTPUT REQUIRED
+
+Generate:
+
+Full folder structure
+All frontend pages
+All components
+All hooks
+Example dummy data for charts
+Clean Tailwind + shadcn styling
+Light & dark mode support
+TypeScript interfaces for all entities
+Form validation with zod
+Placeholder API call functions
+
+NO backend code.
+NO database code.
+ONLY frontend.
+
+Make the output professional, elegant, readable, and production-ready.
+
+PROMPT END
+
+🎉 Done
+
+This is your final complete master prompt designed specifically for:
+
+🔹 UI
