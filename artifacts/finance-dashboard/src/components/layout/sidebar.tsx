@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, Users, CreditCard, Wallet, Receipt, ReceiptText, ChevronLeft, ChevronRight, LogOut } from "lucide-react";
+import { LayoutDashboard, Users, CreditCard, Wallet, Receipt, History, ChevronLeft, ChevronRight, LogOut, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useUIStore } from "@/store/ui";
 import { useAuthStore } from "@/store/auth";
@@ -7,11 +7,12 @@ import { useToast } from "@/hooks/use-toast";
 
 const navItems = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
-  { href: "/transactions", label: "Transactions", icon: ReceiptText },
+  { href: "/transactions", label: "History", icon: History },
   { href: "/employees", label: "Employees", icon: Users },
   { href: "/salary", label: "Salary", icon: CreditCard },
   { href: "/funds", label: "Funds", icon: Wallet },
   { href: "/expenses", label: "Expenses", icon: Receipt },
+  { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 function getInitials(email: string): string {

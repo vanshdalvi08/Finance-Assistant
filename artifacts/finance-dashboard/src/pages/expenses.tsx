@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
-import { api } from "@/lib/api";
+import { api, Expense, ExpenseCategory } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { DashboardCard } from "@/components/dashboard-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -11,205 +13,526 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
-import { Receipt, Plus, ArrowUpRight } from "lucide-react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { useState } from "react";
+import {
+  Receipt, Plus, ArrowUpRight, Upload, SlidersHorizontal, X, Home, Building2
+} from "lucide-react";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger
+} from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 
 const expenseSchema = z.object({
-  category: z.string().min(2, "Category is required"),
+  group: z.enum(["personal", "office"]),
+  category: z.string().min(1, "Category is required"),
   amount: z.coerce.number().min(1, "Amount must be positive"),
   date: z.string().min(1, "Date is required"),
   description: z.string().min(2, "Description is required"),
+  note: z.string().optional(),
 });
 
-const CATEGORY_COLORS: Record<string, string> = {
-  Software: "hsl(var(--chart-1))",
-  Office: "hsl(var(--chart-2))",
-  Travel: "hsl(var(--chart-3))",
-  Marketing: "hsl(var(--chart-4))",
-  Legal: "hsl(var(--chart-5))",
-};
+type ExpenseForm = z.infer<typeof expenseSchema>;
+
+function ExpenseTable({
+  expenses,
+  categories,
+  group,
+}: {
+  expenses: Expense[];
+  categories: ExpenseCategory[];
+  group: "personal" | "office";
+}) {
+  const [filterCategory, setFilterCategory] = useState("all");
+  const [filterDateFrom, setFilterDateFrom] = useState("");
+  const [filterDateTo, setFilterDateTo] = useState("");
+  const [filterAmountMin, setFilterAmountMin] = useState("");
+  const [filterAmountMax, setFilterAmountMax] = useState("");
+  const [showFilters, setShowFilters] = useState(false);
+
+  const groupCats = categories.filter((c) => c.group === group);
+  const groupExpenses = expenses.filter((e) => e.group === group);
+
+  const getCatColor = (name: string) =>
+    groupCats.find((c) => c.name === name)?.color ?? "#6366f1";
+
+  const filtered = groupExpenses.filter((e) => {
+    if (filterCategory !== "all" && e.category !== filterCategory) return false;
+    if (filterDateFrom && e.date < filterDateFrom) return false;
+    if (filterDateTo && e.date > filterDateTo + "T23:59:59Z") return false;
+    if (filterAmountMin && e.amount < Number(filterAmountMin)) return false;
+    if (filterAmountMax && e.amount > Number(filterAmountMax)) return false;
+    return true;
+  });
+
+  const total = filtered.reduce((s, e) => s + e.amount, 0);
+
+  const hasFilter =
+    filterCategory !== "all" || filterDateFrom || filterDateTo || filterAmountMin || filterAmountMax;
+
+  function clearFilters() {
+    setFilterCategory("all");
+    setFilterDateFrom("");
+    setFilterDateTo("");
+    setFilterAmountMin("");
+    setFilterAmountMax("");
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex flex-wrap gap-2">
+          {groupCats.map((cat) => (
+            <button
+              key={cat.id}
+              onClick={() =>
+                setFilterCategory(filterCategory === cat.name ? "all" : cat.name)
+              }
+              className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border transition-all"
+              style={{
+                backgroundColor:
+                  filterCategory === cat.name ? cat.color + "22" : "transparent",
+                borderColor: cat.color + "55",
+                color: filterCategory === cat.name ? cat.color : undefined,
+              }}
+            >
+              <span
+                className="w-2 h-2 rounded-full"
+                style={{ backgroundColor: cat.color }}
+              />
+              {cat.name}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          {hasFilter && (
+            <Button variant="ghost" size="sm" onClick={clearFilters} className="h-8 text-xs gap-1">
+              <X className="w-3 h-3" /> Clear
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs gap-1.5"
+            onClick={() => setShowFilters((v) => !v)}
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5" /> Filters
+          </Button>
+        </div>
+      </div>
+
+      {showFilters && (
+        <Card className="border-border/50 bg-secondary/10">
+          <CardContent className="pt-4 pb-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">From Date</Label>
+                <Input
+                  type="date"
+                  className="h-8 text-xs"
+                  value={filterDateFrom}
+                  onChange={(e) => setFilterDateFrom(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">To Date</Label>
+                <Input
+                  type="date"
+                  className="h-8 text-xs"
+                  value={filterDateTo}
+                  onChange={(e) => setFilterDateTo(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Min Amount (₹)</Label>
+                <Input
+                  type="number"
+                  placeholder="0"
+                  className="h-8 text-xs"
+                  value={filterAmountMin}
+                  onChange={(e) => setFilterAmountMin(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Max Amount (₹)</Label>
+                <Input
+                  type="number"
+                  placeholder="Any"
+                  className="h-8 text-xs"
+                  value={filterAmountMax}
+                  onChange={(e) => setFilterAmountMax(e.target.value)}
+                />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      <Card className="border-border/50">
+        <CardHeader className="py-3 px-5 flex flex-row items-center justify-between">
+          <CardTitle className="text-sm font-medium text-muted-foreground">
+            {filtered.length} record{filtered.length !== 1 ? "s" : ""}
+          </CardTitle>
+          <span className="text-sm font-semibold">
+            Total:{" "}
+            {total.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
+          </span>
+        </CardHeader>
+        <CardContent className="p-0">
+          <Table>
+            <TableHeader>
+              <TableRow className="border-border/50">
+                <TableHead>Description</TableHead>
+                <TableHead>Category</TableHead>
+                <TableHead>Date</TableHead>
+                <TableHead className="text-right">Amount</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filtered.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={4} className="text-center py-10 text-muted-foreground text-sm">
+                    No expenses found.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                filtered.map((e) => {
+                  const color = getCatColor(e.category);
+                  return (
+                    <TableRow key={e.id} className="border-border/50 hover:bg-secondary/10">
+                      <TableCell className="font-medium">
+                        <div className="flex items-center gap-2">
+                          <div className="p-1.5 rounded-md bg-secondary/50">
+                            <ArrowUpRight className="w-3.5 h-3.5 text-muted-foreground" />
+                          </div>
+                          {e.description}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant="outline"
+                          className="font-normal text-xs"
+                          style={{ borderColor: color + "66" }}
+                        >
+                          <span
+                            className="w-1.5 h-1.5 rounded-full mr-1.5"
+                            style={{ backgroundColor: color }}
+                          />
+                          {e.category}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground text-sm">
+                        {format(new Date(e.date), "MMM dd, yyyy")}
+                      </TableCell>
+                      <TableCell className="text-right font-medium">
+                        {e.amount.toLocaleString("en-IN", {
+                          style: "currency",
+                          currency: "INR",
+                        })}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
 
 export default function Expenses() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [isDialogOpen, setIsDialogOpen] = useState(false);
-  
-  const { data: expenses = [] } = useQuery({ queryKey: ["expenses"], queryFn: api.getExpenses });
-  const { data: categories = [] } = useQuery({ queryKey: ["expenseCategories"], queryFn: api.getExpenseCategories });
+  const [activeTab, setActiveTab] = useState<"personal" | "office">("office");
+  const [fileSelected, setFileSelected] = useState<string>("");
 
-  const form = useForm<z.infer<typeof expenseSchema>>({
+  const { data: expenses = [] } = useQuery({
+    queryKey: ["expenses"],
+    queryFn: api.getExpenses,
+  });
+  const { data: categories = [] } = useQuery({
+    queryKey: ["categories"],
+    queryFn: api.getCategories,
+  });
+
+  const form = useForm<ExpenseForm>({
     resolver: zodResolver(expenseSchema),
     defaultValues: {
+      group: "office",
       category: "",
       amount: 0,
-      date: new Date().toISOString().split('T')[0],
+      date: new Date().toISOString().split("T")[0],
       description: "",
+      note: "",
     },
   });
 
+  const watchGroup = form.watch("group");
+
   const addMutation = useMutation({
-    mutationFn: async (data: z.infer<typeof expenseSchema>) => {
-      return data;
-    },
+    mutationFn: async (data: ExpenseForm) => data,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["expenses"] });
-      toast({ title: "Expense logged", description: "Expense has been recorded successfully." });
+      toast({ title: "Expense logged", description: "Expense recorded successfully." });
       setIsDialogOpen(false);
+      setFileSelected("");
       form.reset();
-    }
+    },
   });
+
+  const personalTotal = expenses
+    .filter((e) => e.group === "personal")
+    .reduce((s, e) => s + e.amount, 0);
+
+  const officeTotal = expenses
+    .filter((e) => e.group === "office")
+    .reduce((s, e) => s + e.amount, 0);
+
+  const totalExpenses = personalTotal + officeTotal;
 
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        <div className="flex justify-between items-center">
+        <div className="flex justify-between items-center flex-wrap gap-3">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Expenses</h1>
-            <p className="text-muted-foreground text-sm mt-1">Monitor operational costs and vendor payments.</p>
+            <p className="text-muted-foreground text-sm mt-1">
+              Track personal and office expenditures by category.
+            </p>
           </div>
-          
+
           <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
             <DialogTrigger asChild>
-              <Button><Plus className="w-4 h-4 mr-2" /> Log Expense</Button>
+              <Button>
+                <Plus className="w-4 h-4 mr-2" /> Log Expense
+              </Button>
             </DialogTrigger>
-            <DialogContent>
+            <DialogContent className="sm:max-w-md">
               <DialogHeader>
                 <DialogTitle>Log New Expense</DialogTitle>
               </DialogHeader>
               <Form {...form}>
-                <form onSubmit={form.handleSubmit((d) => addMutation.mutate(d))} className="space-y-4">
-                  <FormField control={form.control} name="description" render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Description / Vendor</FormLabel>
-                      <FormControl><Input placeholder="e.g. AWS Web Services" {...field} /></FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-                  <div className="grid grid-cols-2 gap-4">
-                    <FormField control={form.control} name="amount" render={({ field }) => (
+                <form
+                  onSubmit={form.handleSubmit((d) => addMutation.mutate(d))}
+                  className="space-y-4 pt-1"
+                >
+                  <FormField
+                    control={form.control}
+                    name="group"
+                    render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Amount ($)</FormLabel>
-                        <FormControl><Input type="number" {...field} /></FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )} />
-                    <FormField control={form.control} name="category" render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Category</FormLabel>
+                        <FormLabel>Group</FormLabel>
                         <Select onValueChange={field.onChange} defaultValue={field.value}>
                           <FormControl>
-                            <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
                           </FormControl>
                           <SelectContent>
-                            {Object.keys(CATEGORY_COLORS).map(cat => (
-                              <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-                            ))}
+                            <SelectItem value="personal">
+                              <div className="flex items-center gap-2">
+                                <Home className="w-3.5 h-3.5" /> Personal
+                              </div>
+                            </SelectItem>
+                            <SelectItem value="office">
+                              <div className="flex items-center gap-2">
+                                <Building2 className="w-3.5 h-3.5" /> Office
+                              </div>
+                            </SelectItem>
                           </SelectContent>
                         </Select>
                         <FormMessage />
                       </FormItem>
-                    )} />
+                    )}
+                  />
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <FormField
+                      control={form.control}
+                      name="category"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Category</FormLabel>
+                          <Select onValueChange={field.onChange} value={field.value}>
+                            <FormControl>
+                              <SelectTrigger>
+                                <SelectValue placeholder="Select..." />
+                              </SelectTrigger>
+                            </FormControl>
+                            <SelectContent>
+                              {categories
+                                .filter((c) => c.group === watchGroup)
+                                .map((cat) => (
+                                  <SelectItem key={cat.id} value={cat.name}>
+                                    <div className="flex items-center gap-2">
+                                      <span
+                                        className="w-2 h-2 rounded-full"
+                                        style={{ backgroundColor: cat.color }}
+                                      />
+                                      {cat.name}
+                                    </div>
+                                  </SelectItem>
+                                ))}
+                            </SelectContent>
+                          </Select>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="amount"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Amount (₹)</FormLabel>
+                          <FormControl>
+                            <Input type="number" placeholder="0" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
                   </div>
-                  <FormField control={form.control} name="date" render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Date</FormLabel>
-                      <FormControl><Input type="date" {...field} /></FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )} />
-                  <Button type="submit" className="w-full mt-4" disabled={addMutation.isPending}>Save Expense</Button>
+
+                  <FormField
+                    control={form.control}
+                    name="description"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Description / Vendor</FormLabel>
+                        <FormControl>
+                          <Input placeholder="e.g. AWS Hosting" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name="date"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Date</FormLabel>
+                        <FormControl>
+                          <Input type="date" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name="note"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>
+                          Notes{" "}
+                          <span className="text-muted-foreground font-normal">(optional)</span>
+                        </FormLabel>
+                        <FormControl>
+                          <Textarea
+                            placeholder="Additional details..."
+                            className="resize-none"
+                            rows={2}
+                            {...field}
+                          />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
+
+                  <div className="space-y-1.5">
+                    <Label className="text-sm font-medium">
+                      Attachment{" "}
+                      <span className="text-muted-foreground font-normal">(optional)</span>
+                    </Label>
+                    <label className="flex flex-col items-center gap-2 border border-dashed border-border rounded-lg py-4 px-3 cursor-pointer hover:bg-secondary/20 transition-colors">
+                      <Upload className="w-5 h-5 text-muted-foreground" />
+                      <span className="text-xs text-muted-foreground">
+                        {fileSelected
+                          ? fileSelected
+                          : "Click to upload receipt or invoice"}
+                      </span>
+                      <input
+                        type="file"
+                        accept="image/*,.pdf"
+                        className="hidden"
+                        onChange={(e) =>
+                          setFileSelected(e.target.files?.[0]?.name ?? "")
+                        }
+                      />
+                    </label>
+                  </div>
+
+                  <Button
+                    type="submit"
+                    className="w-full"
+                    disabled={addMutation.isPending}
+                  >
+                    Save Expense
+                  </Button>
                 </form>
               </Form>
             </DialogContent>
           </Dialog>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <DashboardCard
-            label="Total Expenses YTD"
-            value="₹22,00,000"
+            label="Total Expenses"
+            value={totalExpenses.toLocaleString("en-IN", {
+              style: "currency",
+              currency: "INR",
+            })}
             trend={-4.2}
-            trendLabel="vs last year"
+            trendLabel="vs last month"
             icon={<Receipt className="w-5 h-5" />}
           />
-          <Card className="md:col-span-2 border-border/50">
-            <CardHeader className="py-4">
-              <CardTitle className="text-base">Breakdown by Category</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="h-[200px] w-full flex items-center">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={categories}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={60}
-                      outerRadius={80}
-                      paddingAngle={2}
-                      dataKey="value"
-                      stroke="none"
-                    >
-                      {categories.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={CATEGORY_COLORS[entry.name] || 'hsl(var(--primary))'} />
-                      ))}
-                    </Pie>
-                    <Tooltip 
-                      formatter={(value: number) => `₹${value.toLocaleString('en-IN')}`}
-                      contentStyle={{ backgroundColor: 'hsl(var(--card))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }}
-                    />
-                    <Legend verticalAlign="middle" align="right" layout="vertical" />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-            </CardContent>
-          </Card>
+          <DashboardCard
+            label="Office Expenses"
+            value={officeTotal.toLocaleString("en-IN", {
+              style: "currency",
+              currency: "INR",
+            })}
+            icon={<Building2 className="w-5 h-5" />}
+          />
+          <DashboardCard
+            label="Personal Expenses"
+            value={personalTotal.toLocaleString("en-IN", {
+              style: "currency",
+              currency: "INR",
+            })}
+            icon={<Home className="w-5 h-5" />}
+          />
         </div>
 
-        <Card className="border-border/50">
-          <CardHeader>
-            <CardTitle className="text-base">Expense Log</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow className="border-border/50">
-                  <TableHead>Description</TableHead>
-                  <TableHead>Category</TableHead>
-                  <TableHead>Date</TableHead>
-                  <TableHead className="text-right">Amount</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {expenses.map((e) => (
-                  <TableRow key={e.id} className="border-border/50">
-                    <TableCell className="font-medium flex items-center gap-2">
-                      <div className="p-1.5 rounded-md bg-secondary/50 text-foreground">
-                        <ArrowUpRight className="w-3.5 h-3.5" />
-                      </div>
-                      {e.description}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className="font-normal" style={{ borderColor: CATEGORY_COLORS[e.category] }}>
-                        <span className="w-1.5 h-1.5 rounded-full mr-2" style={{ backgroundColor: CATEGORY_COLORS[e.category] }}></span>
-                        {e.category}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">{format(new Date(e.date), "MMM dd, yyyy")}</TableCell>
-                    <TableCell className="text-right font-medium">
-                      {e.amount.toLocaleString('en-IN', { style: 'currency', currency: 'INR' })}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
+        <Tabs
+          value={activeTab}
+          onValueChange={(v) => setActiveTab(v as "personal" | "office")}
+        >
+          <TabsList className="mb-4">
+            <TabsTrigger value="office" className="gap-2">
+              <Building2 className="w-3.5 h-3.5" /> Office
+            </TabsTrigger>
+            <TabsTrigger value="personal" className="gap-2">
+              <Home className="w-3.5 h-3.5" /> Personal
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="office" className="mt-0">
+            <ExpenseTable expenses={expenses} categories={categories} group="office" />
+          </TabsContent>
+          <TabsContent value="personal" className="mt-0">
+            <ExpenseTable expenses={expenses} categories={categories} group="personal" />
+          </TabsContent>
+        </Tabs>
       </div>
     </DashboardLayout>
   );

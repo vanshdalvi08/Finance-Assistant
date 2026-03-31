@@ -13,6 +13,7 @@ import Salary from "@/pages/salary";
 import Funds from "@/pages/funds";
 import Expenses from "@/pages/expenses";
 import Transactions from "@/pages/transactions";
+import Settings from "@/pages/settings";
 
 const queryClient = new QueryClient();
 
@@ -41,6 +42,9 @@ function Router() {
       </Route>
       <Route path="/transactions">
         {isAuthenticated ? <Transactions /> : <Redirect to="/login" />}
+      </Route>
+      <Route path="/settings">
+        {isAuthenticated ? <Settings /> : <Redirect to="/login" />}
       </Route>
       <Route component={NotFound} />
     </Switch>

@@ -1,0 +1,121 @@
+Build the complete frontend for a financial management web app called “Yojak”.
+
+Goal:
+A clean, modern, professional, and minimal fintech UI that handles:
+• Dashboard (with graphs and summaries)
+• Expenses Management (Personal & Office categories)
+• Salary Management
+• Funds Tracking
+• Transaction History
+• Customizable categories and groups
+
+Tech Stack (Frontend Only):
+• Next.js 14 (App Router)
+• TypeScript
+• Tailwind CSS
+• ShadCN UI components
+• Recharts for charts (bar, line, pie)
+• Zustand or Context API for state
+• Axios or fetch for API calls (but backend not required in this prompt)
+• Lucide icons
+
+Overall UI Style:
+• Premium fintech look
+• Soft colors: slate gray, deep blue, white
+• Rounded corners, subtle card shadows
+• Smooth hover states, transitions
+• Fully responsive layout
+
+Pages + Components to Build:
+
+1. **Root Layout & UI Framework**
+   - Navbar with logo “Yojak”
+   - Sidebar with module navigation:
+        Dashboard
+        Expenses
+        Salary
+        Funds
+        History
+        Settings
+   - Light/Dark mode toggle
+   - Reusable Card, Table, Modal, Button, Input components
+
+2. **Dashboard Page**
+   - Summary cards:
+        Total Funds Received
+        Total Salary Paid
+        Total Expenses
+        Remaining Balance
+   - Graphs:
+        Monthly expense line graph
+        Category-wise expense pie chart
+        Salary vs Funds bar graph
+   - Recent activity timeline (last 10 transactions)
+
+3. **Expenses Page**
+   - Tabs:
+        Personal Expenses
+        Office Expenses
+   - Inside each tab:
+        • Category List (Bills, Rent, Subscriptions, etc.)
+        • Button to Add Category
+        • List of Expenses with:
+              amount, date, category, description
+        • Filters:
+              by date, category, amount
+        • Add Expense Modal:
+              group (personal/office)
+              category
+              amount
+              date picker
+              description
+              file upload (UI only)
+
+4. **Category Manager**
+   - For each group (Personal/Office)
+   - Add/Edit/Delete categories
+   - Color tags for categories
+   - Clean grid layout
+
+5. **Salary Page**
+   - List of employees (UI only)
+   - Add Salary Record modal (amount, month, status)
+   - Summary card: Total monthly payout
+   - Salary history table
+
+6. **Funds Page**
+   - Add funds modal
+   - Cards showing:
+        Total Funds Inflow
+        Available Balance
+   - Graph:
+        Monthly funds inflow
+   - Table of funds logs
+
+7. **History Page**
+   - Unified timeline of:
+        salary payments
+        expenses
+        fund additions
+   - Filters:
+        type, date range, amount range
+
+Expected Output:
+• Full folder structure for Next.js frontend
+• Clean and organized components
+• Page files with real UI (no placeholder boxes)
+• Recharts graphs with sample mocked data
+• Tailwind classes for beautiful styling
+• ShadCN components integrated properly
+• Fully responsive layout
+• State managed through Zustand/Context
+• API functions with dummy endpoints (no backend)
+
+Do NOT include backend or database code.
+
+Provide:
+• Code for all pages
+• Components
+• Suggested UI interactions
+• Example mocked data
+• Final folder structure
