@@ -1,0 +1,128 @@
+import axios, { AxiosError, type AxiosRequestConfig, type InternalAxiosRequestConfig } from "axios";
+import { clearAccessToken, getAccessToken, setAccessToken } from "./session";
+import type { AuthSession } from "./types";
+
+const DEFAULT_API_BASE_URL = "http://localhost:3001/api";
+
+function getApiBaseUrl() {
+  return (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? DEFAULT_API_BASE_URL;
+}
+
+function toErrorMessage(error: unknown, fallback: string) {
+  if (axios.isAxiosError(error)) {
+    const message = error.response?.data?.message;
+    if (typeof message === "string" && message.trim()) {
+      return message;
+    }
+  }
+
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+
+  return fallback;
+}
+
+type RetriableRequestConfig = InternalAxiosRequestConfig & {
+  _retry?: boolean;
+};
+
+const authAxios = axios.create({
+  baseURL: getApiBaseUrl(),
+  withCredentials: true,
+  headers: {
+    Accept: "application/json",
+  },
+});
+
+const authlessAxios = axios.create({
+  baseURL: getApiBaseUrl(),
+  withCredentials: true,
+  headers: {
+    Accept: "application/json",
+  },
+});
+
+let refreshPromise: Promise<AuthSession> | null = null;
+
+function shouldSkipRefresh(config?: AxiosRequestConfig) {
+  const url = config?.url ?? "";
+  return url.includes("/auth/login") || url.includes("/auth/refresh") || url.includes("/auth/logout");
+}
+
+async function performRefresh(): Promise<AuthSession> {
+  if (!refreshPromise) {
+    refreshPromise = authlessAxios
+      .post<AuthSession>("/auth/refresh")
+      .then((response) => {
+        setAccessToken(response.data.accessToken);
+        return response.data;
+      })
+      .finally(() => {
+        refreshPromise = null;
+      });
+  }
+
+  return refreshPromise;
+}
+
+authAxios.interceptors.request.use((config) => {
+  const token = getAccessToken();
+  if (token) {
+    config.headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  return config;
+});
+
+authAxios.interceptors.response.use(
+  (response) => response,
+  async (error: AxiosError) => {
+    const config = error.config as RetriableRequestConfig | undefined;
+
+    if (!config || config._retry || error.response?.status !== 401 || shouldSkipRefresh(config)) {
+      throw new Error(toErrorMessage(error, "Request failed."));
+    }
+
+    try {
+      config._retry = true;
+      const session = await performRefresh();
+      config.headers.set("Authorization", `Bearer ${session.accessToken}`);
+      return await authAxios.request(config);
+    } catch {
+      clearAccessToken();
+      throw new Error("Your session expired. Please sign in again.");
+    }
+  },
+);
+
+export async function refreshAccessToken(): Promise<AuthSession> {
+  try {
+    return await performRefresh();
+  } catch (error) {
+    clearAccessToken();
+    throw new Error(toErrorMessage(error, "Your session expired. Please sign in again."));
+  }
+}
+
+export async function requestJson<T>(
+  path: string,
+  config: AxiosRequestConfig = {},
+  options: { auth?: boolean } = {},
+): Promise<T> {
+  const client = options.auth === false ? authlessAxios : authAxios;
+
+  try {
+    const response = await client.request<T>({
+      url: path,
+      ...config,
+    });
+    return response.data;
+  } catch (error) {
+    throw new Error(toErrorMessage(error, "Request failed."));
+  }
+}
+
+export async function rawAuthRequest<T>(path: string, config: AxiosRequestConfig = {}): Promise<T> {
+  return requestJson<T>(path, config, { auth: false });
+}

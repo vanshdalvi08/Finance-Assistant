@@ -1,0 +1,17 @@
+export const routes = {
+  login: "/login",
+  resetPassword: "/reset",
+  unauthorized: "/unauthorized",
+  adminDashboard: "/admin/dashboard",
+  adminEmployees: "/admin/employees",
+  adminSalary: "/admin/salary",
+  adminFunds: "/admin/funds",
+  adminExpenses: "/admin/expenses",
+  adminTransactions: "/admin/transactions",
+  adminTimesheetValidation: "/admin/timesheets",
+  adminReports: "/admin/reports",
+  employeeTimesheet: "/employee/timesheet",
+  employeeExpenses: "/employee/expenses",
+  employeeSalarySlips: "/employee/salary-slips",
+  employeeProfile: "/employee/profile",
+} as const;

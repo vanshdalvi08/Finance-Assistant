@@ -1,18 +1,41 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, Users, CreditCard, Wallet, Receipt, History, ChevronLeft, ChevronRight, LogOut, Settings } from "lucide-react";
+import {
+  LayoutDashboard,
+  Users,
+  CreditCard,
+  Wallet,
+  Receipt,
+  History,
+  ChevronLeft,
+  ChevronRight,
+  LogOut,
+  Settings,
+  Clock3,
+  FileBarChart2,
+  UserRound,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useUIStore } from "@/store/ui";
 import { useAuthStore } from "@/store/auth";
 import { useToast } from "@/hooks/use-toast";
 
-const navItems = [
+const adminNavItems = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
   { href: "/transactions", label: "History", icon: History },
   { href: "/employees", label: "Employees", icon: Users },
   { href: "/salary", label: "Salary", icon: CreditCard },
   { href: "/funds", label: "Funds", icon: Wallet },
   { href: "/expenses", label: "Expenses", icon: Receipt },
+  { href: "/timesheets", label: "Timesheets", icon: Clock3 },
+  { href: "/reports", label: "Reports", icon: FileBarChart2 },
   { href: "/settings", label: "Settings", icon: Settings },
+];
+
+const employeeNavItems = [
+  { href: "/employee/timesheet", label: "My Timesheet", icon: Clock3 },
+  { href: "/employee/expenses", label: "My Expenses", icon: Receipt },
+  { href: "/employee/salary-slips", label: "Salary Slips", icon: CreditCard },
+  { href: "/employee/profile", label: "Profile", icon: UserRound },
 ];
 
 function getInitials(email: string): string {
@@ -27,13 +50,14 @@ function getInitials(email: string): string {
 export function Sidebar() {
   const [location, setLocation] = useLocation();
   const { sidebarCollapsed, toggleSidebar } = useUIStore();
-  const { userEmail, logout } = useAuthStore();
+  const { userEmail, logout, role } = useAuthStore();
   const { toast } = useToast();
+  const navItems = role === "employee" ? employeeNavItems : adminNavItems;
 
   const initials = userEmail ? getInitials(userEmail) : "??";
 
-  function handleLogout() {
-    logout();
+  async function handleLogout() {
+    await logout();
     toast({ title: "Signed out", description: "You have been signed out successfully." });
     setLocation("/login");
   }
@@ -102,7 +126,7 @@ export function Sidebar() {
             </div>
           )}
           <button
-            onClick={handleLogout}
+          onClick={() => void handleLogout()}
             title="Sign out"
             data-testid="button-logout"
             className={cn(

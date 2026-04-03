@@ -16,7 +16,7 @@ import * as z from "zod";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import {
-  Receipt, Plus, ArrowUpRight, Upload, SlidersHorizontal, X, Home, Building2
+  Receipt, Plus, ArrowUpRight, Upload, SlidersHorizontal, X, Home, Building2, Check, Ban
 } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger
@@ -24,6 +24,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 
 const expenseSchema = z.object({
   group: z.enum(["personal", "office"]),
@@ -40,10 +41,12 @@ function ExpenseTable({
   expenses,
   categories,
   group,
+  onReview,
 }: {
   expenses: Expense[];
   categories: ExpenseCategory[];
   group: "personal" | "office";
+  onReview?: (id: string, status: "approved" | "rejected") => void;
 }) {
   const [filterCategory, setFilterCategory] = useState("all");
   const [filterDateFrom, setFilterDateFrom] = useState("");
@@ -187,13 +190,15 @@ function ExpenseTable({
                 <TableHead>Description</TableHead>
                 <TableHead>Category</TableHead>
                 <TableHead>Date</TableHead>
+                <TableHead>Status</TableHead>
                 <TableHead className="text-right">Amount</TableHead>
+                <TableHead className="text-right">Action</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {filtered.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={4} className="text-center py-10 text-muted-foreground text-sm">
+                  <TableCell colSpan={6} className="text-center py-10 text-muted-foreground text-sm">
                     No expenses found.
                   </TableCell>
                 </TableRow>
@@ -207,7 +212,14 @@ function ExpenseTable({
                           <div className="p-1.5 rounded-md bg-secondary/50">
                             <ArrowUpRight className="w-3.5 h-3.5 text-muted-foreground" />
                           </div>
-                          {e.description}
+                          <div>
+                            <div>{e.description}</div>
+                            {e.employeeNameSnapshot && (
+                              <div className="text-xs font-normal text-muted-foreground mt-0.5">
+                                {e.employeeNameSnapshot}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </TableCell>
                       <TableCell>
@@ -226,11 +238,49 @@ function ExpenseTable({
                       <TableCell className="text-muted-foreground text-sm">
                         {format(new Date(e.date), "MMM dd, yyyy")}
                       </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            "font-normal text-xs capitalize",
+                            e.status === "approved" && "border-emerald-500/30 text-emerald-400",
+                            e.status === "submitted" && "border-amber-500/30 text-amber-400",
+                            e.status === "rejected" && "border-rose-500/30 text-rose-400",
+                            e.status === "draft" && "border-border text-muted-foreground",
+                          )}
+                        >
+                          {e.status}
+                        </Badge>
+                      </TableCell>
                       <TableCell className="text-right font-medium">
                         {e.amount.toLocaleString("en-IN", {
                           style: "currency",
                           currency: "INR",
                         })}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {e.status === "submitted" && onReview ? (
+                          <div className="flex justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-emerald-400 hover:text-emerald-300"
+                              onClick={() => onReview(e.id, "approved")}
+                            >
+                              <Check className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-rose-400 hover:text-rose-300"
+                              onClick={() => onReview(e.id, "rejected")}
+                            >
+                              <Ban className="w-4 h-4" />
+                            </Button>
+                          </div>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">-</span>
+                        )}
                       </TableCell>
                     </TableRow>
                   );
@@ -253,7 +303,7 @@ export default function Expenses() {
 
   const { data: expenses = [] } = useQuery({
     queryKey: ["expenses"],
-    queryFn: api.getExpenses,
+    queryFn: () => api.getExpenses(),
   });
   const { data: categories = [] } = useQuery({
     queryKey: ["categories"],
@@ -275,13 +325,31 @@ export default function Expenses() {
   const watchGroup = form.watch("group");
 
   const addMutation = useMutation({
-    mutationFn: async (data: ExpenseForm) => data,
+    mutationFn: async ({ note: _note, ...data }: ExpenseForm) => api.addExpense(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["expenses"] });
+      queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      queryClient.invalidateQueries({ queryKey: ["chartData"] });
+      queryClient.invalidateQueries({ queryKey: ["expenseCategories"] });
+      queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
       toast({ title: "Expense logged", description: "Expense recorded successfully." });
       setIsDialogOpen(false);
       setFileSelected("");
       form.reset();
+    },
+  });
+  const reviewMutation = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: "approved" | "rejected" }) =>
+      api.updateExpenseStatus(id, status),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["expenses"] });
+      queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      queryClient.invalidateQueries({ queryKey: ["chartData"] });
+      queryClient.invalidateQueries({ queryKey: ["expenseCategories"] });
+      queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
+      toast({
+        title: variables.status === "approved" ? "Expense approved" : "Expense rejected",
+      });
     },
   });
 
@@ -327,7 +395,13 @@ export default function Expenses() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>Group</FormLabel>
-                        <Select onValueChange={field.onChange} defaultValue={field.value}>
+                        <Select
+                          onValueChange={(value) => {
+                            field.onChange(value);
+                            form.setValue("category", "");
+                          }}
+                          defaultValue={field.value}
+                        >
                           <FormControl>
                             <SelectTrigger>
                               <SelectValue />
@@ -527,10 +601,20 @@ export default function Expenses() {
           </TabsList>
 
           <TabsContent value="office" className="mt-0">
-            <ExpenseTable expenses={expenses} categories={categories} group="office" />
+            <ExpenseTable
+              expenses={expenses}
+              categories={categories}
+              group="office"
+              onReview={(id, status) => reviewMutation.mutate({ id, status })}
+            />
           </TabsContent>
           <TabsContent value="personal" className="mt-0">
-            <ExpenseTable expenses={expenses} categories={categories} group="personal" />
+            <ExpenseTable
+              expenses={expenses}
+              categories={categories}
+              group="personal"
+              onReview={(id, status) => reviewMutation.mutate({ id, status })}
+            />
           </TabsContent>
         </Tabs>
       </div>

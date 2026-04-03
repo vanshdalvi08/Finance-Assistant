@@ -6,20 +6,27 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Plus, Pencil, Trash2, Building2, Home, Settings as SettingsIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const PRESET_COLORS = [
-  "#6366f1", "#f59e0b", "#10b981", "#3b82f6", "#ef4444",
-  "#8b5cf6", "#f97316", "#22c55e", "#a855f7", "#ec4899",
-  "#14b8a6", "#0ea5e9", "#d946ef", "#84cc16", "#e11d48",
+  "#6366f1",
+  "#f59e0b",
+  "#10b981",
+  "#3b82f6",
+  "#ef4444",
+  "#8b5cf6",
+  "#f97316",
+  "#22c55e",
+  "#a855f7",
+  "#ec4899",
+  "#14b8a6",
+  "#0ea5e9",
+  "#d946ef",
+  "#84cc16",
+  "#e11d48",
 ];
 
 interface CategoryFormState {
@@ -40,10 +47,7 @@ function CategoryCard({
 }) {
   return (
     <div className="flex items-center gap-3 p-3 rounded-lg border border-border/50 bg-card/40 hover:bg-card/70 transition-colors group">
-      <div
-        className="w-8 h-8 rounded-lg flex-shrink-0 shadow-sm"
-        style={{ backgroundColor: cat.color }}
-      />
+      <div className="w-8 h-8 rounded-lg flex-shrink-0 shadow-sm" style={{ backgroundColor: cat.color }} />
       <span className="flex-1 text-sm font-medium">{cat.name}</span>
       <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
         <button
@@ -78,7 +82,7 @@ function CategorySection({
 }) {
   const Icon = group === "office" ? Building2 : Home;
   const label = group === "office" ? "Office" : "Personal";
-  const cats = categories.filter((c) => c.group === group);
+  const groupCategories = categories.filter((category) => category.group === group);
 
   return (
     <Card className="border-border/50">
@@ -90,33 +94,21 @@ function CategorySection({
             </div>
             <CardTitle className="text-base">{label} Categories</CardTitle>
             <span className="text-xs text-muted-foreground bg-secondary/50 px-2 py-0.5 rounded-full">
-              {cats.length}
+              {groupCategories.length}
             </span>
           </div>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 text-xs gap-1"
-            onClick={() => onAdd(group)}
-          >
+          <Button size="sm" variant="outline" className="h-7 text-xs gap-1" onClick={() => onAdd(group)}>
             <Plus className="w-3.5 h-3.5" /> Add
           </Button>
         </div>
       </CardHeader>
       <CardContent>
-        {cats.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground text-sm">
-            No categories yet. Add one to get started.
-          </div>
+        {groupCategories.length === 0 ? (
+          <div className="text-center py-8 text-muted-foreground text-sm">No categories yet. Add one to get started.</div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {cats.map((cat) => (
-              <CategoryCard
-                key={cat.id}
-                cat={cat}
-                onEdit={onEdit}
-                onDelete={onDelete}
-              />
+            {groupCategories.map((category) => (
+              <CategoryCard key={category.id} cat={category} onEdit={onEdit} onDelete={onDelete} />
             ))}
           </div>
         )}
@@ -128,7 +120,6 @@ function CategorySection({
 export default function Settings() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState<CategoryFormState>({
     name: "",
@@ -142,9 +133,12 @@ export default function Settings() {
   });
 
   const saveMutation = useMutation({
-    mutationFn: async (data: CategoryFormState) => data,
-    onSuccess: (data) => {
+    mutationFn: api.saveCategory,
+    onSuccess: (_savedCategory, data) => {
       queryClient.invalidateQueries({ queryKey: ["categories"] });
+      queryClient.invalidateQueries({ queryKey: ["expenses"] });
+      queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      queryClient.invalidateQueries({ queryKey: ["expenseCategories"] });
       toast({
         title: data.editId ? "Category updated" : "Category added",
         description: `"${data.name}" has been ${data.editId ? "updated" : "created"}.`,
@@ -154,10 +148,16 @@ export default function Settings() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: async (cat: ExpenseCategory) => cat,
-    onSuccess: (cat) => {
+    mutationFn: async (category: ExpenseCategory) => {
+      await api.deleteCategory(category.id);
+      return category;
+    },
+    onSuccess: (category) => {
       queryClient.invalidateQueries({ queryKey: ["categories"] });
-      toast({ title: "Category deleted", description: `"${cat.name}" removed.` });
+      queryClient.invalidateQueries({ queryKey: ["expenses"] });
+      queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      queryClient.invalidateQueries({ queryKey: ["expenseCategories"] });
+      toast({ title: "Category deleted", description: `"${category.name}" removed.` });
     },
   });
 
@@ -166,13 +166,14 @@ export default function Settings() {
     setDialogOpen(true);
   }
 
-  function openEdit(cat: ExpenseCategory) {
-    setForm({ name: cat.name, color: cat.color, group: cat.group, editId: cat.id });
+  function openEdit(category: ExpenseCategory) {
+    setForm({
+      name: category.name,
+      color: category.color,
+      group: category.group,
+      editId: category.id,
+    });
     setDialogOpen(true);
-  }
-
-  function handleDelete(cat: ExpenseCategory) {
-    deleteMutation.mutate(cat);
   }
 
   return (
@@ -184,30 +185,14 @@ export default function Settings() {
           </div>
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
-            <p className="text-muted-foreground text-sm mt-0.5">
-              Manage expense categories and application preferences.
-            </p>
+            <p className="text-muted-foreground text-sm mt-0.5">Manage expense categories and application preferences.</p>
           </div>
         </div>
 
         <div className="space-y-4">
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-            Category Manager
-          </h2>
-          <CategorySection
-            group="office"
-            categories={categories}
-            onAdd={openAdd}
-            onEdit={openEdit}
-            onDelete={handleDelete}
-          />
-          <CategorySection
-            group="personal"
-            categories={categories}
-            onAdd={openAdd}
-            onEdit={openEdit}
-            onDelete={handleDelete}
-          />
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Category Manager</h2>
+          <CategorySection group="office" categories={categories} onAdd={openAdd} onEdit={openEdit} onDelete={deleteMutation.mutate} />
+          <CategorySection group="personal" categories={categories} onAdd={openAdd} onEdit={openEdit} onDelete={deleteMutation.mutate} />
         </div>
       </div>
 
@@ -215,8 +200,7 @@ export default function Settings() {
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>
-              {form.editId ? "Edit Category" : "Add Category"} —{" "}
-              {form.group === "office" ? "Office" : "Personal"}
+              {form.editId ? "Edit Category" : "Add Category"} - {form.group === "office" ? "Office" : "Personal"}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 pt-1">
@@ -225,37 +209,32 @@ export default function Settings() {
               <Input
                 placeholder="e.g. Marketing"
                 value={form.name}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
               />
             </div>
 
             <div className="space-y-2">
               <Label>Color Tag</Label>
               <div className="flex flex-wrap gap-2">
-                {PRESET_COLORS.map((c) => (
+                {PRESET_COLORS.map((color) => (
                   <button
-                    key={c}
-                    onClick={() => setForm((f) => ({ ...f, color: c }))}
+                    key={color}
+                    onClick={() => setForm((current) => ({ ...current, color }))}
                     className={cn(
                       "w-7 h-7 rounded-lg transition-all border-2",
-                      form.color === c
-                        ? "border-foreground scale-110"
-                        : "border-transparent hover:scale-105"
+                      form.color === color ? "border-foreground scale-110" : "border-transparent hover:scale-105",
                     )}
-                    style={{ backgroundColor: c }}
+                    style={{ backgroundColor: color }}
                   />
                 ))}
               </div>
               <div className="flex items-center gap-2 mt-1">
-                <div
-                  className="w-6 h-6 rounded-md border border-border"
-                  style={{ backgroundColor: form.color }}
-                />
+                <div className="w-6 h-6 rounded-md border border-border" style={{ backgroundColor: form.color }} />
                 <Input
                   type="color"
                   value={form.color}
                   className="w-12 h-7 p-0.5 cursor-pointer border border-border"
-                  onChange={(e) => setForm((f) => ({ ...f, color: e.target.value }))}
+                  onChange={(event) => setForm((current) => ({ ...current, color: event.target.value }))}
                 />
                 <span className="text-xs text-muted-foreground font-mono">{form.color}</span>
               </div>
