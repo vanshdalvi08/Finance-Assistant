@@ -19,6 +19,7 @@ export const usersTable = pgTable(
     salary: integer("salary").notNull().default(0),
     payType: userPayTypeEnum("pay_type").notNull().default("monthly"),
     hourlyRate: integer("hourly_rate").notNull().default(0),
+    profilePhotoUrl: text("profile_photo_url"),
     hashedPassword: text("hashed_password").notNull(),
     status: userStatusEnum("status").notNull().default("active"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

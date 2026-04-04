@@ -12,6 +12,7 @@ export interface AuthUser {
   salary?: number;
   payType?: "monthly" | "hourly";
   hourlyRate?: number;
+  profilePhotoUrl?: string | null;
   status?: "active" | "inactive";
   createdAt?: string;
   updatedAt?: string;
@@ -54,6 +55,7 @@ export interface CreateEmployeeAccountPayload {
   salary: number;
   payType?: "monthly" | "hourly";
   hourlyRate?: number;
+  profilePhotoUrl?: string | null;
   department?: string;
   status?: "active" | "inactive";
 }
@@ -67,6 +69,7 @@ export interface UpdateEmployeeAccountPayload {
   salary: number;
   payType?: "monthly" | "hourly";
   hourlyRate?: number;
+  profilePhotoUrl?: string | null;
   department?: string;
   status?: "active" | "inactive";
 }
@@ -77,6 +80,7 @@ export interface UpdateCurrentUserProfilePayload {
   phone: string;
   position?: string;
   department?: string;
+  profilePhotoUrl?: string | null;
 }
 
 export interface EmployeeAccountProvisionResult {

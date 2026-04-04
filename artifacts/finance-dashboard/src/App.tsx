@@ -13,10 +13,10 @@ import SettingsPage from "@/pages/settings";
 import AdminTimesheetValidationPage from "@/pages/admin/timesheet-validation";
 import AdminReportsPage from "@/pages/admin/reports";
 import EmployeeTimesheetPage from "@/pages/employee/timesheet";
-import EmployeeExpensesPage from "@/pages/employee/expenses";
 import EmployeeSalarySlipsPage from "@/pages/employee/salary-slips";
 import EmployeeProfilePage from "@/pages/employee/profile";
 import NotFoundPage from "@/pages/not-found";
+import type { UserRole } from "@/auth/types";
 
 function FullScreenLoader() {
   return (
@@ -24,6 +24,30 @@ function FullScreenLoader() {
       Booting your workspace...
     </div>
   );
+}
+
+function redirectForSession(isAuthenticated: boolean, role: UserRole | null) {
+  if (!isAuthenticated) {
+    return <Redirect to="/login" />;
+  }
+
+  return <Redirect to={role === "employee" ? "/employee/timesheet" : "/"} />;
+}
+
+function renderAdminRoute(
+  isAuthenticated: boolean,
+  role: UserRole | null,
+  element: React.ReactNode,
+) {
+  return isAuthenticated && role === "admin" ? element : redirectForSession(isAuthenticated, role);
+}
+
+function renderEmployeeRoute(
+  isAuthenticated: boolean,
+  role: UserRole | null,
+  element: React.ReactNode,
+) {
+  return isAuthenticated && role === "employee" ? element : redirectForSession(isAuthenticated, role);
 }
 
 function LegacyRouter() {
@@ -39,61 +63,58 @@ function LegacyRouter() {
     <WouterRouter base={import.meta.env.BASE_URL?.replace(/\/$/, "") || ""}>
       <Switch>
         <Route path="/login">
-          {isAuthenticated ? <Redirect to={role === "employee" ? "/employee/timesheet" : "/"} /> : <LoginPage />}
+          {isAuthenticated ? redirectForSession(isAuthenticated, role) : <LoginPage />}
         </Route>
         <Route path="/reset">
-          {isAuthenticated ? <Redirect to={role === "employee" ? "/employee/timesheet" : "/"} /> : <ResetPasswordPage />}
+          {isAuthenticated ? redirectForSession(isAuthenticated, role) : <ResetPasswordPage />}
         </Route>
         <Route path="/">
-          {!isAuthenticated ? <Redirect to="/login" /> : role === "employee" ? <Redirect to="/employee/timesheet" /> : <DashboardPage />}
+          {renderAdminRoute(isAuthenticated, role, <DashboardPage />)}
         </Route>
         <Route path="/transactions">
-          {isAuthenticated && role === "admin" ? <TransactionsPage /> : <Redirect to={isAuthenticated ? "/" : "/login"} />}
+          {renderAdminRoute(isAuthenticated, role, <TransactionsPage />)}
         </Route>
         <Route path="/employees">
-          {isAuthenticated && role === "admin" ? <EmployeesPage /> : <Redirect to={isAuthenticated ? "/" : "/login"} />}
+          {renderAdminRoute(isAuthenticated, role, <EmployeesPage />)}
         </Route>
         <Route path="/salary">
-          {isAuthenticated && role === "admin" ? <SalaryPage /> : <Redirect to={isAuthenticated ? "/" : "/login"} />}
+          {renderAdminRoute(isAuthenticated, role, <SalaryPage />)}
         </Route>
         <Route path="/funds">
-          {isAuthenticated && role === "admin" ? <FundsPage /> : <Redirect to={isAuthenticated ? "/" : "/login"} />}
+          {renderAdminRoute(isAuthenticated, role, <FundsPage />)}
         </Route>
         <Route path="/expenses">
-          {isAuthenticated && role === "admin" ? <ExpensesPage /> : <Redirect to={isAuthenticated ? "/" : "/login"} />}
+          {renderAdminRoute(isAuthenticated, role, <ExpensesPage />)}
         </Route>
         <Route path="/settings">
-          {isAuthenticated && role === "admin" ? <SettingsPage /> : <Redirect to={isAuthenticated ? "/" : "/login"} />}
+          {renderAdminRoute(isAuthenticated, role, <SettingsPage />)}
         </Route>
         <Route path="/timesheets">
-          {isAuthenticated && role === "admin" ? <AdminTimesheetValidationPage /> : <Redirect to={isAuthenticated ? "/" : "/login"} />}
+          {renderAdminRoute(isAuthenticated, role, <AdminTimesheetValidationPage />)}
         </Route>
         <Route path="/reports">
-          {isAuthenticated && role === "admin" ? <AdminReportsPage /> : <Redirect to={isAuthenticated ? "/" : "/login"} />}
+          {renderAdminRoute(isAuthenticated, role, <AdminReportsPage />)}
         </Route>
-        <Route path="/admin/dashboard"><Redirect to="/" /></Route>
-        <Route path="/admin/transactions"><Redirect to="/transactions" /></Route>
-        <Route path="/admin/employees"><Redirect to="/employees" /></Route>
-        <Route path="/admin/salary"><Redirect to="/salary" /></Route>
-        <Route path="/admin/funds"><Redirect to="/funds" /></Route>
-        <Route path="/admin/expenses"><Redirect to="/expenses" /></Route>
-        <Route path="/admin/settings"><Redirect to="/settings" /></Route>
-        <Route path="/admin/timesheets"><Redirect to="/timesheets" /></Route>
-        <Route path="/admin/reports"><Redirect to="/reports" /></Route>
+        <Route path="/admin/dashboard">{renderAdminRoute(isAuthenticated, role, <Redirect to="/" />)}</Route>
+        <Route path="/admin/transactions">{renderAdminRoute(isAuthenticated, role, <Redirect to="/transactions" />)}</Route>
+        <Route path="/admin/employees">{renderAdminRoute(isAuthenticated, role, <Redirect to="/employees" />)}</Route>
+        <Route path="/admin/salary">{renderAdminRoute(isAuthenticated, role, <Redirect to="/salary" />)}</Route>
+        <Route path="/admin/funds">{renderAdminRoute(isAuthenticated, role, <Redirect to="/funds" />)}</Route>
+        <Route path="/admin/expenses">{renderAdminRoute(isAuthenticated, role, <Redirect to="/expenses" />)}</Route>
+        <Route path="/admin/settings">{renderAdminRoute(isAuthenticated, role, <Redirect to="/settings" />)}</Route>
+        <Route path="/admin/timesheets">{renderAdminRoute(isAuthenticated, role, <Redirect to="/timesheets" />)}</Route>
+        <Route path="/admin/reports">{renderAdminRoute(isAuthenticated, role, <Redirect to="/reports" />)}</Route>
         <Route path="/employee/dashboard">
-          {isAuthenticated && role === "employee" ? <Redirect to="/employee/timesheet" /> : <Redirect to={isAuthenticated ? "/" : "/login"} />}
+          {renderEmployeeRoute(isAuthenticated, role, <Redirect to="/employee/timesheet" />)}
         </Route>
         <Route path="/employee/timesheet">
-          {isAuthenticated && role === "employee" ? <EmployeeTimesheetPage /> : <Redirect to={isAuthenticated ? "/" : "/login"} />}
-        </Route>
-        <Route path="/employee/expenses">
-          {isAuthenticated && role === "employee" ? <EmployeeExpensesPage /> : <Redirect to={isAuthenticated ? "/" : "/login"} />}
+          {renderEmployeeRoute(isAuthenticated, role, <EmployeeTimesheetPage />)}
         </Route>
         <Route path="/employee/salary-slips">
-          {isAuthenticated && role === "employee" ? <EmployeeSalarySlipsPage /> : <Redirect to={isAuthenticated ? "/" : "/login"} />}
+          {renderEmployeeRoute(isAuthenticated, role, <EmployeeSalarySlipsPage />)}
         </Route>
         <Route path="/employee/profile">
-          {isAuthenticated && role === "employee" ? <EmployeeProfilePage /> : <Redirect to={isAuthenticated ? "/" : "/login"} />}
+          {renderEmployeeRoute(isAuthenticated, role, <EmployeeProfilePage />)}
         </Route>
         <Route>
           {isAuthenticated ? <NotFoundPage /> : <Redirect to="/login" />}

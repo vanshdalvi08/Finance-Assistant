@@ -20,7 +20,6 @@ import AdminTransactionsPage from "@/pages/admin/transactions";
 import AdminTimesheetValidationPage from "@/pages/admin/timesheet-validation";
 import AdminReportsPage from "@/pages/admin/reports";
 import EmployeeTimesheetPage from "@/pages/employee/timesheet";
-import EmployeeExpensesPage from "@/pages/employee/expenses";
 import EmployeeSalarySlipsPage from "@/pages/employee/salary-slips";
 import EmployeeProfilePage from "@/pages/employee/profile";
 
@@ -64,7 +63,6 @@ function EmployeeRoutes() {
   return (
     <Switch>
       <Route path={routes.employeeTimesheet}><EmployeeTimesheetPage /></Route>
-      <Route path={routes.employeeExpenses}><EmployeeExpensesPage /></Route>
       <Route path={routes.employeeSalarySlips}><EmployeeSalarySlipsPage /></Route>
       <Route path={routes.employeeProfile}><EmployeeProfilePage /></Route>
       <Route><Redirect to={routes.employeeTimesheet} /></Route>

@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { EmployeeAvatar } from "@/components/employee-avatar";
 
 function dateLabel(value: string) {
   return new Date(value).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
@@ -56,13 +57,14 @@ export default function EmployeeProfilePage() {
         return existing;
       }
 
-      return api.ensureEmployeeProfile({
-        id: user.id,
-        email: user.email,
-        name: user.name ?? user.email.split("@")[0],
-        phone: user.phone,
-        employeeId: user.employeeId,
-        role: user.position,
+        return api.ensureEmployeeProfile({
+          id: user.id,
+          email: user.email,
+          name: user.name ?? user.email.split("@")[0],
+          phone: user.phone,
+          employeeId: user.employeeId,
+          profilePhotoUrl: user.profilePhotoUrl ?? undefined,
+          role: user.position,
         department: user.department,
         salary: user.salary,
         payType: user.payType,
@@ -76,12 +78,6 @@ export default function EmployeeProfilePage() {
   const { data: timesheets = [] } = useQuery({
     queryKey: ["employee-timesheets", employee?.id],
     queryFn: () => api.getTimesheets({ employeeId: employee?.id ?? "" }),
-    enabled: Boolean(employee?.id),
-  });
-
-  const { data: expenses = [] } = useQuery({
-    queryKey: ["employee-expenses", employee?.id],
-    queryFn: () => api.getExpenses({ employeeId: employee?.id ?? "" }),
     enabled: Boolean(employee?.id),
   });
 
@@ -113,6 +109,7 @@ export default function EmployeeProfilePage() {
         phone: employee?.phone ?? user?.phone ?? "",
         position: form.role.trim(),
         department: form.department.trim(),
+        profilePhotoUrl: employee?.profilePhotoUrl ?? user?.profilePhotoUrl ?? undefined,
       });
 
       await api.updateEmployee({
@@ -146,12 +143,6 @@ export default function EmployeeProfilePage() {
         label: dateLabel(entry.weekStart),
         detail: entry.status,
       })),
-      ...expenses.slice(0, 2).map((expense) => ({
-        id: `e-${expense.id}`,
-        type: "Expense",
-        label: expense.description,
-        detail: expense.status,
-      })),
       ...salaries.slice(0, 2).map((salary) => ({
         id: `s-${salary.id}`,
         type: "Salary",
@@ -159,7 +150,7 @@ export default function EmployeeProfilePage() {
         detail: formatCurrency(salary.amount),
       })),
     ].slice(0, 6);
-  }, [expenses, salaries, timesheets]);
+  }, [salaries, timesheets]);
 
   return (
     <DashboardLayout>
@@ -182,6 +173,21 @@ export default function EmployeeProfilePage() {
               <CardTitle className="text-base">Account Details</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              <div className="flex items-center gap-4 rounded-xl border border-border/50 bg-secondary/10 p-4">
+                <EmployeeAvatar
+                  name={(employee?.name ?? form.name) || user?.email || "Employee"}
+                  src={employee?.profilePhotoUrl ?? user?.profilePhotoUrl}
+                  className="h-16 w-16"
+                  fallbackClassName="text-sm"
+                />
+                <div className="space-y-1">
+                  <p className="font-medium text-foreground">{(employee?.name ?? form.name) || "Employee"}</p>
+                  <p className="text-sm text-muted-foreground">{(employee?.email ?? form.email) || user?.email}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {employee?.employeeId ?? user?.employeeId ?? "Employee ID pending"}
+                  </p>
+                </div>
+              </div>
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label>Full Name</Label>

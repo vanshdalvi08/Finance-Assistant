@@ -1,8 +1,18 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ChangeEvent } from "react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { api } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -12,36 +22,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
-import { Plus, Search, MoreHorizontal, Edit, Trash2 } from "lucide-react";
+import { Plus, Search, MoreHorizontal, Edit, Trash2, ImagePlus, X } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { createEmployeeAccount, listEmployeeAccounts } from "@/auth/auth-service";
-
-const AVATAR_PALETTE = [
-  { bg: "#1e3a5f", fg: "#60a5fa" },
-  { bg: "#1a3a2e", fg: "#34d399" },
-  { bg: "#3b1f5e", fg: "#a78bfa" },
-  { bg: "#3b2006", fg: "#fb923c" },
-  { bg: "#1e2d5e", fg: "#818cf8" },
-  { bg: "#3b1a2e", fg: "#f472b6" },
-  { bg: "#1e3a3a", fg: "#2dd4bf" },
-  { bg: "#2e2006", fg: "#facc15" },
-];
-
-function nameHash(name: string): number {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
-  return h;
-}
-
-function getInitials(name: string): string {
-  return name
-    .split(" ")
-    .map((w) => w[0])
-    .join("")
-    .toUpperCase()
-    .slice(0, 2);
-}
+import { EmployeeAvatar } from "@/components/employee-avatar";
 
 function formatCurrency(value: number) {
   return value.toLocaleString("en-IN", {
@@ -51,63 +36,8 @@ function formatCurrency(value: number) {
   });
 }
 
-function EmployeeAvatar({ name, size = 36 }: { name: string; size?: number }) {
-  const palette = AVATAR_PALETTE[nameHash(name) % AVATAR_PALETTE.length];
-  const initials = getInitials(name);
-  const r = size / 2;
-
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox={`0 0 ${size} ${size}`}
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      style={{ flexShrink: 0 }}
-    >
-      <circle cx={r} cy={r} r={r} fill={palette.bg} />
-      <ellipse
-        cx={r}
-        cy={size * 1.08}
-        rx={r * 0.78}
-        ry={r * 0.58}
-        fill={palette.fg}
-        opacity={0.18}
-      />
-      <circle
-        cx={r}
-        cy={size * 0.38}
-        r={r * 0.32}
-        fill={palette.fg}
-        opacity={0.22}
-      />
-      <text
-        x={r}
-        y={size * 0.64}
-        textAnchor="middle"
-        dominantBaseline="middle"
-        fill={palette.fg}
-        fontSize={size * 0.3}
-        fontWeight="600"
-        fontFamily="Inter, system-ui, sans-serif"
-        letterSpacing="0.5"
-      >
-        {initials}
-      </text>
-      <circle
-        cx={r}
-        cy={r}
-        r={r - 0.5}
-        stroke={palette.fg}
-        strokeWidth="0.75"
-        strokeOpacity="0.2"
-        fill="none"
-      />
-    </svg>
-  );
-}
-
 type PayType = "monthly" | "hourly";
+const MAX_PROFILE_PHOTO_SIZE = 1.5 * 1024 * 1024;
 
 const employeeSchema = z
   .object({
@@ -144,14 +74,29 @@ type EmployeeRecord = z.infer<typeof employeeSchema> & {
   employeeId?: string;
   payType?: PayType;
   hourlyRate?: number;
+  profilePhotoUrl?: string | null;
 };
+type EmployeeFormValues = z.infer<typeof employeeSchema>;
+type EmployeeMutationInput = EmployeeFormValues & { profilePhotoUrl?: string | null };
 
 const HOURS_PER_YEAR = 2080;
+
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(new Error("Could not read the selected image."));
+    reader.readAsDataURL(file);
+  });
+}
 
 export default function Employees() {
   const [search, setSearch] = useState("");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingEmployeeId, setEditingEmployeeId] = useState<string | null>(null);
+  const [employeeToDelete, setEmployeeToDelete] = useState<EmployeeRecord | null>(null);
+  const [profilePhotoUrl, setProfilePhotoUrl] = useState<string | null>(null);
+  const [photoInputKey, setPhotoInputKey] = useState(0);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -168,7 +113,7 @@ export default function Employees() {
   });
   const employees = employeeData as EmployeeRecord[];
 
-  const form = useForm<z.infer<typeof employeeSchema>>({
+  const form = useForm<EmployeeFormValues>({
     resolver: zodResolver(employeeSchema),
     defaultValues: {
       name: "",
@@ -199,7 +144,7 @@ export default function Employees() {
   }, [form, watchedHourlyRate, watchedPayType]);
 
   const createMutation = useMutation({
-    mutationFn: async (payload: z.infer<typeof employeeSchema>) => {
+    mutationFn: async (payload: EmployeeMutationInput) => {
       const authAccount = await createEmployeeAccount({
         name: payload.name,
         email: payload.email,
@@ -208,6 +153,7 @@ export default function Employees() {
         salary: payload.salary,
         payType: payload.payType,
         hourlyRate: payload.hourlyRate,
+        profilePhotoUrl: payload.profilePhotoUrl ?? undefined,
         department: payload.department,
         status: payload.status === "Active" ? "active" : "inactive",
       });
@@ -222,6 +168,7 @@ export default function Employees() {
         salary: payload.salary,
         payType: payload.payType,
         hourlyRate: payload.hourlyRate,
+        profilePhotoUrl: payload.profilePhotoUrl ?? undefined,
         status: authAccount.user.status === "inactive" ? "Inactive" : "Active",
         employeeId: authAccount.employeeId ?? authAccount.user.employeeId,
       });
@@ -251,7 +198,7 @@ export default function Employees() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: (payload: { id: string } & z.infer<typeof employeeSchema>) => api.updateEmployee(payload as any),
+    mutationFn: (payload: { id: string } & EmployeeMutationInput) => api.updateEmployee(payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["employees"] });
       queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
@@ -272,13 +219,23 @@ export default function Employees() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["employees"] });
       queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
-      toast({ title: "Employee deactivated successfully" });
+      setEmployeeToDelete(null);
+      toast({ title: "Employee deleted successfully" });
+    },
+    onError: (error) => {
+      toast({
+        title: "Could not delete employee",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
     },
   });
 
   function closeDialog() {
     setIsDialogOpen(false);
     setEditingEmployeeId(null);
+    setProfilePhotoUrl(null);
+    setPhotoInputKey((value) => value + 1);
     form.reset({
       name: "",
       email: "",
@@ -294,6 +251,8 @@ export default function Employees() {
 
   function openCreateDialog() {
     setEditingEmployeeId(null);
+    setProfilePhotoUrl(null);
+    setPhotoInputKey((value) => value + 1);
     form.reset({
       name: "",
       email: "",
@@ -310,6 +269,8 @@ export default function Employees() {
 
   function openEditDialog(employee: EmployeeRecord) {
     setEditingEmployeeId(employee.id);
+    setProfilePhotoUrl(employee.profilePhotoUrl ?? null);
+    setPhotoInputKey((value) => value + 1);
     form.reset({
       name: employee.name,
       email: employee.email,
@@ -324,12 +285,13 @@ export default function Employees() {
     setIsDialogOpen(true);
   }
 
-  function handleSubmit(data: z.infer<typeof employeeSchema>) {
+  function handleSubmit(data: EmployeeFormValues) {
     const isHourly = data.payType === "hourly";
     const payload = {
       ...data,
       hourlyRate: isHourly ? Number(data.hourlyRate || 0) : 0,
       salary: isHourly ? Math.round(Number(data.hourlyRate || 0) * HOURS_PER_YEAR) : Number(data.salary || 0),
+      profilePhotoUrl,
     };
 
     if (editingEmployeeId) {
@@ -341,6 +303,42 @@ export default function Employees() {
     }
 
     createMutation.mutate(payload);
+  }
+
+  async function handleProfilePhotoChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    if (!file.type.startsWith("image/")) {
+      toast({
+        title: "Invalid file",
+        description: "Please upload a PNG, JPG, or WEBP image.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (file.size > MAX_PROFILE_PHOTO_SIZE) {
+      toast({
+        title: "Image too large",
+        description: "Please use a profile photo under 1.5 MB.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      setProfilePhotoUrl(dataUrl);
+    } catch (error) {
+      toast({
+        title: "Could not upload image",
+        description: error instanceof Error ? error.message : "Please try another image.",
+        variant: "destructive",
+      });
+    }
   }
 
   const filteredEmployees = employees.filter(
@@ -389,7 +387,7 @@ export default function Employees() {
                 Add Employee
               </Button>
             </DialogTrigger>
-            <DialogContent>
+            <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
               <DialogHeader>
                 <DialogTitle>{editingEmployeeId ? "Edit Employee" : "Add New Employee"}</DialogTitle>
                 <DialogDescription>
@@ -400,6 +398,53 @@ export default function Employees() {
               </DialogHeader>
               <Form {...form}>
                 <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-4">
+                  <div className="rounded-xl border border-border/60 bg-secondary/10 p-4">
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+                      <EmployeeAvatar
+                        name={form.watch("name") || "Employee"}
+                        src={profilePhotoUrl}
+                        className="h-16 w-16"
+                        fallbackClassName="text-sm"
+                      />
+                      <div className="space-y-3">
+                        <div>
+                          <p className="text-sm font-medium text-foreground">Profile Photo</p>
+                          <p className="text-xs text-muted-foreground">
+                            Upload a clear square image for the employee sidebar and profile.
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Input
+                            key={photoInputKey}
+                            type="file"
+                            accept="image/png,image/jpeg,image/webp"
+                            className="max-w-[260px] cursor-pointer"
+                            onChange={(event) => void handleProfilePhotoChange(event)}
+                          />
+                          {profilePhotoUrl ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="rounded-xl"
+                              onClick={() => {
+                                setProfilePhotoUrl(null);
+                                setPhotoInputKey((value) => value + 1);
+                              }}
+                            >
+                              <X className="mr-2 h-4 w-4" />
+                              Remove
+                            </Button>
+                          ) : (
+                            <div className="inline-flex items-center gap-2 rounded-xl border border-border/60 px-3 py-2 text-xs text-muted-foreground">
+                              <ImagePlus className="h-4 w-4" />
+                              Optional
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                   <FormField
                     control={form.control}
                     name="name"
@@ -628,7 +673,11 @@ export default function Employees() {
                   >
                     <TableCell>
                       <div className="flex items-center gap-3">
-                        <EmployeeAvatar name={employee.name} size={36} />
+                        <EmployeeAvatar
+                          name={employee.name}
+                          src={employee.profilePhotoUrl}
+                          className="h-9 w-9"
+                        />
                         <div className="leading-tight">
                           <p className="font-medium text-sm text-foreground">{employee.name}</p>
                           <p className="text-xs text-muted-foreground mt-0.5">{employee.email}</p>
@@ -688,7 +737,7 @@ export default function Employees() {
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             className="cursor-pointer text-destructive focus:text-destructive"
-                            onSelect={() => deleteMutation.mutate(employee.id)}
+                            onSelect={() => setEmployeeToDelete(employee)}
                           >
                             <Trash2 className="w-4 h-4 mr-2" /> Delete
                           </DropdownMenuItem>
@@ -701,6 +750,36 @@ export default function Employees() {
             </TableBody>
           </Table>
         </div>
+
+        <AlertDialog open={Boolean(employeeToDelete)} onOpenChange={(open) => !open && setEmployeeToDelete(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete employee?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {employeeToDelete
+                  ? `${employeeToDelete.name} will be removed from your employee records and their login will stop working immediately.`
+                  : "This employee will be removed from your records and their login will stop working immediately."}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={deleteMutation.isPending}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                disabled={deleteMutation.isPending || !employeeToDelete}
+                onClick={(event) => {
+                  event.preventDefault();
+                  if (!employeeToDelete) {
+                    return;
+                  }
+
+                  deleteMutation.mutate(employeeToDelete.id);
+                }}
+              >
+                {deleteMutation.isPending ? "Deleting..." : "Delete Employee"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </DashboardLayout>
   );

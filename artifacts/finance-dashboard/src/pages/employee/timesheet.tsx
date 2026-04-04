@@ -1,15 +1,30 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addDays, format } from "date-fns";
+import {
+  AlertTriangle,
+  CalendarDays,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  CircleDashed,
+  Copy,
+  Clock3,
+  ClipboardCheck,
+  FilePenLine,
+  Layers3,
+  Plus,
+  Save,
+  X,
+} from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
-import { DashboardCard } from "@/components/dashboard-card";
 import { useAuthStore } from "@/store/auth";
 import { api, type DayKey, type TimesheetEntry, type TimesheetTaskLine } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 
 const DAYS: Array<{ key: DayKey; label: string }> = [
   { key: "mon", label: "Mon" },
@@ -44,6 +59,21 @@ function createLine(): TimesheetTaskLine {
   };
 }
 
+function createDraftEntry(input: {
+  employeeId: string;
+  employeeNameSnapshot: string;
+  weekStart: string;
+}): TimesheetEntry {
+  return {
+    id: `ts_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    employeeId: input.employeeId,
+    employeeNameSnapshot: input.employeeNameSnapshot,
+    weekStart: input.weekStart,
+    status: "draft",
+    lines: [createLine()],
+  };
+}
+
 function lineTotal(line: TimesheetTaskLine) {
   return DAYS.reduce((sum, day) => sum + (line.hours[day.key] ?? 0), 0);
 }
@@ -56,19 +86,55 @@ function entryTotal(entry: TimesheetEntry | null) {
   return entry.lines.reduce((sum, line) => sum + lineTotal(line), 0);
 }
 
-function statusVariant(status: TimesheetEntry["status"]) {
-  if (status === "approved") return "secondary";
-  if (status === "rejected") return "destructive";
-  if (status === "submitted") return "default";
-  return "outline";
+function formatHourValue(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0h";
+  }
+
+  return `${Number(value.toFixed(1)).toString()}h`;
 }
 
-function formatMoney(value: number) {
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: 0,
-  }).format(value);
+function toDateInputValue(weekStart: string) {
+  return format(new Date(weekStart), "yyyy-MM-dd");
+}
+
+function statusLabel(status: TimesheetEntry["status"]) {
+  if (status === "rejected") return "Returned";
+  if (status === "submitted") return "Pending Review";
+  if (status === "approved") return "Approved";
+  return "Draft";
+}
+
+function statusBadgeClass(status: TimesheetEntry["status"]) {
+  if (status === "approved") {
+    return "border-emerald-500/20 bg-emerald-500/8 text-emerald-300";
+  }
+
+  if (status === "submitted") {
+    return "border-sky-500/20 bg-sky-500/8 text-sky-300";
+  }
+
+  if (status === "rejected") {
+    return "border-amber-500/20 bg-amber-500/8 text-amber-300";
+  }
+
+  return "border-border/60 bg-secondary/40 text-muted-foreground";
+}
+
+function hourInputValue(value: number) {
+  return value === 0 ? "" : String(value);
+}
+
+function hasDraftContent(entry: TimesheetEntry | null) {
+  if (!entry) {
+    return false;
+  }
+
+  return entry.lines.some(
+    (line) =>
+      Boolean(line.project.trim() || line.task.trim() || line.notes?.trim()) ||
+      DAYS.some((day) => Number(line.hours[day.key] ?? 0) > 0),
+  );
 }
 
 export default function EmployeeTimesheetPage() {
@@ -76,6 +142,8 @@ export default function EmployeeTimesheetPage() {
   const user = useAuthStore((state) => state.user);
   const [selectedWeek, setSelectedWeek] = useState(() => weekStartIso());
   const [draft, setDraft] = useState<TimesheetEntry | null>(null);
+  const [hoveredRowId, setHoveredRowId] = useState<string | null>(null);
+  const [hoveredDay, setHoveredDay] = useState<DayKey | null>(null);
 
   const { data: employee } = useQuery({
     queryKey: ["employee-profile", user?.id, user?.email],
@@ -89,13 +157,14 @@ export default function EmployeeTimesheetPage() {
         return existing;
       }
 
-      return api.ensureEmployeeProfile({
-        id: user.id,
-        email: user.email,
-        name: user.name ?? user.email.split("@")[0],
-        phone: user.phone,
-        employeeId: user.employeeId,
-        role: user.position,
+        return api.ensureEmployeeProfile({
+          id: user.id,
+          email: user.email,
+          name: user.name ?? user.email.split("@")[0],
+          phone: user.phone,
+          employeeId: user.employeeId,
+          profilePhotoUrl: user.profilePhotoUrl ?? undefined,
+          role: user.position,
         department: user.department,
         salary: user.salary,
         payType: user.payType,
@@ -122,39 +191,68 @@ export default function EmployeeTimesheetPage() {
     hourlyRate?: number;
   };
   const isHourly = String(payrollProfile.payType ?? "").toLowerCase() === "hourly";
-  const hourlyRate = isHourly || typeof payrollProfile.hourlyRate === "number" ? Number(payrollProfile.hourlyRate ?? 0) : 0;
   const draftHours = entryTotal(draft);
-  const estimatedPayout = hourlyRate > 0 ? draftHours * hourlyRate : 0;
 
   const summary = useMemo(() => {
     const pending = timesheets.filter((entry) => entry.status === "submitted").length;
     const approved = timesheets.filter((entry) => entry.status === "approved").length;
-    const totalHours = timesheets.reduce((sum, entry) => sum + entryTotal(entry), 0);
-    return { pending, approved, totalHours };
-  }, [timesheets]);
+    const activeTasks = draft?.lines.filter(
+      (line) =>
+        line.project.trim() ||
+        line.task.trim() ||
+        DAYS.some((day) => Number(line.hours[day.key] ?? 0) > 0),
+    ).length ?? 0;
+
+    return { pending, approved, activeTasks };
+  }, [draft, timesheets]);
+  const stats = [
+    { label: "Weekly Hours", value: formatHourValue(draftHours), icon: Clock3 },
+    { label: "Active Tasks", value: String(summary.activeTasks), icon: Layers3 },
+    { label: "Pending Review", value: String(summary.pending), icon: CircleDashed },
+    { label: "Approved Sheets", value: String(summary.approved), icon: CheckCircle2 },
+  ];
+
+  const weekDates = useMemo(
+    () => DAYS.map((day, index) => ({ ...day, date: addDays(new Date(selectedWeek), index) })),
+    [selectedWeek],
+  );
+
+  const dayTotals = useMemo(
+    () =>
+      weekDates.map((day) => ({
+        ...day,
+        total: draft?.lines.reduce((sum, line) => sum + Number(line.hours[day.key] ?? 0), 0) ?? 0,
+      })),
+    [draft, weekDates],
+  );
+
+  const weekRangeLabel = `${format(new Date(selectedWeek), "dd MMM")} - ${format(addDays(new Date(selectedWeek), 6), "dd MMM yyyy")}`;
+  const isCurrentWeek = sameWeek(selectedWeek, weekStartIso());
 
   useEffect(() => {
-    setDraft(current);
-  }, [current]);
+    if (current) {
+      setDraft(current);
+      return;
+    }
 
-  const createMutation = useMutation({
-    mutationFn: () =>
-      api.createTimesheetDraft({
+    if (!employee?.id && !user?.id) {
+      setDraft(null);
+      return;
+    }
+
+    setDraft(
+      createDraftEntry({
         employeeId: employee?.id ?? user?.id ?? "",
         employeeNameSnapshot: employee?.name ?? user?.name ?? user?.email ?? "Employee",
         weekStart: selectedWeek,
       }),
-    onSuccess: async (entry) => {
-      await queryClient.invalidateQueries({ queryKey: ["employee-timesheets", employee?.id] });
-      setDraft(entry);
-    },
-  });
+    );
+  }, [current, employee?.id, employee?.name, selectedWeek, user?.email, user?.id, user?.name]);
 
   const saveMutation = useMutation({
     mutationFn: (entry: TimesheetEntry) => api.saveTimesheet(entry),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["employee-timesheets", employee?.id] });
-      await queryClient.invalidateQueries({ queryKey: ["timesheet-summary", employee?.id] });
     },
   });
 
@@ -165,115 +263,186 @@ export default function EmployeeTimesheetPage() {
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["employee-timesheets", employee?.id] });
-      await queryClient.invalidateQueries({ queryKey: ["timesheet-summary", employee?.id] });
       await queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
     },
   });
 
-  useEffect(() => {
-    if (!employee?.id || current || createMutation.isPending) {
-      return;
-    }
-
-    void createMutation.mutate();
-  }, [createMutation, current, employee?.id, selectedWeek]);
-
   const readOnly = draft?.status === "submitted" || draft?.status === "approved";
+  const isRejected = draft?.status === "rejected";
+  const canPersistDraft = hasDraftContent(draft);
+
+  function goToWeek(date: Date) {
+    setSelectedWeek(weekStartIso(date));
+  }
+
+  function updateLine(lineId: string, updater: (line: TimesheetTaskLine) => TimesheetTaskLine) {
+    setDraft((currentEntry) =>
+      currentEntry
+        ? {
+            ...currentEntry,
+            lines: currentEntry.lines.map((line) => (line.id === lineId ? updater(line) : line)),
+          }
+        : currentEntry,
+    );
+  }
+
+  function changeHour(lineId: string, day: DayKey, rawValue: string) {
+    const nextValue = rawValue === "" ? 0 : Math.max(0, Math.min(24, Number(rawValue || 0)));
+
+    updateLine(lineId, (line) => ({
+      ...line,
+      hours: {
+        ...line.hours,
+        [day]: nextValue,
+      },
+    }));
+  }
 
   return (
     <DashboardLayout>
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">My Timesheet</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Track work hours with a clean weekly grid and submit when ready.</p>
+      <div className="space-y-8">
+        <div className="space-y-1">
+          <h1 className="text-2xl font-semibold tracking-tight">My Timesheet</h1>
+          <p className="text-sm text-muted-foreground">Track weekly work with a clean, minimal grid.</p>
         </div>
 
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-          <DashboardCard label="This Week" value={`${entryTotal(draft)}h`} />
-          <DashboardCard label="Submitted" value={summary.pending.toString()} />
-          <DashboardCard label="Approved" value={summary.approved.toString()} />
-          <DashboardCard label="Tracked Hours" value={`${summary.totalHours}h`} />
-        </div>
-
-        <Card className="border-border/50">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Payroll Preview</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {hourlyRate > 0 ? (
-              <div className="grid gap-4 sm:grid-cols-3">
-                <div className="rounded-lg border border-border/50 bg-secondary/20 px-4 py-3">
-                  <p className="text-xs text-muted-foreground">Hourly Rate</p>
-                  <p className="mt-1 text-lg font-semibold">{formatMoney(hourlyRate)}</p>
-                </div>
-                <div className="rounded-lg border border-border/50 bg-secondary/20 px-4 py-3">
-                  <p className="text-xs text-muted-foreground">Current Week Hours</p>
-                  <p className="mt-1 text-lg font-semibold">{draftHours}h</p>
-                </div>
-                <div className="rounded-lg border border-border/50 bg-secondary/20 px-4 py-3">
-                  <p className="text-xs text-muted-foreground">Estimated Payout</p>
-                  <p className="mt-1 text-lg font-semibold">{formatMoney(estimatedPayout)}</p>
-                </div>
+        <section className="rounded-2xl border border-border/60 bg-card/80 px-5 py-4 shadow-sm">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div className="space-y-1">
+              <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Week Range</p>
+              <div className="flex items-center gap-3">
+                <p className="text-lg font-medium">{weekRangeLabel}</p>
+                {isCurrentWeek ? (
+                  <Badge className="rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary shadow-none">
+                    This Week
+                  </Badge>
+                ) : null}
+                {draft ? (
+                  <Badge className={cn("rounded-full border px-2.5 py-1 text-[11px] font-medium shadow-none", statusBadgeClass(draft.status))}>
+                    {statusLabel(draft.status)}
+                  </Badge>
+                ) : null}
               </div>
-            ) : (
-              <div className="rounded-lg border border-dashed border-border/60 bg-secondary/10 px-4 py-3 text-sm text-muted-foreground">
-                Set an hourly rate in Admin Employees to preview weekly payroll from logged hours.
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="border-border/50">
-          <CardHeader className="flex flex-row items-center justify-between gap-4">
-            <div>
-              <CardTitle className="text-base">Weekly Ledger</CardTitle>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {format(new Date(selectedWeek), "dd MMM")} - {format(addDays(new Date(selectedWeek), 6), "dd MMM yyyy")}
-              </p>
             </div>
-            <div className="flex items-center gap-2">
-              {draft && (
-                <Badge variant={statusVariant(draft.status)} className="capitalize">
-                  {draft.status}
-                </Badge>
-              )}
-              <Button variant="outline" size="sm" onClick={() => setSelectedWeek(weekStartIso(addDays(new Date(selectedWeek), -7)))}>
-                Previous
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative min-w-[168px]">
+                <CalendarDays className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  type="date"
+                  className="h-9 rounded-xl border-border/60 bg-background pl-9 shadow-none"
+                  value={toDateInputValue(selectedWeek)}
+                  onChange={(event) => {
+                    if (!event.target.value) {
+                      return;
+                    }
+
+                    goToWeek(new Date(`${event.target.value}T12:00:00`));
+                  }}
+                />
+              </div>
+              <Button variant="outline" size="sm" className="rounded-xl border-border/60" onClick={() => goToWeek(addDays(new Date(selectedWeek), -7))}>
+                <ChevronLeft className="mr-2 h-4 w-4" />
+                Previous Week
               </Button>
-              <Button variant="outline" size="sm" onClick={() => setSelectedWeek(weekStartIso())}>
-                Current
+              <Button variant="outline" size="sm" className="rounded-xl border-border/60" disabled={isCurrentWeek} onClick={() => goToWeek(new Date())}>
+                This Week
               </Button>
-              <Button variant="outline" size="sm" onClick={() => setSelectedWeek(weekStartIso(addDays(new Date(selectedWeek), 7)))}>
-                Next
+              <Button variant="outline" size="sm" className="rounded-xl border-border/60" onClick={() => goToWeek(addDays(new Date(selectedWeek), 7))}>
+                Next Week
+                <ChevronRight className="ml-2 h-4 w-4" />
               </Button>
             </div>
+          </div>
+        </section>
+
+        {isRejected && draft?.reviewNotes ? (
+          <div className="flex items-start gap-3 rounded-2xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm shadow-sm">
+            <AlertTriangle className="mt-0.5 h-4 w-4 text-amber-300" />
+            <div className="space-y-1">
+              <p className="font-medium text-foreground">Returned for changes</p>
+              <p className="text-muted-foreground">{draft.reviewNotes}</p>
+            </div>
+          </div>
+        ) : null}
+
+        <Card className="overflow-hidden border-border/60 bg-card/80 shadow-sm">
+          <CardHeader className="border-b border-border/50 pb-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="space-y-1">
+                <CardTitle className="text-base font-medium">Weekly Grid</CardTitle>
+                <CardDescription>Enter hours day by day. Project and task columns stay fixed while you scroll.</CardDescription>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-xl border-border/60"
+                disabled={readOnly}
+                onClick={() =>
+                  setDraft((currentEntry) =>
+                    currentEntry
+                      ? { ...currentEntry, lines: [...currentEntry.lines, createLine()] }
+                      : currentEntry,
+                  )
+                }
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                Add Task
+              </Button>
+            </div>
           </CardHeader>
-          <CardContent className="space-y-4">
+
+          <CardContent className="p-0">
             {!draft ? (
-              <div className="py-10 text-center text-sm text-muted-foreground">Preparing your draft sheet...</div>
+              <div className="py-16 text-center text-sm text-muted-foreground">Preparing your timesheet workspace...</div>
             ) : (
-              <>
-                <Table>
-                  <TableHeader>
-                    <TableRow className="border-border/50">
-                      <TableHead className="w-[180px]">Project</TableHead>
-                      <TableHead className="w-[220px]">Task</TableHead>
-                      {DAYS.map((day) => (
-                        <TableHead key={day.key} className="text-center">
-                          {day.label}
-                        </TableHead>
+              <div className="timesheet-scroll overflow-x-auto">
+                <table className="w-full min-w-[1060px] table-fixed border-separate border-spacing-0">
+                  <thead>
+                    <tr className="bg-secondary/10 text-left text-sm text-muted-foreground">
+                      <th className="sticky left-0 z-30 w-[160px] min-w-[160px] border-b border-r border-border/50 bg-card px-4 py-3 font-medium text-foreground">
+                        Project
+                      </th>
+                      <th className="sticky left-[160px] z-30 w-[220px] min-w-[220px] border-b border-r border-border/50 bg-card px-4 py-3 font-medium text-foreground">
+                        Task
+                      </th>
+                      {weekDates.map((day) => (
+                        <th
+                          key={day.key}
+                          className={cn(
+                            "w-[78px] min-w-[78px] border-b border-r border-border/50 px-2 py-3 text-center font-medium last:border-r-0",
+                            hoveredDay === day.key && "bg-secondary/35 text-foreground",
+                          )}
+                        >
+                          <div className="space-y-1">
+                            <p>{day.label}</p>
+                            <p className="text-[11px] font-normal text-muted-foreground">{format(day.date, "dd MMM")}</p>
+                          </div>
+                        </th>
                       ))}
-                      <TableHead className="text-center">Total</TableHead>
-                      <TableHead className="text-right">Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {draft.lines.map((line) => (
-                      <TableRow key={line.id} className="border-border/50">
-                        <TableCell>
-                          <Input
-                            value={line.project}
-                            disabled={readOnly}
+                      <th className="w-[92px] min-w-[92px] border-b border-r border-border/50 px-2 py-3 text-center font-medium text-foreground">
+                        Total
+                      </th>
+                      <th className="w-[96px] min-w-[96px] border-b border-border/50 px-2 py-3 text-right font-medium text-foreground">
+                        Actions
+                      </th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                      {draft.lines.map((line) => (
+                        <tr
+                          key={line.id}
+                          className={cn(hoveredRowId === line.id && "bg-secondary/8")}
+                          onMouseEnter={() => setHoveredRowId(line.id)}
+                          onMouseLeave={() => setHoveredRowId((currentRow) => (currentRow === line.id ? null : currentRow))}
+                        >
+                        <td className="sticky left-0 z-20 border-b border-r border-border/50 bg-card px-4 py-3 align-top">
+                            <Input
+                              value={line.project}
+                              placeholder="Website revamp"
+                              disabled={readOnly}
+                              className="h-9 rounded-xl border-border/55 bg-background/80 text-sm shadow-none"
                             onChange={(event) =>
                               setDraft((currentEntry) =>
                                 currentEntry
@@ -287,11 +456,13 @@ export default function EmployeeTimesheetPage() {
                               )
                             }
                           />
-                        </TableCell>
-                        <TableCell>
-                          <Input
-                            value={line.task}
-                            disabled={readOnly}
+                        </td>
+                        <td className="sticky left-[160px] z-20 border-b border-r border-border/50 bg-card px-4 py-3 align-top">
+                            <Input
+                              value={line.task}
+                              placeholder="Design QA and revisions"
+                              disabled={readOnly}
+                              className="h-9 rounded-xl border-border/55 bg-background/80 text-sm shadow-none"
                             onChange={(event) =>
                               setDraft((currentEntry) =>
                                 currentEntry
@@ -305,46 +476,40 @@ export default function EmployeeTimesheetPage() {
                               )
                             }
                           />
-                        </TableCell>
-                        {DAYS.map((day) => (
-                          <TableCell key={day.key}>
-                            <Input
-                              type="number"
-                              min={0}
-                              max={24}
-                              step={0.5}
-                              disabled={readOnly}
-                              className="text-center"
-                              value={line.hours[day.key]}
-                              onChange={(event) =>
-                                setDraft((currentEntry) =>
-                                  currentEntry
-                                    ? {
-                                        ...currentEntry,
-                                        lines: currentEntry.lines.map((item) =>
-                                          item.id === line.id
-                                            ? {
-                                                ...item,
-                                                hours: {
-                                                  ...item.hours,
-                                                  [day.key]: Math.max(0, Math.min(24, Number(event.target.value || 0))),
-                                                },
-                                              }
-                                            : item,
-                                        ),
-                                      }
-                                    : currentEntry,
-                                )
-                              }
-                            />
-                          </TableCell>
+                        </td>
+                        {weekDates.map((day) => (
+                          <td
+                            key={day.key}
+                            className={cn(
+                              "border-b border-r border-border/50 px-3 py-3 align-top transition-colors",
+                              hoveredDay === day.key && "bg-secondary/15",
+                              day.key === "sat" || day.key === "sun" ? "bg-secondary/5" : "",
+                            )}
+                            onMouseEnter={() => setHoveredDay(day.key)}
+                            onMouseLeave={() => setHoveredDay((currentDay) => (currentDay === day.key ? null : currentDay))}
+                          >
+                              <Input
+                                type="number"
+                                min={0}
+                                max={24}
+                                step={0.5}
+                                disabled={readOnly}
+                                className="h-9 rounded-xl border-border/55 bg-background/80 px-2 text-center text-sm shadow-none"
+                                placeholder="0"
+                                value={hourInputValue(line.hours[day.key])}
+                                onChange={(event) => changeHour(line.id, day.key, event.target.value)}
+                              />
+                          </td>
                         ))}
-                        <TableCell className="text-center font-medium">{lineTotal(line)}h</TableCell>
-                        <TableCell className="text-right">
+                        <td className="border-b border-r border-border/50 px-3 py-3 text-center align-middle font-medium text-foreground">
+                          {formatHourValue(lineTotal(line))}
+                        </td>
+                        <td className="border-b border-border/50 px-3 py-3 text-right align-middle">
                           <div className="flex justify-end gap-2">
                             <Button
-                              variant="outline"
+                              variant="ghost"
                               size="sm"
+                              className="h-8 rounded-xl px-2 text-muted-foreground hover:bg-secondary/25 hover:text-foreground"
                               disabled={readOnly}
                               onClick={() =>
                                 setDraft((currentEntry) =>
@@ -357,11 +522,12 @@ export default function EmployeeTimesheetPage() {
                                 )
                               }
                             >
-                              Copy
+                              <Copy className="h-3.5 w-3.5" />
                             </Button>
                             <Button
-                              variant="outline"
+                              variant="ghost"
                               size="sm"
+                              className="h-8 rounded-xl px-2 text-muted-foreground hover:bg-secondary/25 hover:text-foreground"
                               disabled={readOnly}
                               onClick={() =>
                                 setDraft((currentEntry) =>
@@ -377,74 +543,137 @@ export default function EmployeeTimesheetPage() {
                                 )
                               }
                             >
-                              Remove
+                              <X className="h-3.5 w-3.5" />
                             </Button>
                           </div>
-                        </TableCell>
-                      </TableRow>
+                        </td>
+                      </tr>
                     ))}
-                  </TableBody>
-                </Table>
 
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <Button
-                    variant="outline"
-                    disabled={readOnly}
-                    onClick={() =>
-                      setDraft((currentEntry) =>
-                        currentEntry
-                          ? { ...currentEntry, lines: [...currentEntry.lines, createLine()] }
-                          : currentEntry,
-                      )
-                    }
-                  >
-                    Add Task Line
-                  </Button>
-                  <div className="flex gap-3">
-                    <Button
-                      variant="outline"
-                      disabled={!draft || readOnly || saveMutation.isPending}
-                      onClick={() => draft && saveMutation.mutate(draft)}
-                    >
-                      Save Draft
-                    </Button>
-                    <Button
-                      disabled={!draft || readOnly || entryTotal(draft) <= 0 || submitMutation.isPending}
-                      onClick={() => draft && submitMutation.mutate(draft)}
-                    >
-                      Submit Timesheet
-                    </Button>
-                  </div>
-                </div>
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="border-border/50">
-          <CardHeader>
-            <CardTitle className="text-base">Recent Weeks</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {timesheets.length === 0 ? (
-              <div className="py-8 text-center text-sm text-muted-foreground">No timesheet history yet.</div>
-            ) : (
-              <div className="space-y-2">
-                {timesheets.slice(0, 6).map((entry) => (
-                  <div key={entry.id} className="flex items-center justify-between rounded-lg border border-border/50 px-4 py-3">
-                    <div>
-                      <p className="font-medium">{format(new Date(entry.weekStart), "dd MMM yyyy")}</p>
-                      <p className="text-xs text-muted-foreground">{entryTotal(entry)}h logged</p>
-                    </div>
-                    <Badge variant={statusVariant(entry.status)} className="capitalize">
-                      {entry.status}
-                    </Badge>
-                  </div>
-                ))}
+                    <tr className="bg-secondary/10">
+                      <td className="sticky left-0 z-10 border-r border-border/50 bg-card px-4 py-4 text-sm font-medium text-foreground">
+                        Day Totals
+                      </td>
+                      <td className="sticky left-[160px] z-10 border-r border-border/50 bg-card px-4 py-4 text-sm text-muted-foreground">
+                        Weekly rollup
+                      </td>
+                      {dayTotals.map((day) => (
+                        <td
+                          key={day.key}
+                          className={cn(
+                            "border-r border-border/50 px-3 py-4 text-center text-sm font-medium text-foreground",
+                            hoveredDay === day.key && "bg-secondary/20",
+                          )}
+                        >
+                          {formatHourValue(day.total)}
+                        </td>
+                      ))}
+                      <td className="border-r border-border/50 px-3 py-4 text-center text-sm font-semibold text-foreground">
+                        {formatHourValue(draftHours)}
+                      </td>
+                      <td className="px-3 py-4" />
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             )}
           </CardContent>
         </Card>
+
+        <div className="flex items-center justify-end gap-3">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-9 rounded-xl px-4 text-muted-foreground hover:bg-secondary/20 hover:text-foreground"
+            disabled={!draft || !canPersistDraft || readOnly || saveMutation.isPending}
+            onClick={() => draft && saveMutation.mutate(draft)}
+          >
+            <Save className="mr-2 h-4 w-4" />
+            Save Draft
+          </Button>
+          <Button
+            size="sm"
+            className="h-9 rounded-xl border border-sky-400/20 bg-sky-500 text-white shadow-sm hover:bg-sky-500/90"
+            disabled={!draft || readOnly || draftHours <= 0 || submitMutation.isPending}
+            onClick={() => draft && submitMutation.mutate(draft)}
+          >
+            {isRejected ? (
+              <>
+                <FilePenLine className="mr-2 h-4 w-4" />
+                Submit for Review
+              </>
+            ) : (
+              <>
+                <ClipboardCheck className="mr-2 h-4 w-4" />
+                Submit for Review
+              </>
+            )}
+          </Button>
+        </div>
+
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_280px]">
+          <Card className="border-border/60 bg-card/80 shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-base font-medium">Recent Weeks</CardTitle>
+              <CardDescription>Previous entries with quiet status markers and quick navigation.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-0">
+              {timesheets.length === 0 ? (
+                <div className="py-8 text-center text-sm text-muted-foreground">No timesheet history yet.</div>
+              ) : (
+                timesheets.slice(0, 6).map((entry, index) => (
+                  <button
+                    key={entry.id}
+                    onClick={() => setSelectedWeek(entry.weekStart)}
+                    className={cn(
+                      "flex w-full items-center justify-between gap-4 px-4 py-3 text-left transition-colors hover:bg-secondary/15",
+                      sameWeek(entry.weekStart, weekStartIso()) && "bg-primary/5",
+                      index !== 0 && "border-t border-border/40",
+                    )}
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-medium text-foreground">
+                          {format(new Date(entry.weekStart), "dd MMM")} - {format(addDays(new Date(entry.weekStart), 6), "dd MMM yyyy")}
+                        </p>
+                        {sameWeek(entry.weekStart, weekStartIso()) ? (
+                          <Badge className="rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary shadow-none">
+                            This Week
+                          </Badge>
+                        ) : null}
+                      </div>
+                      <p className="text-xs text-muted-foreground">{formatHourValue(entryTotal(entry))} logged</p>
+                    </div>
+                    <Badge className={cn("rounded-full border px-2.5 py-1 text-[11px] font-medium shadow-none", statusBadgeClass(entry.status))}>
+                      {statusLabel(entry.status)}
+                    </Badge>
+                  </button>
+                ))
+              )}
+            </CardContent>
+          </Card>
+
+          <aside className="space-y-3 self-start">
+            <div className="space-y-1 px-1">
+              <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Week Snapshot</p>
+              <p className="text-sm text-muted-foreground">A compact summary tucked beside your recent entries.</p>
+            </div>
+
+            {stats.map((stat) => (
+              <Card key={stat.label} className="border-border/60 bg-card/80 shadow-sm">
+                <CardContent className="flex items-center gap-3 p-4">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border/60 bg-secondary/30 text-muted-foreground">
+                    <stat.icon className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0 space-y-1">
+                    <p className="text-xl font-semibold tracking-tight text-foreground">{stat.value}</p>
+                    <p className="text-sm text-muted-foreground">{stat.label}</p>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </aside>
+        </div>
       </div>
     </DashboardLayout>
   );

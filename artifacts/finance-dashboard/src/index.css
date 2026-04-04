@@ -170,3 +170,25 @@
     @apply font-sans antialiased bg-background text-foreground;
   }
 }
+
+@layer utilities {
+  .timesheet-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+
+  .timesheet-scroll::-webkit-scrollbar {
+    height: 8px;
+  }
+
+  .timesheet-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .timesheet-scroll::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--border));
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+}

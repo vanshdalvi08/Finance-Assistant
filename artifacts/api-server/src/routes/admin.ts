@@ -11,6 +11,7 @@ const createEmployeeSchema = z.object({
   phone: z.string().trim().min(7),
   position: z.string().trim().min(2),
   salary: z.coerce.number().min(0),
+  profilePhotoUrl: z.string().trim().max(2_500_000).nullable().optional(),
   department: z.string().trim().min(2).optional(),
   status: z.enum(["active", "inactive"]).optional(),
 });

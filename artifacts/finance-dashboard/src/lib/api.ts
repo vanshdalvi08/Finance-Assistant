@@ -10,6 +10,7 @@ export interface Employee {
   email: string;
   phone?: string;
   employeeId?: string;
+  profilePhotoUrl?: string | null;
   role: string;
   department: string;
   salary: number;
@@ -136,6 +137,7 @@ interface AddEmployeeInput {
   email: string;
   phone?: string;
   employeeId?: string;
+  profilePhotoUrl?: string | null;
   role: string;
   department: string;
   salary: number;
@@ -163,7 +165,7 @@ interface AddExpenseInput {
   reviewerNote?: string;
 }
 
-const STORAGE_KEY = "finance-dashboard-store-v1";
+const STORAGE_KEY = "finance-dashboard-store-v2";
 
 const DEFAULT_CATEGORIES: ExpenseCategory[] = [
   { id: "oc1", name: "Software", color: "#6366f1", group: "office" },
@@ -215,6 +217,7 @@ function toLocalEmployee(account: AuthUser, existing?: Employee): Employee {
     email: account.email.trim().toLowerCase(),
     phone: account.phone?.trim() || existing?.phone || "",
     employeeId: account.employeeId?.trim() || existing?.employeeId || undefined,
+    profilePhotoUrl: account.profilePhotoUrl ?? existing?.profilePhotoUrl ?? null,
     role: account.position?.trim() || existing?.role || "Operations Associate",
     department: account.department?.trim() || existing?.department || "Operations",
     salary: Math.max(0, Number(account.salary ?? existing?.salary ?? 0)),
@@ -349,6 +352,7 @@ function normalizeStore(value?: Partial<FinanceStore>): FinanceStore {
               email: employee.email || sanitizeEmail(employee.name),
               phone: employee.phone ?? "",
               employeeId: employee.employeeId ?? undefined,
+              profilePhotoUrl: employee.profilePhotoUrl ?? null,
               payType,
               hourlyRate: payType === "hourly" ? Math.abs(employee.hourlyRate ?? 0) : 0,
               status: normalizeEmployeeStatus(employee.status),
@@ -608,6 +612,14 @@ function sumTimesheetHours(entry: TimesheetEntry): number {
   );
 }
 
+function hasTimesheetContent(entry: TimesheetEntry): boolean {
+  return entry.lines.some((line) => {
+    const hasText = Boolean(line.project.trim() || line.task.trim() || line.notes?.trim());
+    const hasHours = DAYS.some((day) => Number(line.hours[day] ?? 0) > 0);
+    return hasText || hasHours;
+  });
+}
+
 export const api = {
   getEmployees: async () => readStore().employees,
   syncEmployeeAccounts: async (accounts: AuthUser[]) => {
@@ -627,6 +639,7 @@ export const api = {
     name: string;
     phone?: string;
     employeeId?: string;
+    profilePhotoUrl?: string;
     role?: string;
     department?: string;
     salary?: number;
@@ -640,11 +653,12 @@ export const api = {
         return syncRemoteEmployees(store, [
           {
             id: input.id,
-            email: input.email,
-            name: input.name,
-            phone: input.phone,
-            employeeId: input.employeeId,
-            position: input.role,
+              email: input.email,
+              name: input.name,
+              phone: input.phone,
+              employeeId: input.employeeId,
+              profilePhotoUrl: input.profilePhotoUrl,
+              position: input.role,
             department: input.department,
             salary: input.salary,
             payType: input.payType,
@@ -669,6 +683,7 @@ export const api = {
               email: input.email,
               phone: input.phone?.trim() ?? "",
               employeeId: input.employeeId?.trim() || undefined,
+              profilePhotoUrl: input.profilePhotoUrl?.trim() || null,
               role: input.role ?? "Operations Associate",
               department: input.department ?? "Operations",
               salary: Math.max(0, Number(input.salary ?? 420000)),
@@ -689,6 +704,7 @@ export const api = {
           name: input.name,
           phone: input.phone,
           employeeId: input.employeeId,
+          profilePhotoUrl: input.profilePhotoUrl,
           position: input.role,
           department: input.department,
           salary: input.salary,
@@ -785,6 +801,7 @@ export const api = {
       email: data.email.trim().toLowerCase(),
       phone: data.phone?.trim() ?? "",
       employeeId,
+      profilePhotoUrl: data.profilePhotoUrl?.trim() || current?.profilePhotoUrl || null,
       role: data.role.trim(),
       department: data.department,
       salary: data.salary,
@@ -827,6 +844,7 @@ export const api = {
       email: data.email.trim().toLowerCase(),
       phone: data.phone?.trim() ?? "",
       employeeId: data.employeeId?.trim() || existing?.employeeId || undefined,
+      profilePhotoUrl: data.profilePhotoUrl?.trim() || existing?.profilePhotoUrl || null,
       role: data.role.trim(),
       department: data.department,
       salary: data.salary,
@@ -842,10 +860,11 @@ export const api = {
         email: employee.email,
         phone: employee.phone ?? "",
         position: employee.role,
-        salary: employee.salary,
-        payType: employee.payType,
-        hourlyRate: employee.hourlyRate,
-        department: employee.department,
+          salary: employee.salary,
+          payType: employee.payType,
+          hourlyRate: employee.hourlyRate,
+          profilePhotoUrl: employee.profilePhotoUrl ?? undefined,
+          department: employee.department,
         status: employee.status === "Active" ? "active" : "inactive",
       });
     } catch (error) {
@@ -882,7 +901,13 @@ export const api = {
     try {
       const result = await deactivateEmployeeAccount(id);
       if (result?.user) {
-        updateStore((store) => syncRemoteEmployees(store, [result.user]));
+        updateStore((store) => ({
+          ...store,
+          employees: store.employees.filter((employee) => employee.id !== id),
+          salaries: store.salaries.filter((salary) => salary.employeeId !== id),
+          expenses: store.expenses.filter((expense) => expense.employeeId !== id),
+          timesheets: store.timesheets.filter((entry) => entry.employeeId !== id),
+        }));
         return;
       }
     } catch (error) {
@@ -893,9 +918,10 @@ export const api = {
 
     updateStore((store) => ({
       ...store,
-      employees: store.employees.map((employee) =>
-        employee.id === id ? { ...employee, status: "Inactive" } : employee,
-      ),
+      employees: store.employees.filter((employee) => employee.id !== id),
+      salaries: store.salaries.filter((salary) => salary.employeeId !== id),
+      expenses: store.expenses.filter((expense) => expense.employeeId !== id),
+      timesheets: store.timesheets.filter((entry) => entry.employeeId !== id),
     }));
   },
   addFund: async (data: AddFundInput) => {
@@ -1055,7 +1081,9 @@ export const api = {
     }));
   },
   getTimesheets: async (scope?: { employeeId?: string }) => {
-    const entries = [...readStore().timesheets].sort(
+    const entries = readStore().timesheets
+      .filter((entry) => entry.status !== "draft" || hasTimesheetContent(entry))
+      .sort(
       (left, right) => new Date(right.weekStart).getTime() - new Date(left.weekStart).getTime(),
     );
 
@@ -1120,8 +1148,17 @@ export const api = {
         ...line,
         notes: line.notes ?? "",
         hours: { ...blankHours(), ...line.hours },
-      })),
+        })),
     };
+
+    if (normalized.status === "draft" && !hasTimesheetContent(normalized)) {
+      updateStore((store) => ({
+        ...store,
+        timesheets: store.timesheets.filter((item) => item.id !== normalized.id),
+      }));
+
+      return normalized;
+    }
 
     updateStore((store) => ({
       ...store,
@@ -1137,7 +1174,14 @@ export const api = {
       ...store,
       timesheets: store.timesheets.map((entry) =>
         entry.id === id
-          ? { ...entry, status: "submitted", submittedAt: new Date().toISOString() }
+          ? {
+              ...entry,
+              status: "submitted",
+              submittedAt: new Date().toISOString(),
+              reviewedAt: undefined,
+              reviewedBy: undefined,
+              reviewNotes: undefined,
+            }
           : entry,
       ),
     }));

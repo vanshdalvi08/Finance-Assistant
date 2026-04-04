@@ -52,6 +52,7 @@ function AuthDataBootstrap() {
           id: currentUser.id,
           email: currentUser.email,
           name: currentUser.name ?? currentUser.email.split("@")[0],
+          profilePhotoUrl: currentUser.profilePhotoUrl ?? undefined,
           role: currentUser.position,
           department: currentUser.department,
         });
@@ -73,6 +74,7 @@ function AuthDataBootstrap() {
     user?.id,
     user?.email,
     user?.name,
+    user?.profilePhotoUrl,
     user?.position,
     user?.department,
     queryClient,

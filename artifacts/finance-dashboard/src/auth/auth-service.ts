@@ -73,6 +73,7 @@ export async function createEmployeeAccount(payload: CreateEmployeeAccountPayloa
       phone: payload.phone.trim(),
       position: payload.position.trim(),
       salary: payload.salary,
+      profilePhotoUrl: payload.profilePhotoUrl === undefined ? undefined : payload.profilePhotoUrl,
       department: payload.department?.trim() || undefined,
       status: payload.status ?? "active",
     },
@@ -88,6 +89,7 @@ export async function updateEmployeeAccount(payload: UpdateEmployeeAccountPayloa
       phone: payload.phone.trim(),
       position: payload.position.trim(),
       salary: payload.salary,
+      profilePhotoUrl: payload.profilePhotoUrl === undefined ? undefined : payload.profilePhotoUrl,
       department: payload.department?.trim() || undefined,
       status: payload.status ?? "active",
     },
@@ -113,6 +115,7 @@ export async function updateCurrentUserProfile(payload: UpdateCurrentUserProfile
       phone: payload.phone.trim(),
       position: payload.position?.trim() || undefined,
       department: payload.department?.trim() || undefined,
+      profilePhotoUrl: payload.profilePhotoUrl === undefined ? undefined : payload.profilePhotoUrl,
     },
   });
 }

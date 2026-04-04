@@ -11,7 +11,6 @@ export const routes = {
   adminTimesheetValidation: "/admin/timesheets",
   adminReports: "/admin/reports",
   employeeTimesheet: "/employee/timesheet",
-  employeeExpenses: "/employee/expenses",
   employeeSalarySlips: "/employee/salary-slips",
   employeeProfile: "/employee/profile",
 } as const;

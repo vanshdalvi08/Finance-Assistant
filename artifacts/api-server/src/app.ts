@@ -7,6 +7,7 @@ import { logger } from "./lib/logger";
 import { getApiOriginCandidates } from "./lib/env";
 
 const app: Express = express();
+const REQUEST_BODY_LIMIT = "4mb";
 
 app.use(
   pinoHttp({
@@ -34,12 +35,24 @@ app.use(
   }),
 );
 app.use(cookieParser());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: REQUEST_BODY_LIMIT }));
+app.use(express.urlencoded({ extended: true, limit: REQUEST_BODY_LIMIT }));
 
 app.use("/api", router);
 
 app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "type" in error &&
+    (error as { type?: string }).type === "entity.too.large"
+  ) {
+    response.status(413).json({
+      message: "Uploaded file is too large. Please use an image under 4 MB.",
+    });
+    return;
+  }
+
   logger.error({ err: error }, "Unhandled error");
   response.status(500).json({
     message: error instanceof Error ? error.message : "Internal server error",

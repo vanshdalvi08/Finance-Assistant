@@ -17,6 +17,7 @@ export interface PublicUser {
   position: string | null;
   department: string | null;
   salary: number;
+  profilePhotoUrl: string | null;
   status: "active" | "inactive";
   createdAt: Date;
   updatedAt: Date;
@@ -35,6 +36,7 @@ export interface CreateEmployeeInput {
   phone: string;
   position: string;
   salary: number;
+  profilePhotoUrl?: string | null;
   department?: string | null;
   status?: "active" | "inactive";
 }
@@ -46,6 +48,7 @@ export interface UpdateEmployeeInput {
   phone: string;
   position: string;
   salary: number;
+  profilePhotoUrl?: string | null;
   department?: string | null;
   status?: "active" | "inactive";
 }
@@ -56,6 +59,7 @@ export interface UpdateOwnProfileInput {
   phone: string;
   position?: string | null;
   department?: string | null;
+  profilePhotoUrl?: string | null;
 }
 
 function normalizeEmail(email: string): string {
@@ -77,6 +81,7 @@ function publicUser(user: User): PublicUser {
     position: user.position ?? null,
     department: user.department ?? null,
     salary: user.salary,
+    profilePhotoUrl: user.profilePhotoUrl ?? null,
     status: user.status,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
@@ -260,6 +265,7 @@ export async function createEmployeeAccount(input: CreateEmployeeInput): Promise
         position: input.position.trim(),
         department: input.department?.trim() || null,
         salary: Math.max(0, Math.round(input.salary)),
+        profilePhotoUrl: input.profilePhotoUrl?.trim() || null,
         hashedPassword,
         status: input.status ?? "active",
         createdAt: now,
@@ -309,6 +315,11 @@ export async function updateEmployeeAccount(input: UpdateEmployeeInput): Promise
   const email = normalizeEmail(input.email);
   const phone = normalizePhone(input.phone);
   const now = new Date();
+  const existing = await findUserById(id);
+
+  if (!existing || existing.role !== "employee") {
+    throw new Error("Employee not found");
+  }
 
   let rows: User[];
   try {
@@ -321,6 +332,10 @@ export async function updateEmployeeAccount(input: UpdateEmployeeInput): Promise
         position: input.position.trim(),
         department: input.department?.trim() || null,
         salary: Math.max(0, Math.round(input.salary)),
+        profilePhotoUrl:
+          input.profilePhotoUrl === undefined
+            ? existing.profilePhotoUrl ?? null
+            : input.profilePhotoUrl?.trim() || null,
         status: input.status ?? "active",
         updatedAt: now,
       })
@@ -343,13 +358,8 @@ export async function updateEmployeeAccount(input: UpdateEmployeeInput): Promise
 }
 
 export async function deactivateEmployeeAccount(id: string): Promise<{ user: PublicUser }> {
-  const now = new Date();
   const rows = await db
-    .update(usersTable)
-    .set({
-      status: "inactive",
-      updatedAt: now,
-    })
+    .delete(usersTable)
     .where(and(eq(usersTable.id, id.trim()), eq(usersTable.role, "employee")))
     .returning();
 
@@ -357,8 +367,6 @@ export async function deactivateEmployeeAccount(id: string): Promise<{ user: Pub
   if (!user) {
     throw new Error("Employee not found");
   }
-
-  await revokeAllSessions(user.id);
 
   return { user: publicUser(user) };
 }
@@ -391,6 +399,10 @@ export async function updateOwnProfile(userId: string, input: UpdateOwnProfileIn
         phone: normalizePhone(input.phone),
         position: input.position?.trim() || existing.position,
         department: input.department?.trim() || existing.department,
+        profilePhotoUrl:
+          input.profilePhotoUrl === undefined
+            ? existing.profilePhotoUrl ?? null
+            : input.profilePhotoUrl?.trim() || null,
         updatedAt: now,
       })
       .where(eq(usersTable.id, existing.id))
@@ -503,6 +515,7 @@ export async function ensureInitialAdmin(): Promise<void> {
     position: optionalEnv("ADMIN_POSITION")?.trim() || "Administrator",
     department: optionalEnv("ADMIN_DEPARTMENT")?.trim() || "Operations",
     salary: 0,
+    profilePhotoUrl: null,
     hashedPassword,
     status: "active",
     createdAt: now,

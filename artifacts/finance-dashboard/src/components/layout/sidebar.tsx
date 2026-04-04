@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { useUIStore } from "@/store/ui";
 import { useAuthStore } from "@/store/auth";
 import { useToast } from "@/hooks/use-toast";
+import { EmployeeAvatar } from "@/components/employee-avatar";
 
 const adminNavItems = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
@@ -33,7 +34,6 @@ const adminNavItems = [
 
 const employeeNavItems = [
   { href: "/employee/timesheet", label: "My Timesheet", icon: Clock3 },
-  { href: "/employee/expenses", label: "My Expenses", icon: Receipt },
   { href: "/employee/salary-slips", label: "Salary Slips", icon: CreditCard },
   { href: "/employee/profile", label: "Profile", icon: UserRound },
 ];
@@ -50,7 +50,7 @@ function getInitials(email: string): string {
 export function Sidebar() {
   const [location, setLocation] = useLocation();
   const { sidebarCollapsed, toggleSidebar } = useUIStore();
-  const { userEmail, logout, role } = useAuthStore();
+  const { user, userEmail, logout, role } = useAuthStore();
   const { toast } = useToast();
   const navItems = role === "employee" ? employeeNavItems : adminNavItems;
 
@@ -117,12 +117,18 @@ export function Sidebar() {
 
       <div className="p-3 border-t border-sidebar-border">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-full bg-primary/20 border border-primary/30 flex items-center justify-center shrink-0">
-            <span className="text-xs font-semibold text-primary">{initials}</span>
-          </div>
+          <EmployeeAvatar
+            name={user?.name ?? userEmail ?? initials}
+            src={user?.profilePhotoUrl}
+            className="h-8 w-8 shrink-0 border-primary/20"
+            fallbackClassName="bg-primary/20 text-primary"
+          />
           {!sidebarCollapsed && (
             <div className="flex flex-col flex-1 min-w-0">
-              <span className="text-xs font-medium text-sidebar-foreground leading-none truncate">{userEmail}</span>
+              <span className="text-xs font-medium text-sidebar-foreground leading-none truncate">
+                {user?.name ?? userEmail}
+              </span>
+              <span className="mt-1 text-[11px] text-muted-foreground truncate">{userEmail}</span>
             </div>
           )}
           <button

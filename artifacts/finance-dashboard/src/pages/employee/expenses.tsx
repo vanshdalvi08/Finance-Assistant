@@ -54,13 +54,14 @@ export default function EmployeeExpensesPage() {
         return existing;
       }
 
-      return api.ensureEmployeeProfile({
-        id: user.id,
-        email: user.email,
-        name: user.name ?? user.email.split("@")[0],
-        phone: user.phone,
-        employeeId: user.employeeId,
-        role: user.position,
+        return api.ensureEmployeeProfile({
+          id: user.id,
+          email: user.email,
+          name: user.name ?? user.email.split("@")[0],
+          phone: user.phone,
+          employeeId: user.employeeId,
+          profilePhotoUrl: user.profilePhotoUrl ?? undefined,
+          role: user.position,
         department: user.department,
         salary: user.salary,
         payType: user.payType,

@@ -26,6 +26,7 @@ const updateProfileSchema = z.object({
   phone: z.string().trim().min(7),
   position: z.string().trim().min(2).optional(),
   department: z.string().trim().min(2).optional(),
+  profilePhotoUrl: z.string().trim().max(2_500_000).nullable().optional(),
 });
 
 router.post("/login", async (request, response) => {
