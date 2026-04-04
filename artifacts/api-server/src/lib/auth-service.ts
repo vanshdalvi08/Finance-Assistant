@@ -6,6 +6,7 @@ import { generateRandomToken, generateTemporaryPassword, hashPassword, hashSha25
 import { ACCESS_TOKEN_TTL, REFRESH_TOKEN_TTL, signAccessToken, signRefreshToken, verifyRefreshToken } from "./jwt";
 import { sendMail } from "./mailer";
 import { onboardingEmailTemplate, passwordResetEmailTemplate } from "./email-templates";
+import { uploadProfilePhotoDataUrl } from "./storage";
 
 export interface PublicUser {
   id: string;
@@ -68,6 +69,24 @@ function normalizeEmail(email: string): string {
 
 function normalizePhone(phone: string): string {
   return phone.trim();
+}
+
+async function resolveProfilePhotoUrl(profilePhotoUrl: string | null | undefined, storageDirectory: string) {
+  const value = profilePhotoUrl?.trim();
+  if (!value) {
+    return null;
+  }
+
+  if (!value.startsWith("data:")) {
+    return value;
+  }
+
+  const uploaded = await uploadProfilePhotoDataUrl({
+    dataUrl: value,
+    fileName: "profile-photo.png",
+    actorId: storageDirectory,
+  });
+  return uploaded.url ?? value;
 }
 
 function publicUser(user: User): PublicUser {
@@ -251,6 +270,7 @@ export async function createEmployeeAccount(input: CreateEmployeeInput): Promise
   const employeeId = await getNextEmployeeId();
   const hashedPassword = await hashPassword(temporaryPassword);
   const now = new Date();
+  const profilePhotoUrl = await resolveProfilePhotoUrl(input.profilePhotoUrl, `employees/${employeeId}`);
 
   let user: User;
   try {
@@ -265,7 +285,7 @@ export async function createEmployeeAccount(input: CreateEmployeeInput): Promise
         position: input.position.trim(),
         department: input.department?.trim() || null,
         salary: Math.max(0, Math.round(input.salary)),
-        profilePhotoUrl: input.profilePhotoUrl?.trim() || null,
+        profilePhotoUrl,
         hashedPassword,
         status: input.status ?? "active",
         createdAt: now,
@@ -323,6 +343,11 @@ export async function updateEmployeeAccount(input: UpdateEmployeeInput): Promise
 
   let rows: User[];
   try {
+    const profilePhotoUrl =
+      input.profilePhotoUrl === undefined
+        ? existing.profilePhotoUrl ?? null
+        : await resolveProfilePhotoUrl(input.profilePhotoUrl, `employees/${existing.employeeId ?? existing.id}`);
+
     rows = await db
       .update(usersTable)
       .set({
@@ -332,10 +357,7 @@ export async function updateEmployeeAccount(input: UpdateEmployeeInput): Promise
         position: input.position.trim(),
         department: input.department?.trim() || null,
         salary: Math.max(0, Math.round(input.salary)),
-        profilePhotoUrl:
-          input.profilePhotoUrl === undefined
-            ? existing.profilePhotoUrl ?? null
-            : input.profilePhotoUrl?.trim() || null,
+        profilePhotoUrl,
         status: input.status ?? "active",
         updatedAt: now,
       })
@@ -391,6 +413,11 @@ export async function updateOwnProfile(userId: string, input: UpdateOwnProfileIn
 
   let rows: User[];
   try {
+    const profilePhotoUrl =
+      input.profilePhotoUrl === undefined
+        ? existing.profilePhotoUrl ?? null
+        : await resolveProfilePhotoUrl(input.profilePhotoUrl, `employees/${existing.employeeId ?? existing.id}`);
+
     rows = await db
       .update(usersTable)
       .set({
@@ -399,10 +426,7 @@ export async function updateOwnProfile(userId: string, input: UpdateOwnProfileIn
         phone: normalizePhone(input.phone),
         position: input.position?.trim() || existing.position,
         department: input.department?.trim() || existing.department,
-        profilePhotoUrl:
-          input.profilePhotoUrl === undefined
-            ? existing.profilePhotoUrl ?? null
-            : input.profilePhotoUrl?.trim() || null,
+        profilePhotoUrl,
         updatedAt: now,
       })
       .where(eq(usersTable.id, existing.id))

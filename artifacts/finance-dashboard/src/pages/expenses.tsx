@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ChangeEvent } from "react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { api, Expense, ExpenseCategory } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -15,6 +15,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
+import { uploadExpenseAttachment } from "@/lib/uploads";
 import {
   Receipt, Plus, ArrowUpRight, Upload, SlidersHorizontal, X, Home, Building2, Check, Ban
 } from "lucide-react";
@@ -29,10 +30,12 @@ import { cn } from "@/lib/utils";
 const expenseSchema = z.object({
   group: z.enum(["personal", "office"]),
   category: z.string().min(1, "Category is required"),
+  project: z.string().optional(),
   amount: z.coerce.number().min(1, "Amount must be positive"),
   date: z.string().min(1, "Date is required"),
   description: z.string().min(2, "Description is required"),
   note: z.string().optional(),
+  attachmentName: z.string().optional(),
 });
 
 type ExpenseForm = z.infer<typeof expenseSchema>;
@@ -214,11 +217,26 @@ function ExpenseTable({
                           </div>
                           <div>
                             <div>{e.description}</div>
+                            {e.project ? (
+                              <div className="text-xs font-normal text-muted-foreground mt-0.5">
+                                Project: {e.project}
+                              </div>
+                            ) : null}
                             {e.employeeNameSnapshot && (
                               <div className="text-xs font-normal text-muted-foreground mt-0.5">
                                 {e.employeeNameSnapshot}
                               </div>
                             )}
+                            {e.attachmentUrl ? (
+                              <a
+                                href={e.attachmentUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-xs font-normal text-primary hover:underline mt-0.5 inline-block"
+                              >
+                                {e.attachmentName || "Open attachment"}
+                              </a>
+                            ) : null}
                           </div>
                         </div>
                       </TableCell>
@@ -300,6 +318,8 @@ export default function Expenses() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<"personal" | "office">("office");
   const [fileSelected, setFileSelected] = useState<string>("");
+  const [attachmentPath, setAttachmentPath] = useState<string>("");
+  const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
 
   const { data: expenses = [] } = useQuery({
     queryKey: ["expenses"],
@@ -315,17 +335,23 @@ export default function Expenses() {
     defaultValues: {
       group: "office",
       category: "",
+      project: "",
       amount: 0,
       date: new Date().toISOString().split("T")[0],
       description: "",
       note: "",
+      attachmentName: "",
     },
   });
 
   const watchGroup = form.watch("group");
 
   const addMutation = useMutation({
-    mutationFn: async ({ note: _note, ...data }: ExpenseForm) => api.addExpense(data),
+    mutationFn: async ({ note: _note, ...data }: ExpenseForm) =>
+      api.addExpense({
+        ...data,
+        attachmentPath: attachmentPath.trim() || undefined,
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["expenses"] });
       queryClient.invalidateQueries({ queryKey: ["transactions"] });
@@ -335,9 +361,41 @@ export default function Expenses() {
       toast({ title: "Expense logged", description: "Expense recorded successfully." });
       setIsDialogOpen(false);
       setFileSelected("");
+      setAttachmentPath("");
+      setIsUploadingAttachment(false);
       form.reset();
     },
   });
+
+  async function handleAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    try {
+      setIsUploadingAttachment(true);
+      const uploaded = await uploadExpenseAttachment(file);
+      form.setValue("attachmentName", uploaded.fileName, {
+        shouldDirty: true,
+        shouldValidate: true,
+      });
+      setAttachmentPath(uploaded.path ?? "");
+      setFileSelected(uploaded.fileName);
+    } catch (error) {
+      toast({
+        title: "Could not upload attachment",
+        description: error instanceof Error ? error.message : "Please try another file.",
+        variant: "destructive",
+      });
+      form.setValue("attachmentName", "", { shouldDirty: true, shouldValidate: true });
+      setAttachmentPath("");
+      setFileSelected("");
+    } finally {
+      setIsUploadingAttachment(false);
+      event.target.value = "";
+    }
+  }
   const reviewMutation = useMutation({
     mutationFn: ({ id, status }: { id: string; status: "approved" | "rejected" }) =>
       api.updateExpenseStatus(id, status),
@@ -489,6 +547,22 @@ export default function Expenses() {
 
                   <FormField
                     control={form.control}
+                    name="project"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>
+                          Project <span className="text-muted-foreground font-normal">(optional)</span>
+                        </FormLabel>
+                        <FormControl>
+                          <Input placeholder="e.g. Client Website Retainer" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
                     name="date"
                     render={({ field }) => (
                       <FormItem>
@@ -530,17 +604,17 @@ export default function Expenses() {
                     <label className="flex flex-col items-center gap-2 border border-dashed border-border rounded-lg py-4 px-3 cursor-pointer hover:bg-secondary/20 transition-colors">
                       <Upload className="w-5 h-5 text-muted-foreground" />
                       <span className="text-xs text-muted-foreground">
-                        {fileSelected
-                          ? fileSelected
-                          : "Click to upload receipt or invoice"}
+                        {isUploadingAttachment
+                          ? "Uploading to secure storage..."
+                          : fileSelected
+                            ? fileSelected
+                            : "Click to upload receipt or invoice"}
                       </span>
                       <input
                         type="file"
                         accept="image/*,.pdf"
                         className="hidden"
-                        onChange={(e) =>
-                          setFileSelected(e.target.files?.[0]?.name ?? "")
-                        }
+                        onChange={(e) => void handleAttachmentChange(e)}
                       />
                     </label>
                   </div>
@@ -548,7 +622,7 @@ export default function Expenses() {
                   <Button
                     type="submit"
                     className="w-full"
-                    disabled={addMutation.isPending}
+                    disabled={addMutation.isPending || isUploadingAttachment}
                   >
                     Save Expense
                   </Button>

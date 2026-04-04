@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ChangeEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import {
@@ -26,6 +26,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { formatCurrency } from "@/lib/utils";
 import { yojakData, type ApprovalStatus, type ExpenseKind, type ExpenseRecord } from "@/lib/yojak-data";
 import { useToast } from "@/hooks/use-toast";
+import { uploadExpenseAttachment } from "@/lib/uploads";
 
 type ExpenseFormState = {
   employeeId: string;
@@ -73,6 +74,8 @@ export default function AdminExpensesPage() {
   const [reviewing, setReviewing] = useState<ExpenseRecord | null>(null);
   const [reviewNote, setReviewNote] = useState("");
   const [form, setForm] = useState<ExpenseFormState>(emptyForm());
+  const [attachmentLabel, setAttachmentLabel] = useState("");
+  const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
   const [kindFilter, setKindFilter] = useState<"all" | ExpenseKind>("all");
   const [statusFilter, setStatusFilter] = useState<"all" | ApprovalStatus>("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
@@ -134,12 +137,42 @@ export default function AdminExpensesPage() {
       await queryClient.invalidateQueries({ queryKey: ["yojak-expense-breakdown"] });
       setFormOpen(false);
       setForm(emptyForm());
+      setAttachmentLabel("");
+      setIsUploadingAttachment(false);
       toast({
         title: "Expense recorded",
         description: "The entry was added to the ledger.",
       });
     },
   });
+
+  async function handleAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    try {
+      setIsUploadingAttachment(true);
+      const uploaded = await uploadExpenseAttachment(file);
+      setForm((current) => ({
+        ...current,
+        attachmentName: uploaded.path || uploaded.url || uploaded.fileName,
+      }));
+      setAttachmentLabel(uploaded.fileName);
+    } catch (error) {
+      toast({
+        title: "Could not upload attachment",
+        description: error instanceof Error ? error.message : "Please try another file.",
+        variant: "destructive",
+      });
+      setForm((current) => ({ ...current, attachmentName: "" }));
+      setAttachmentLabel("");
+    } finally {
+      setIsUploadingAttachment(false);
+      event.target.value = "";
+    }
+  }
 
   const reviewMutation = useMutation({
     mutationFn: async ({ id, status, reviewerNote }: { id: string; status: ApprovalStatus; reviewerNote?: string }) =>
@@ -287,12 +320,19 @@ export default function AdminExpensesPage() {
                   <Label>Attachment</Label>
                   <div className="flex items-center gap-2 rounded-2xl border border-dashed border-white/10 bg-black/20 px-3 py-2.5 text-sm text-muted-foreground">
                     <Paperclip className="h-4 w-4" />
-                    <Input
-                      value={form.attachmentName}
-                      onChange={(event) => setForm((current) => ({ ...current, attachmentName: event.target.value }))}
-                      placeholder="receipt.pdf"
-                      className="border-0 bg-transparent p-0 shadow-none focus-visible:ring-0"
-                    />
+                    <label className="flex-1 cursor-pointer">
+                      <span className="block truncate">
+                        {isUploadingAttachment
+                          ? "Uploading to secure storage..."
+                          : attachmentLabel || "Choose receipt or invoice"}
+                      </span>
+                      <Input
+                        type="file"
+                        accept="image/*,.pdf"
+                        className="hidden"
+                        onChange={(event) => void handleAttachmentChange(event)}
+                      />
+                    </label>
                   </div>
                 </div>
                 <div className="space-y-2">
@@ -317,7 +357,7 @@ export default function AdminExpensesPage() {
                 </Button>
                 <Button
                   onClick={() => addMutation.mutate()}
-                  disabled={!form.title.trim() || !form.categoryId || !form.amount}
+                  disabled={!form.title.trim() || !form.categoryId || !form.amount || isUploadingAttachment}
                 >
                   Save expense
                 </Button>

@@ -15,11 +15,15 @@ import AdminDashboardPage from "@/pages/admin/dashboard";
 import AdminEmployeesPage from "@/pages/admin/employees";
 import AdminSalaryPage from "@/pages/admin/salary";
 import AdminFundsPage from "@/pages/admin/funds";
+import ProjectBudgetsPage from "@/pages/project-budgets";
+import PurchaseOrdersPage from "@/pages/purchase-orders";
 import AdminExpensesPage from "@/pages/admin/expenses";
 import AdminTransactionsPage from "@/pages/admin/transactions";
 import AdminTimesheetValidationPage from "@/pages/admin/timesheet-validation";
 import AdminReportsPage from "@/pages/admin/reports";
+import AdminAuditTrailPage from "@/pages/admin/audit-trail";
 import EmployeeTimesheetPage from "@/pages/employee/timesheet";
+import EmployeeExpensesPage from "@/pages/employee/expenses";
 import EmployeeSalarySlipsPage from "@/pages/employee/salary-slips";
 import EmployeeProfilePage from "@/pages/employee/profile";
 
@@ -50,10 +54,13 @@ function AdminRoutes() {
       <Route path={routes.adminEmployees}><AdminEmployeesPage /></Route>
       <Route path={routes.adminSalary}><AdminSalaryPage /></Route>
       <Route path={routes.adminFunds}><AdminFundsPage /></Route>
+      <Route path={routes.adminProjectBudgets}><ProjectBudgetsPage /></Route>
+      <Route path={routes.adminPurchaseOrders}><PurchaseOrdersPage /></Route>
       <Route path={routes.adminExpenses}><AdminExpensesPage /></Route>
       <Route path={routes.adminTransactions}><AdminTransactionsPage /></Route>
       <Route path={routes.adminTimesheetValidation}><AdminTimesheetValidationPage /></Route>
       <Route path={routes.adminReports}><AdminReportsPage /></Route>
+      <Route path={routes.adminAuditTrail}><AdminAuditTrailPage /></Route>
       <Route><Redirect to={routes.adminDashboard} /></Route>
     </Switch>
   );
@@ -63,6 +70,7 @@ function EmployeeRoutes() {
   return (
     <Switch>
       <Route path={routes.employeeTimesheet}><EmployeeTimesheetPage /></Route>
+      <Route path={routes.employeeExpenses}><EmployeeExpensesPage /></Route>
       <Route path={routes.employeeSalarySlips}><EmployeeSalarySlipsPage /></Route>
       <Route path={routes.employeeProfile}><EmployeeProfilePage /></Route>
       <Route><Redirect to={routes.employeeTimesheet} /></Route>

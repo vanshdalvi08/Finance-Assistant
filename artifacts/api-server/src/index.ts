@@ -2,6 +2,7 @@ import "./lib/env";
 import app from "./app";
 import { ensureInitialAdmin } from "./lib/auth-service";
 import { logger } from "./lib/logger";
+import { assertDatabaseSchemaReady } from "./lib/schema-ready";
 
 const rawPort = process.env["PORT"] ?? "3001";
 const port = Number(rawPort);
@@ -11,6 +12,7 @@ if (Number.isNaN(port) || port <= 0) {
 }
 
 async function startServer() {
+  await assertDatabaseSchemaReady();
   await ensureInitialAdmin();
 
   app.listen(port, (err) => {

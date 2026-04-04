@@ -8,11 +8,15 @@ import TransactionsPage from "@/pages/transactions";
 import EmployeesPage from "@/pages/employees";
 import SalaryPage from "@/pages/salary";
 import FundsPage from "@/pages/funds";
+import PurchaseOrdersPage from "@/pages/purchase-orders";
+import ProjectBudgetsPage from "@/pages/project-budgets";
 import ExpensesPage from "@/pages/expenses";
 import SettingsPage from "@/pages/settings";
 import AdminTimesheetValidationPage from "@/pages/admin/timesheet-validation";
 import AdminReportsPage from "@/pages/admin/reports";
+import AdminAuditTrailPage from "@/pages/admin/audit-trail";
 import EmployeeTimesheetPage from "@/pages/employee/timesheet";
+import EmployeeExpensesPage from "@/pages/employee/expenses";
 import EmployeeSalarySlipsPage from "@/pages/employee/salary-slips";
 import EmployeeProfilePage from "@/pages/employee/profile";
 import NotFoundPage from "@/pages/not-found";
@@ -83,6 +87,12 @@ function LegacyRouter() {
         <Route path="/funds">
           {renderAdminRoute(isAuthenticated, role, <FundsPage />)}
         </Route>
+        <Route path="/purchase-orders">
+          {renderAdminRoute(isAuthenticated, role, <PurchaseOrdersPage />)}
+        </Route>
+        <Route path="/project-budgets">
+          {renderAdminRoute(isAuthenticated, role, <ProjectBudgetsPage />)}
+        </Route>
         <Route path="/expenses">
           {renderAdminRoute(isAuthenticated, role, <ExpensesPage />)}
         </Route>
@@ -95,20 +105,29 @@ function LegacyRouter() {
         <Route path="/reports">
           {renderAdminRoute(isAuthenticated, role, <AdminReportsPage />)}
         </Route>
+        <Route path="/audit-trail">
+          {renderAdminRoute(isAuthenticated, role, <AdminAuditTrailPage />)}
+        </Route>
         <Route path="/admin/dashboard">{renderAdminRoute(isAuthenticated, role, <Redirect to="/" />)}</Route>
         <Route path="/admin/transactions">{renderAdminRoute(isAuthenticated, role, <Redirect to="/transactions" />)}</Route>
         <Route path="/admin/employees">{renderAdminRoute(isAuthenticated, role, <Redirect to="/employees" />)}</Route>
         <Route path="/admin/salary">{renderAdminRoute(isAuthenticated, role, <Redirect to="/salary" />)}</Route>
         <Route path="/admin/funds">{renderAdminRoute(isAuthenticated, role, <Redirect to="/funds" />)}</Route>
+        <Route path="/admin/purchase-orders">{renderAdminRoute(isAuthenticated, role, <Redirect to="/purchase-orders" />)}</Route>
+        <Route path="/admin/project-budgets">{renderAdminRoute(isAuthenticated, role, <Redirect to="/project-budgets" />)}</Route>
         <Route path="/admin/expenses">{renderAdminRoute(isAuthenticated, role, <Redirect to="/expenses" />)}</Route>
         <Route path="/admin/settings">{renderAdminRoute(isAuthenticated, role, <Redirect to="/settings" />)}</Route>
         <Route path="/admin/timesheets">{renderAdminRoute(isAuthenticated, role, <Redirect to="/timesheets" />)}</Route>
         <Route path="/admin/reports">{renderAdminRoute(isAuthenticated, role, <Redirect to="/reports" />)}</Route>
+        <Route path="/admin/audit-trail">{renderAdminRoute(isAuthenticated, role, <Redirect to="/audit-trail" />)}</Route>
         <Route path="/employee/dashboard">
           {renderEmployeeRoute(isAuthenticated, role, <Redirect to="/employee/timesheet" />)}
         </Route>
         <Route path="/employee/timesheet">
           {renderEmployeeRoute(isAuthenticated, role, <EmployeeTimesheetPage />)}
+        </Route>
+        <Route path="/employee/expenses">
+          {renderEmployeeRoute(isAuthenticated, role, <EmployeeExpensesPage />)}
         </Route>
         <Route path="/employee/salary-slips">
           {renderEmployeeRoute(isAuthenticated, role, <EmployeeSalarySlipsPage />)}

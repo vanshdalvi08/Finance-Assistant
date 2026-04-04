@@ -27,6 +27,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { useToast } from "@/hooks/use-toast";
 import { createEmployeeAccount, listEmployeeAccounts } from "@/auth/auth-service";
 import { EmployeeAvatar } from "@/components/employee-avatar";
+import { uploadProfilePhoto } from "@/lib/uploads";
 
 function formatCurrency(value: number) {
   return value.toLocaleString("en-IN", {
@@ -37,7 +38,7 @@ function formatCurrency(value: number) {
 }
 
 type PayType = "monthly" | "hourly";
-const MAX_PROFILE_PHOTO_SIZE = 1.5 * 1024 * 1024;
+const MAX_PROFILE_PHOTO_SIZE = 4 * 1024 * 1024;
 
 const employeeSchema = z
   .object({
@@ -81,21 +82,14 @@ type EmployeeMutationInput = EmployeeFormValues & { profilePhotoUrl?: string | n
 
 const HOURS_PER_YEAR = 2080;
 
-function readFileAsDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result ?? ""));
-    reader.onerror = () => reject(new Error("Could not read the selected image."));
-    reader.readAsDataURL(file);
-  });
-}
-
 export default function Employees() {
   const [search, setSearch] = useState("");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingEmployeeId, setEditingEmployeeId] = useState<string | null>(null);
   const [employeeToDelete, setEmployeeToDelete] = useState<EmployeeRecord | null>(null);
   const [profilePhotoUrl, setProfilePhotoUrl] = useState<string | null>(null);
+  const [profilePhotoName, setProfilePhotoName] = useState<string>("");
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [photoInputKey, setPhotoInputKey] = useState(0);
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -235,6 +229,8 @@ export default function Employees() {
     setIsDialogOpen(false);
     setEditingEmployeeId(null);
     setProfilePhotoUrl(null);
+    setProfilePhotoName("");
+    setIsUploadingPhoto(false);
     setPhotoInputKey((value) => value + 1);
     form.reset({
       name: "",
@@ -252,6 +248,8 @@ export default function Employees() {
   function openCreateDialog() {
     setEditingEmployeeId(null);
     setProfilePhotoUrl(null);
+    setProfilePhotoName("");
+    setIsUploadingPhoto(false);
     setPhotoInputKey((value) => value + 1);
     form.reset({
       name: "",
@@ -270,6 +268,8 @@ export default function Employees() {
   function openEditDialog(employee: EmployeeRecord) {
     setEditingEmployeeId(employee.id);
     setProfilePhotoUrl(employee.profilePhotoUrl ?? null);
+    setProfilePhotoName(employee.profilePhotoUrl ? "Uploaded profile photo" : "");
+    setIsUploadingPhoto(false);
     setPhotoInputKey((value) => value + 1);
     form.reset({
       name: employee.name,
@@ -323,22 +323,34 @@ export default function Employees() {
     if (file.size > MAX_PROFILE_PHOTO_SIZE) {
       toast({
         title: "Image too large",
-        description: "Please use a profile photo under 1.5 MB.",
+        description: "Please use a profile photo under 4 MB.",
         variant: "destructive",
       });
       return;
     }
 
     try {
-      const dataUrl = await readFileAsDataUrl(file);
-      setProfilePhotoUrl(dataUrl);
+      setIsUploadingPhoto(true);
+      const uploaded = await uploadProfilePhoto(file);
+      setProfilePhotoUrl(uploaded.url || uploaded.path || null);
+      setProfilePhotoName(uploaded.fileName);
     } catch (error) {
       toast({
         title: "Could not upload image",
         description: error instanceof Error ? error.message : "Please try another image.",
         variant: "destructive",
       });
+      setProfilePhotoUrl(null);
+      setProfilePhotoName("");
+    } finally {
+      setIsUploadingPhoto(false);
     }
+  }
+
+  function clearProfilePhoto() {
+    setProfilePhotoUrl(null);
+    setProfilePhotoName("");
+    setPhotoInputKey((value) => value + 1);
   }
 
   const filteredEmployees = employees.filter(
@@ -410,7 +422,11 @@ export default function Employees() {
                         <div>
                           <p className="text-sm font-medium text-foreground">Profile Photo</p>
                           <p className="text-xs text-muted-foreground">
-                            Upload a clear square image for the employee sidebar and profile.
+                            {isUploadingPhoto
+                              ? "Uploading to secure storage..."
+                              : profilePhotoName
+                                ? `Stored securely in Supabase Storage as ${profilePhotoName}.`
+                                : "Upload a clear square image for the employee sidebar and profile."}
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
@@ -420,6 +436,7 @@ export default function Employees() {
                             accept="image/png,image/jpeg,image/webp"
                             className="max-w-[260px] cursor-pointer"
                             onChange={(event) => void handleProfilePhotoChange(event)}
+                            disabled={isUploadingPhoto}
                           />
                           {profilePhotoUrl ? (
                             <Button
@@ -427,10 +444,8 @@ export default function Employees() {
                               variant="outline"
                               size="sm"
                               className="rounded-xl"
-                              onClick={() => {
-                                setProfilePhotoUrl(null);
-                                setPhotoInputKey((value) => value + 1);
-                              }}
+                              onClick={clearProfilePhoto}
+                              disabled={isUploadingPhoto}
                             >
                               <X className="mr-2 h-4 w-4" />
                               Remove
@@ -438,7 +453,7 @@ export default function Employees() {
                           ) : (
                             <div className="inline-flex items-center gap-2 rounded-xl border border-border/60 px-3 py-2 text-xs text-muted-foreground">
                               <ImagePlus className="h-4 w-4" />
-                              Optional
+                              {isUploadingPhoto ? "Uploading..." : "Upload photo"}
                             </div>
                           )}
                         </div>
@@ -615,7 +630,10 @@ export default function Employees() {
                     />
                   )}
                   <DialogFooter className="mt-6">
-                    <Button type="submit" disabled={createMutation.isPending || updateMutation.isPending}>
+                    <Button
+                      type="submit"
+                      disabled={createMutation.isPending || updateMutation.isPending || isUploadingPhoto}
+                    >
                       {editingEmployeeId ? "Save Changes" : "Save Employee"}
                     </Button>
                   </DialogFooter>

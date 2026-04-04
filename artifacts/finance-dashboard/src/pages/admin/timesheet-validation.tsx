@@ -18,10 +18,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { AlertTriangle, Eye, RotateCcw } from "lucide-react";
+import { AlertTriangle, CalendarDays, Eye, FileClock, RotateCcw } from "lucide-react";
 
 const DAYS = [
   { key: "mon", label: "Mon" },
@@ -61,11 +62,14 @@ function formatHours(value: number) {
 
 export default function AdminTimesheetValidationPage() {
   const queryClient = useQueryClient();
+  const [activeView, setActiveView] = useState("review");
   const [employeeFilter, setEmployeeFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState<TimesheetEntry["status"] | "all">("submitted");
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [reviewNote, setReviewNote] = useState("");
+  const [calendarEmployeeId, setCalendarEmployeeId] = useState("");
+  const [calendarMonth, setCalendarMonth] = useState(format(new Date(), "yyyy-MM"));
 
   const { data: timesheets = [] } = useQuery({
     queryKey: ["admin-timesheets"],
@@ -81,6 +85,12 @@ export default function AdminTimesheetValidationPage() {
     queryKey: ["timesheet-summary"],
     queryFn: () => api.getTimesheetSummary(),
   });
+
+  useEffect(() => {
+    if (!calendarEmployeeId && employees.length > 0) {
+      setCalendarEmployeeId(employees[0].id);
+    }
+  }, [calendarEmployeeId, employees]);
 
   const filtered = useMemo(() => {
     return timesheets.filter((entry) => {
@@ -125,6 +135,14 @@ export default function AdminTimesheetValidationPage() {
 
   const selectedHasRejectedNote = selected?.status === "rejected" && Boolean(selected.reviewNotes?.trim());
 
+  const { data: monthCalendar } = useQuery({
+    queryKey: ["employee-month-calendar", calendarEmployeeId, calendarMonth],
+    queryFn: () => api.getEmployeeMonthCalendar({ employeeId: calendarEmployeeId, month: calendarMonth }),
+    enabled: Boolean(calendarEmployeeId),
+  });
+
+  const calendarDays = monthCalendar?.days ?? [];
+
   useEffect(() => {
     setReviewNote(selected?.status === "rejected" ? selected.reviewNotes ?? "" : "");
   }, [selected?.id, selected?.reviewNotes, selected?.status]);
@@ -165,156 +183,169 @@ export default function AdminTimesheetValidationPage() {
           <DashboardCard label="Tracked Hours" value={`${summary?.totalHours ?? 0}h`} />
         </div>
 
-        <Card className="border-border/50">
-          <CardContent className="pt-4 pb-3">
-            <div className="grid gap-3 md:grid-cols-3">
-              <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">Search</Label>
-                <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Employee or week" />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">Employee</Label>
-                <Select value={employeeFilter} onValueChange={setEmployeeFilter}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="All employees" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All employees</SelectItem>
-                    {employees.map((employee) => (
-                      <SelectItem key={employee.id} value={employee.id}>
-                        {employee.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">Status</Label>
-                <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as TimesheetEntry["status"] | "all")}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Status" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All statuses</SelectItem>
-                    <SelectItem value="draft">Draft</SelectItem>
-                    <SelectItem value="submitted">Submitted</SelectItem>
-                    <SelectItem value="approved">Approved</SelectItem>
-                    <SelectItem value="rejected">Rejected</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        <Tabs value={activeView} onValueChange={setActiveView}>
+          <TabsList className="grid w-full grid-cols-2 md:w-[340px]">
+            <TabsTrigger value="review" className="gap-2">
+              <FileClock className="h-4 w-4" />
+              Review Queue
+            </TabsTrigger>
+            <TabsTrigger value="calendar" className="gap-2">
+              <CalendarDays className="h-4 w-4" />
+              Month Calendar
+            </TabsTrigger>
+          </TabsList>
 
-        <div className="grid gap-6 xl:grid-cols-[1fr_1.4fr]">
-          <Card className="border-border/50">
-            <CardHeader>
-              <CardTitle className="text-base">Submission Queue</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {filtered.length === 0 ? (
-                <div className="py-10 text-center text-sm text-muted-foreground">No timesheets match the current filters.</div>
-              ) : (
-                filtered.map((entry) => (
-                  <button
-                    key={entry.id}
-                    onClick={() => setSelectedId(entry.id)}
-                    className={[
-                      "w-full rounded-lg border px-4 py-3 text-left transition-colors",
-                      selected?.id === entry.id ? "border-primary/30 bg-primary/5" : "border-border/50 hover:bg-secondary/20",
-                    ].join(" ")}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="font-medium">{entry.employeeNameSnapshot}</p>
-                        <p className="text-xs text-muted-foreground">Week of {format(new Date(entry.weekStart), "dd MMM yyyy")}</p>
-                      </div>
-                      <Badge variant={statusVariant(entry.status)} className="capitalize">
-                        {entry.status}
-                      </Badge>
-                    </div>
-                    <div className="mt-3 flex items-center justify-between text-sm text-muted-foreground">
-                      <span>{entry.lines.length} task rows</span>
-                      <span>{totalHours(entry)}h</span>
-                    </div>
-                  </button>
-                ))
-              )}
-            </CardContent>
-          </Card>
-
-          <Card className="border-border/50">
-            <CardHeader>
-              <CardTitle className="text-base">Review Panel</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {!selected ? (
-                <div className="py-12 text-center text-sm text-muted-foreground">Select a timesheet to review.</div>
-              ) : (
-                <>
-                  <div className="grid gap-3 sm:grid-cols-3">
-                    <div className="rounded-lg border border-border/50 bg-secondary/20 p-3">
-                      <p className="text-xs text-muted-foreground">Employee</p>
-                      <p className="mt-1 font-medium">{selected.employeeNameSnapshot}</p>
-                    </div>
-                    <div className="rounded-lg border border-border/50 bg-secondary/20 p-3">
-                      <p className="text-xs text-muted-foreground">Week</p>
-                      <p className="mt-1 font-medium">{format(new Date(selected.weekStart), "dd MMM yyyy")}</p>
-                    </div>
-                    <div className="rounded-lg border border-border/50 bg-secondary/20 p-3">
-                      <p className="text-xs text-muted-foreground">Status</p>
-                      <p className="mt-1">
-                        <Badge variant={statusVariant(selected.status)} className="capitalize">
-                          {selected.status}
-                        </Badge>
-                      </p>
-                    </div>
+          <TabsContent value="review" className="mt-6">
+            <Card className="border-border/50">
+              <CardContent className="pt-4 pb-3">
+                <div className="grid gap-3 md:grid-cols-3">
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Search</Label>
+                    <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Employee or week" />
                   </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Employee</Label>
+                    <Select value={employeeFilter} onValueChange={setEmployeeFilter}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="All employees" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All employees</SelectItem>
+                        {employees.map((employee) => (
+                          <SelectItem key={employee.id} value={employee.id}>
+                            {employee.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Status</Label>
+                    <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as TimesheetEntry["status"] | "all")}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Status" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All statuses</SelectItem>
+                        <SelectItem value="draft">Draft</SelectItem>
+                        <SelectItem value="submitted">Submitted</SelectItem>
+                        <SelectItem value="approved">Approved</SelectItem>
+                        <SelectItem value="rejected">Rejected</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
 
-                  {selectedHasRejectedNote ? (
-                    <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm">
-                      <div className="flex items-start gap-3">
-                        <AlertTriangle className="mt-0.5 h-4 w-4 text-amber-400" />
-                        <div>
-                          <p className="font-medium text-foreground">Returned for changes</p>
-                          <p className="mt-1 text-muted-foreground">{selected.reviewNotes}</p>
+            <div className="mt-6 grid gap-6 xl:grid-cols-[1fr_1.4fr]">
+              <Card className="border-border/50">
+                <CardHeader>
+                  <CardTitle className="text-base">Submission Queue</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {filtered.length === 0 ? (
+                    <div className="py-10 text-center text-sm text-muted-foreground">No timesheets match the current filters.</div>
+                  ) : (
+                    filtered.map((entry) => (
+                      <button
+                        key={entry.id}
+                        onClick={() => setSelectedId(entry.id)}
+                        className={[
+                          "w-full rounded-lg border px-4 py-3 text-left transition-colors",
+                          selected?.id === entry.id ? "border-primary/30 bg-primary/5" : "border-border/50 hover:bg-secondary/20",
+                        ].join(" ")}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="font-medium">{entry.employeeNameSnapshot}</p>
+                            <p className="text-xs text-muted-foreground">Week of {format(new Date(entry.weekStart), "dd MMM yyyy")}</p>
+                          </div>
+                          <Badge variant={statusVariant(entry.status)} className="capitalize">
+                            {entry.status}
+                          </Badge>
                         </div>
-                      </div>
-                    </div>
-                  ) : null}
+                        <div className="mt-3 flex items-center justify-between text-sm text-muted-foreground">
+                          <span>{entry.lines.length} task rows</span>
+                          <span>{totalHours(entry)}h</span>
+                        </div>
+                      </button>
+                    ))
+                  )}
+                </CardContent>
+              </Card>
 
-                  <div className="rounded-lg border border-border/50 bg-secondary/10 px-4 py-3 text-sm text-muted-foreground">
-                    {hourlyRate > 0 ? (
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div>
-                          <p className="font-medium text-foreground">Payroll preview</p>
+              <Card className="border-border/50">
+                <CardHeader>
+                  <CardTitle className="text-base">Review Panel</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {!selected ? (
+                    <div className="py-12 text-center text-sm text-muted-foreground">Select a timesheet to review.</div>
+                  ) : (
+                    <>
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        <div className="rounded-lg border border-border/50 bg-secondary/20 p-3">
+                          <p className="text-xs text-muted-foreground">Employee</p>
+                          <p className="mt-1 font-medium">{selected.employeeNameSnapshot}</p>
+                        </div>
+                        <div className="rounded-lg border border-border/50 bg-secondary/20 p-3">
+                          <p className="text-xs text-muted-foreground">Week</p>
+                          <p className="mt-1 font-medium">{format(new Date(selected.weekStart), "dd MMM yyyy")}</p>
+                        </div>
+                        <div className="rounded-lg border border-border/50 bg-secondary/20 p-3">
+                          <p className="text-xs text-muted-foreground">Status</p>
                           <p className="mt-1">
-                            {formatMoney(hourlyRate)} per hour x {selectedHours}h = {formatMoney(pendingPayrollAmount)}
+                            <Badge variant={statusVariant(selected.status)} className="capitalize">
+                              {selected.status}
+                            </Badge>
                           </p>
                         </div>
-                        <Badge variant="outline" className="border-border/70">
-                          Approve queues payroll
-                        </Badge>
                       </div>
-                    ) : (
-                      <p>
-                        Hourly rate is not set yet for this employee. Add it in Employees to preview payroll before
-                        approval.
-                      </p>
-                    )}
-                  </div>
 
-                  <div className="grid gap-3 sm:grid-cols-4 lg:grid-cols-7">
-                    {dayTotals.map((day) => (
-                      <div key={day.key} className="rounded-lg border border-border/50 bg-secondary/20 px-3 py-2">
-                        <p className="text-xs text-muted-foreground">{day.label}</p>
-                        <p className="mt-1 font-medium">{day.value}h</p>
+                      {selectedHasRejectedNote ? (
+                        <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm">
+                          <div className="flex items-start gap-3">
+                            <AlertTriangle className="mt-0.5 h-4 w-4 text-amber-400" />
+                            <div>
+                              <p className="font-medium text-foreground">Returned for changes</p>
+                              <p className="mt-1 text-muted-foreground">{selected.reviewNotes}</p>
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      <div className="rounded-lg border border-border/50 bg-secondary/10 px-4 py-3 text-sm text-muted-foreground">
+                        {hourlyRate > 0 ? (
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <p className="font-medium text-foreground">Payroll preview</p>
+                              <p className="mt-1">
+                                {formatMoney(hourlyRate)} per hour x {selectedHours}h = {formatMoney(pendingPayrollAmount)}
+                              </p>
+                            </div>
+                            <Badge variant="outline" className="border-border/70">
+                              Approve queues payroll
+                            </Badge>
+                          </div>
+                        ) : (
+                          <p>
+                            Hourly rate is not set yet for this employee. Add it in Employees to preview payroll before
+                            approval.
+                          </p>
+                        )}
                       </div>
-                    ))}
-                  </div>
 
-                  <div className="rounded-lg border border-border/50 bg-secondary/10">
+                      <div className="grid gap-3 sm:grid-cols-4 lg:grid-cols-7">
+                        {dayTotals.map((day) => (
+                          <div key={day.key} className="rounded-lg border border-border/50 bg-secondary/20 px-3 py-2">
+                            <p className="text-xs text-muted-foreground">{day.label}</p>
+                            <p className="mt-1 font-medium">{day.value}h</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="rounded-lg border border-border/50 bg-secondary/10">
                     <div className="flex flex-col gap-3 border-b border-border/50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                       <div className="space-y-1">
                         <p className="text-sm font-medium text-foreground">Worklog Preview</p>
@@ -463,39 +494,190 @@ export default function AdminTimesheetValidationPage() {
                     ) : null}
                   </div>
 
-                  <div className="space-y-2">
-                    <Label>Review Note</Label>
-                    <Textarea
-                      value={reviewNote}
-                      rows={4}
-                      placeholder="Explain what needs to change before this sheet can be approved."
-                      onChange={(event) => setReviewNote(event.target.value)}
-                    />
+                      <div className="space-y-2">
+                        <Label>Review Note</Label>
+                        <Textarea
+                          value={reviewNote}
+                          rows={4}
+                          placeholder="Explain what needs to change before this sheet can be approved."
+                          onChange={(event) => setReviewNote(event.target.value)}
+                        />
+                      </div>
+
+                      <div className="flex gap-3">
+                        <Button
+                          className="flex-1"
+                          disabled={selected.status !== "submitted" || reviewMutation.isPending}
+                          onClick={() => reviewMutation.mutate({ id: selected.id, status: "approved" })}
+                        >
+                          Approve &amp; Queue Payroll
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="flex-1"
+                          disabled={selected.status !== "submitted" || reviewMutation.isPending}
+                          onClick={() => reviewMutation.mutate({ id: selected.id, status: "rejected" })}
+                        >
+                          <RotateCcw className="mr-2 h-4 w-4" />
+                          Revert For Changes
+                        </Button>
+                      </div>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="calendar" className="mt-6">
+            <div className="space-y-6">
+              <Card className="border-border/50">
+                <CardContent className="pt-5">
+                  <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+                    <div className="grid gap-4 md:grid-cols-2 xl:min-w-[440px] xl:max-w-[520px]">
+                      <div className="space-y-1">
+                        <Label className="text-xs text-muted-foreground">Employee</Label>
+                        <Select value={calendarEmployeeId} onValueChange={setCalendarEmployeeId}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Choose employee" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {employees.map((employee) => (
+                              <SelectItem key={employee.id} value={employee.id}>
+                                {employee.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs text-muted-foreground">Month</Label>
+                        <Input type="month" value={calendarMonth} onChange={(event) => setCalendarMonth(event.target.value)} />
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                      <span className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-secondary/10 px-3 py-1.5">
+                        <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                        Worked
+                      </span>
+                      <span className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-secondary/10 px-3 py-1.5">
+                        <span className="h-2 w-2 rounded-full bg-amber-500" />
+                        Leave
+                      </span>
+                      <span className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-secondary/10 px-3 py-1.5">
+                        <span className="h-2 w-2 rounded-full bg-sky-500" />
+                        Expense
+                      </span>
+                      <span className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-secondary/10 px-3 py-1.5">
+                        <span className="h-2 w-2 rounded-full bg-muted-foreground" />
+                        Weekend
+                      </span>
+                    </div>
                   </div>
 
-                  <div className="flex gap-3">
-                    <Button
-                      className="flex-1"
-                      disabled={selected.status !== "submitted" || reviewMutation.isPending}
-                      onClick={() => reviewMutation.mutate({ id: selected.id, status: "approved" })}
-                    >
-                      Approve &amp; Queue Payroll
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="flex-1"
-                      disabled={selected.status !== "submitted" || reviewMutation.isPending}
-                      onClick={() => reviewMutation.mutate({ id: selected.id, status: "rejected" })}
-                    >
-                      <RotateCcw className="mr-2 h-4 w-4" />
-                      Revert For Changes
-                    </Button>
+                  <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <div className="rounded-xl border border-border/50 bg-secondary/10 px-4 py-3">
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Days Worked</p>
+                      <p className="mt-2 text-2xl font-semibold">{monthCalendar?.summary.daysWorked ?? 0}</p>
+                    </div>
+                    <div className="rounded-xl border border-border/50 bg-secondary/10 px-4 py-3">
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Hours Logged</p>
+                      <p className="mt-2 text-2xl font-semibold">{monthCalendar?.summary.hoursLogged ?? 0}h</p>
+                    </div>
+                    <div className="rounded-xl border border-border/50 bg-secondary/10 px-4 py-3">
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Leave Days</p>
+                      <p className="mt-2 text-2xl font-semibold">{monthCalendar?.summary.leaveDays ?? 0}</p>
+                    </div>
+                    <div className="rounded-xl border border-border/50 bg-secondary/10 px-4 py-3">
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Expense Submissions</p>
+                      <p className="mt-2 text-2xl font-semibold">{monthCalendar?.summary.expenseSubmissions ?? 0}</p>
+                    </div>
                   </div>
-                </>
-              )}
-            </CardContent>
-          </Card>
-        </div>
+                </CardContent>
+              </Card>
+
+              <Card className="border-border/50">
+                <CardHeader className="pb-4">
+                  <CardTitle className="text-base">
+                    {employees.find((employee) => employee.id === calendarEmployeeId)?.name ?? "Employee"} · {monthCalendar?.monthLabel ?? format(new Date(), "MMMM yyyy")}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {!calendarEmployeeId ? (
+                    <div className="py-14 text-center text-sm text-muted-foreground">Select an employee to see the month view.</div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-7 gap-3 text-center text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                        {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day) => (
+                          <div key={day} className="px-2 py-1">
+                            {day}
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="grid grid-cols-7 gap-3">
+                        {calendarDays.map((day) => (
+                          <div
+                            key={day.date}
+                            className={[
+                              "min-h-[118px] rounded-2xl border px-3 py-3 transition-colors",
+                              day.isWeekend ? "border-border/40 bg-secondary/15" : "border-border/50 bg-card/70",
+                              day.leave ? "border-amber-500/20 bg-amber-500/5" : "",
+                              day.worked ? "border-emerald-500/15 bg-emerald-500/[0.03]" : "",
+                              day.expenseCount > 0 ? "shadow-[inset_0_0_0_1px_rgba(56,189,248,0.08)]" : "",
+                            ].join(" ")}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <p className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+                                  {format(new Date(day.date), "dd MMM")}
+                                </p>
+                                <p className="mt-2 text-2xl font-semibold leading-none">{day.day}</p>
+                              </div>
+                              {day.hours > 0 ? (
+                                <div className="rounded-full border border-border/60 bg-secondary/10 px-2.5 py-1 text-xs font-medium text-foreground">
+                                  {day.hours}h
+                                </div>
+                              ) : null}
+                            </div>
+
+                            <div className="mt-4 flex flex-wrap gap-2">
+                              {day.worked ? (
+                                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-300">
+                                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                                  Worked
+                                </span>
+                              ) : null}
+                              {day.leave ? (
+                                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-300">
+                                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+                                  Leave
+                                </span>
+                              ) : null}
+                              {day.expenseCount > 0 ? (
+                                <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-500/10 px-2.5 py-1 text-[11px] font-medium text-sky-300">
+                                  <span className="h-1.5 w-1.5 rounded-full bg-sky-400" />
+                                  {day.expenseCount} expense{day.expenseCount > 1 ? "s" : ""}
+                                </span>
+                              ) : null}
+                            </div>
+
+                            {!day.worked && !day.leave && day.expenseCount === 0 ? (
+                              <p className="mt-5 text-xs text-muted-foreground">
+                                {day.isWeekend ? "Weekend" : "No activity"}
+                              </p>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+        </Tabs>
       </div>
     </DashboardLayout>
   );

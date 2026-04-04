@@ -111,3 +111,20 @@ export function getSmtpConfig() {
 
   return { host, port, secure, user, pass, from };
 }
+
+export function getSupabaseStorageConfig() {
+  const url = optionalEnv("SUPABASE_URL");
+  const serviceRoleKey = optionalEnv("SUPABASE_SERVICE_ROLE_KEY");
+
+  if (!url || !serviceRoleKey) {
+    return null;
+  }
+
+  return {
+    url: url.replace(/\/$/, ""),
+    serviceRoleKey,
+    avatarsBucket: optionalEnv("SUPABASE_STORAGE_AVATARS_BUCKET") ?? "yojak-avatars",
+    expenseAttachmentsBucket:
+      optionalEnv("SUPABASE_STORAGE_EXPENSE_ATTACHMENTS_BUCKET") ?? "yojak-expense-attachments",
+  };
+}

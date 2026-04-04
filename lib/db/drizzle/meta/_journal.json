@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1775329621119,
+      "tag": "0000_optimal_lester",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1775329724716,
+      "tag": "0001_ordinary_dark_phoenix",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1775331688883,
+      "tag": "0002_round_the_enforcers",
+      "breakpoints": true
+    }
+  ]
+}

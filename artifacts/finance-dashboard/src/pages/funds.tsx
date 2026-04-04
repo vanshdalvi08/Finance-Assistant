@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { api } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -15,7 +16,6 @@ import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import { ArrowDownRight, Plus, Wallet } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { useState } from "react";
 
 const fundSchema = z.object({
   source: z.string().min(2, "Source is required"),
@@ -36,6 +36,10 @@ export default function Funds() {
   const { data: chartData = [] } = useQuery({
     queryKey: ["chartData"],
     queryFn: api.getChartData,
+  });
+  const { data: overview } = useQuery({
+    queryKey: ["adminOverview"],
+    queryFn: api.getAdminOverview,
   });
 
   const totalCapitalInflow = funds.reduce((sum, fund) => sum + fund.amount, 0);
@@ -74,7 +78,7 @@ export default function Funds() {
         <div className="flex justify-between items-center">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Funds & Inflows</h1>
-            <p className="text-muted-foreground text-sm mt-1">Track revenue, investments, and capital inflows.</p>
+            <p className="text-muted-foreground text-sm mt-1">Track revenue, investments, and incoming capital without mixing in vendor purchase orders.</p>
           </div>
 
           <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
@@ -96,7 +100,7 @@ export default function Funds() {
                       <FormItem>
                         <FormLabel>Source / Origin</FormLabel>
                         <FormControl>
-                          <Input placeholder="e.g. Series B, Stripe Payout" {...field} />
+                          <Input placeholder="e.g. Client Retainer, Investor Tranche" {...field} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -155,37 +159,43 @@ export default function Funds() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <DashboardCard
             label="Total Capital Inflow"
-            value={totalCapitalInflow.toLocaleString("en-IN", {
-              style: "currency",
-              currency: "INR",
-            })}
+            value={totalCapitalInflow.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
             icon={<Wallet className="w-5 h-5" />}
           />
-          <Card className="md:col-span-2 border-border/50">
-            <CardHeader className="py-4">
-              <CardTitle className="text-base">Capital Growth</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="h-[120px] w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={chartData} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
-                    <defs>
-                      <linearGradient id="colorFundsOnly" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
-                        <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <Tooltip
-                      contentStyle={{ backgroundColor: "hsl(var(--card))", borderColor: "hsl(var(--border))" }}
-                      labelStyle={{ color: "hsl(var(--muted-foreground))" }}
-                    />
-                    <Area type="monotone" dataKey="funds" stroke="hsl(var(--primary))" fillOpacity={1} fill="url(#colorFundsOnly)" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            </CardContent>
-          </Card>
+          <DashboardCard
+            label="Current Balance"
+            value={(overview?.currentBalance ?? 0).toLocaleString("en-IN", { style: "currency", currency: "INR" })}
+          />
+          <DashboardCard
+            label="Month-to-Date Funds"
+            value={(overview?.monthToDateFunds ?? 0).toLocaleString("en-IN", { style: "currency", currency: "INR" })}
+          />
         </div>
+
+        <Card className="border-border/50">
+          <CardHeader className="py-4">
+            <CardTitle className="text-base">Capital Growth</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="h-[120px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={chartData} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="colorFundsOnly" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <Tooltip
+                    contentStyle={{ backgroundColor: "hsl(var(--card))", borderColor: "hsl(var(--border))" }}
+                    labelStyle={{ color: "hsl(var(--muted-foreground))" }}
+                  />
+                  <Area type="monotone" dataKey="funds" stroke="hsl(var(--primary))" fillOpacity={1} fill="url(#colorFundsOnly)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </CardContent>
+        </Card>
 
         <Card className="border-border/50">
           <CardHeader>

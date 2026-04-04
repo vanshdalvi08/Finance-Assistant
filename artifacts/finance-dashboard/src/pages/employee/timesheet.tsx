@@ -36,6 +36,13 @@ const DAYS: Array<{ key: DayKey; label: string }> = [
   { key: "sun", label: "Sun" },
 ];
 
+type ProjectCatalogProject = Awaited<ReturnType<typeof api.getProjectCatalog>>[number];
+type ProjectCatalogTask = ProjectCatalogProject["tasks"][number];
+
+function normalizeLookup(value: string) {
+  return value.trim().toLowerCase();
+}
+
 function weekStartIso(base = new Date()) {
   const date = new Date(base);
   const day = date.getDay();
@@ -181,6 +188,77 @@ export default function EmployeeTimesheetPage() {
     enabled: Boolean(employee?.id),
   });
 
+  const { data: catalogProjects = [] } = useQuery({
+    queryKey: ["projectCatalog"],
+    queryFn: () => api.getProjectCatalog(),
+  });
+
+  const { data: projectBudgetSummary = [] } = useQuery({
+    queryKey: ["project-budget-summary"],
+    queryFn: api.getProjectBudgetSummary,
+  });
+
+  const [projectSelections, setProjectSelections] = useState<Record<string, string>>({});
+  const [taskSelections, setTaskSelections] = useState<Record<string, string>>({});
+
+  const projectOptions = useMemo(() => {
+    const byName = new Map<string, ProjectCatalogProject>();
+
+    const upsert = (project: ProjectCatalogProject) => {
+      const key = normalizeLookup(project.project);
+      if (!key) {
+        return;
+      }
+
+      const existing = byName.get(key);
+      if (!existing) {
+        byName.set(key, project);
+        return;
+      }
+
+      const mergedTasks = new Map<string, ProjectCatalogTask>();
+      for (const task of existing.tasks) {
+        mergedTasks.set(normalizeLookup(task.name), task);
+      }
+      for (const task of project.tasks) {
+        mergedTasks.set(normalizeLookup(task.name), task);
+      }
+
+      byName.set(key, {
+        ...existing,
+        ...project,
+        tasks: Array.from(mergedTasks.values()),
+        client: project.client || existing.client,
+        notes: project.notes || existing.notes,
+        updatedAt: project.updatedAt > existing.updatedAt ? project.updatedAt : existing.updatedAt,
+      });
+    };
+
+    for (const project of catalogProjects) {
+      upsert(project);
+    }
+
+    for (const summary of projectBudgetSummary) {
+      upsert({
+        id: summary.id,
+        project: summary.project,
+        client: summary.client ?? "",
+        notes: summary.note ?? "",
+        totalBudget: summary.totalBudget ?? 0,
+        createdAt: new Date().toISOString(),
+        tasks: [],
+        updatedAt: new Date().toISOString(),
+      });
+    }
+
+    return Array.from(byName.values()).sort((left, right) => left.project.localeCompare(right.project));
+  }, [catalogProjects, projectBudgetSummary]);
+
+  const projectLookup = useMemo(
+    () => new Map(projectOptions.map((project) => [normalizeLookup(project.project), project])),
+    [projectOptions],
+  );
+
   const current = useMemo(
     () => timesheets.find((entry) => sameWeek(entry.weekStart, selectedWeek)) ?? null,
     [selectedWeek, timesheets],
@@ -228,6 +306,96 @@ export default function EmployeeTimesheetPage() {
 
   const weekRangeLabel = `${format(new Date(selectedWeek), "dd MMM")} - ${format(addDays(new Date(selectedWeek), 6), "dd MMM yyyy")}`;
   const isCurrentWeek = sameWeek(selectedWeek, weekStartIso());
+
+  function getProjectTaskOptions(projectName: string) {
+    const record = projectLookup.get(normalizeLookup(projectName));
+    if (!record) {
+      return [];
+    }
+
+    return record.tasks.filter((task) => task.status === "active" && task.name.trim().length > 0);
+  }
+
+  function getProjectSelectionValue(line: TimesheetTaskLine) {
+    const known = projectLookup.get(normalizeLookup(line.project));
+    if (projectSelections[line.id]) {
+      return projectSelections[line.id];
+    }
+
+    return known ? known.project : line.project.trim() ? "__custom__" : "";
+  }
+
+  function getTaskSelectionValue(line: TimesheetTaskLine) {
+    const taskOptions = getProjectTaskOptions(line.project);
+    if (taskSelections[line.id]) {
+      return taskSelections[line.id];
+    }
+
+    return taskOptions.some((task) => normalizeLookup(task.name) === normalizeLookup(line.task))
+      ? line.task
+      : line.task.trim()
+        ? "__custom__"
+        : "";
+  }
+
+  function setProjectChoice(lineId: string, value: string) {
+    setProjectSelections((currentSelection) => ({ ...currentSelection, [lineId]: value }));
+
+    if (value === "__custom__") {
+      setTaskSelections((currentSelection) => ({ ...currentSelection, [lineId]: "__custom__" }));
+      updateLine(lineId, (line) => ({
+        ...line,
+        project: "",
+        projectBudgetId: undefined,
+        task: "",
+        projectTaskId: undefined,
+      }));
+      return;
+    }
+
+    setTaskSelections((currentSelection) => {
+      const next = { ...currentSelection };
+      delete next[lineId];
+      return next;
+    });
+
+    updateLine(lineId, (line) => {
+      const selectedProject = projectLookup.get(normalizeLookup(value));
+      const taskOptions = getProjectTaskOptions(value);
+      const keepTask = taskOptions.some((task) => normalizeLookup(task.name) === normalizeLookup(line.task));
+      return {
+        ...line,
+        project: value,
+        projectBudgetId: selectedProject?.id,
+        task: keepTask ? line.task : "",
+        projectTaskId: keepTask
+          ? selectedProject?.tasks.find((task) => normalizeLookup(task.name) === normalizeLookup(line.task))?.id
+          : undefined,
+      };
+    });
+  }
+
+  function setTaskChoice(lineId: string, value: string) {
+    setTaskSelections((currentSelection) => ({ ...currentSelection, [lineId]: value }));
+
+    if (value === "__custom__") {
+      updateLine(lineId, (line) => ({ ...line, task: "", projectTaskId: undefined }));
+      return;
+    }
+
+    updateLine(lineId, (line) => {
+      const taskOptions = getProjectTaskOptions(line.project);
+      const selectedTask = taskOptions.find((task) => normalizeLookup(task.name) === normalizeLookup(value));
+      return {
+        ...line,
+        task: value,
+        projectTaskId: selectedTask?.id,
+      };
+    });
+  }
+
+  const fieldControlClass =
+    "h-9 w-full rounded-xl border border-border/55 bg-background/80 px-3 text-sm shadow-none outline-none transition focus:border-primary/50 focus:ring-2 focus:ring-primary/10 disabled:cursor-not-allowed disabled:opacity-60";
 
   useEffect(() => {
     if (current) {
@@ -430,64 +598,124 @@ export default function EmployeeTimesheetPage() {
                   </thead>
 
                   <tbody>
-                      {draft.lines.map((line) => (
+                    {draft.lines.map((line) => {
+                      const projectSelectionValue = getProjectSelectionValue(line);
+                      const taskSelectionValue = getTaskSelectionValue(line);
+                      const projectTaskOptions = getProjectTaskOptions(line.project);
+                      const showProjectInput = projectSelectionValue === "__custom__" || projectOptions.length === 0;
+                      const hasProjectValue = Boolean(line.project.trim());
+                      const showTaskInput = hasProjectValue && (taskSelectionValue === "__custom__" || projectTaskOptions.length === 0);
+
+                      return (
                         <tr
                           key={line.id}
                           className={cn(hoveredRowId === line.id && "bg-secondary/8")}
                           onMouseEnter={() => setHoveredRowId(line.id)}
                           onMouseLeave={() => setHoveredRowId((currentRow) => (currentRow === line.id ? null : currentRow))}
                         >
-                        <td className="sticky left-0 z-20 border-b border-r border-border/50 bg-card px-4 py-3 align-top">
-                            <Input
-                              value={line.project}
-                              placeholder="Website revamp"
-                              disabled={readOnly}
-                              className="h-9 rounded-xl border-border/55 bg-background/80 text-sm shadow-none"
-                            onChange={(event) =>
-                              setDraft((currentEntry) =>
-                                currentEntry
-                                  ? {
-                                      ...currentEntry,
-                                      lines: currentEntry.lines.map((item) =>
-                                        item.id === line.id ? { ...item, project: event.target.value } : item,
-                                      ),
+                          <td className="sticky left-0 z-20 border-b border-r border-border/50 bg-card px-4 py-3 align-top">
+                            <div className="space-y-2">
+                              {projectOptions.length > 0 ? (
+                                <select
+                                  value={projectSelectionValue}
+                                  disabled={readOnly}
+                                  className={fieldControlClass}
+                                  onChange={(event) => setProjectChoice(line.id, event.target.value)}
+                                >
+                                  <option value="">Select project</option>
+                                  {projectOptions.map((project) => (
+                                    <option key={project.id} value={project.project}>
+                                      {project.project}
+                                    </option>
+                                  ))}
+                                  <option value="__custom__">Custom project</option>
+                                </select>
+                              ) : null}
+                              {showProjectInput ? (
+                                <Input
+                                  value={line.project}
+                                  placeholder="Project name"
+                                  disabled={readOnly}
+                                  className="h-9 rounded-xl border-border/55 bg-background/80 text-sm shadow-none"
+                                  onChange={(event) =>
+                                    updateLine(line.id, (currentLine) => ({
+                                      ...currentLine,
+                                      project: event.target.value,
+                                      projectBudgetId: undefined,
+                                    }))
+                                  }
+                                />
+                              ) : null}
+                            </div>
+                          </td>
+                          <td className="sticky left-[160px] z-20 border-b border-r border-border/50 bg-card px-4 py-3 align-top">
+                            <div className="space-y-2">
+                              {hasProjectValue ? (
+                                projectTaskOptions.length > 0 ? (
+                                  <>
+                                    <select
+                                      value={taskSelectionValue}
+                                      disabled={readOnly}
+                                      className={fieldControlClass}
+                                      onChange={(event) => setTaskChoice(line.id, event.target.value)}
+                                    >
+                                      <option value="">Select task</option>
+                                      {projectTaskOptions.map((task) => (
+                                        <option key={task.id} value={task.name}>
+                                          {task.name}
+                                        </option>
+                                      ))}
+                                      <option value="__custom__">Custom task</option>
+                                    </select>
+                                    {showTaskInput ? (
+                                      <Input
+                                        value={line.task}
+                                        placeholder="Custom task"
+                                        disabled={readOnly}
+                                        className="h-9 rounded-xl border-border/55 bg-background/80 text-sm shadow-none"
+                                        onChange={(event) =>
+                                          updateLine(line.id, (currentLine) => ({
+                                            ...currentLine,
+                                            task: event.target.value,
+                                            projectTaskId: undefined,
+                                          }))
+                                        }
+                                      />
+                                    ) : null}
+                                  </>
+                                ) : (
+                                  <Input
+                                    value={line.task}
+                                    placeholder="Custom task"
+                                    disabled={readOnly}
+                                    className="h-9 rounded-xl border-border/55 bg-background/80 text-sm shadow-none"
+                                    onChange={(event) =>
+                                      updateLine(line.id, (currentLine) => ({
+                                        ...currentLine,
+                                        task: event.target.value,
+                                        projectTaskId: undefined,
+                                      }))
                                     }
-                                  : currentEntry,
-                              )
-                            }
-                          />
-                        </td>
-                        <td className="sticky left-[160px] z-20 border-b border-r border-border/50 bg-card px-4 py-3 align-top">
-                            <Input
-                              value={line.task}
-                              placeholder="Design QA and revisions"
-                              disabled={readOnly}
-                              className="h-9 rounded-xl border-border/55 bg-background/80 text-sm shadow-none"
-                            onChange={(event) =>
-                              setDraft((currentEntry) =>
-                                currentEntry
-                                  ? {
-                                      ...currentEntry,
-                                      lines: currentEntry.lines.map((item) =>
-                                        item.id === line.id ? { ...item, task: event.target.value } : item,
-                                      ),
-                                    }
-                                  : currentEntry,
-                              )
-                            }
-                          />
-                        </td>
-                        {weekDates.map((day) => (
-                          <td
-                            key={day.key}
-                            className={cn(
-                              "border-b border-r border-border/50 px-3 py-3 align-top transition-colors",
-                              hoveredDay === day.key && "bg-secondary/15",
-                              day.key === "sat" || day.key === "sun" ? "bg-secondary/5" : "",
-                            )}
-                            onMouseEnter={() => setHoveredDay(day.key)}
-                            onMouseLeave={() => setHoveredDay((currentDay) => (currentDay === day.key ? null : currentDay))}
-                          >
+                                  />
+                                )
+                              ) : (
+                                <div className="flex h-9 items-center rounded-xl border border-dashed border-border/50 bg-background/50 px-3 text-xs text-muted-foreground">
+                                  Choose a project first
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                          {weekDates.map((day) => (
+                            <td
+                              key={day.key}
+                              className={cn(
+                                "border-b border-r border-border/50 px-3 py-3 align-top transition-colors",
+                                hoveredDay === day.key && "bg-secondary/15",
+                                day.key === "sat" || day.key === "sun" ? "bg-secondary/5" : "",
+                              )}
+                              onMouseEnter={() => setHoveredDay(day.key)}
+                              onMouseLeave={() => setHoveredDay((currentDay) => (currentDay === day.key ? null : currentDay))}
+                            >
                               <Input
                                 type="number"
                                 min={0}
@@ -499,56 +727,57 @@ export default function EmployeeTimesheetPage() {
                                 value={hourInputValue(line.hours[day.key])}
                                 onChange={(event) => changeHour(line.id, day.key, event.target.value)}
                               />
+                            </td>
+                          ))}
+                          <td className="border-b border-r border-border/50 px-3 py-3 text-center align-middle font-medium text-foreground">
+                            {formatHourValue(lineTotal(line))}
                           </td>
-                        ))}
-                        <td className="border-b border-r border-border/50 px-3 py-3 text-center align-middle font-medium text-foreground">
-                          {formatHourValue(lineTotal(line))}
-                        </td>
-                        <td className="border-b border-border/50 px-3 py-3 text-right align-middle">
-                          <div className="flex justify-end gap-2">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-8 rounded-xl px-2 text-muted-foreground hover:bg-secondary/25 hover:text-foreground"
-                              disabled={readOnly}
-                              onClick={() =>
-                                setDraft((currentEntry) =>
-                                  currentEntry
-                                    ? {
-                                        ...currentEntry,
-                                        lines: [...currentEntry.lines, { ...line, id: createLine().id }],
-                                      }
-                                    : currentEntry,
-                                )
-                              }
-                            >
-                              <Copy className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-8 rounded-xl px-2 text-muted-foreground hover:bg-secondary/25 hover:text-foreground"
-                              disabled={readOnly}
-                              onClick={() =>
-                                setDraft((currentEntry) =>
-                                  currentEntry
-                                    ? {
-                                        ...currentEntry,
-                                        lines:
-                                          currentEntry.lines.length === 1
-                                            ? [createLine()]
-                                            : currentEntry.lines.filter((item) => item.id !== line.id),
-                                      }
-                                    : currentEntry,
-                                )
-                              }
-                            >
-                              <X className="h-3.5 w-3.5" />
-                            </Button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                          <td className="border-b border-border/50 px-3 py-3 text-right align-middle">
+                            <div className="flex justify-end gap-2">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 rounded-xl px-2 text-muted-foreground hover:bg-secondary/25 hover:text-foreground"
+                                disabled={readOnly}
+                                onClick={() =>
+                                  setDraft((currentEntry) =>
+                                    currentEntry
+                                      ? {
+                                          ...currentEntry,
+                                          lines: [...currentEntry.lines, { ...line, id: createLine().id }],
+                                        }
+                                      : currentEntry,
+                                  )
+                                }
+                              >
+                                <Copy className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 rounded-xl px-2 text-muted-foreground hover:bg-secondary/25 hover:text-foreground"
+                                disabled={readOnly}
+                                onClick={() =>
+                                  setDraft((currentEntry) =>
+                                    currentEntry
+                                      ? {
+                                          ...currentEntry,
+                                          lines:
+                                            currentEntry.lines.length === 1
+                                              ? [createLine()]
+                                              : currentEntry.lines.filter((item) => item.id !== line.id),
+                                        }
+                                      : currentEntry,
+                                  )
+                                }
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
 
                     <tr className="bg-secondary/10">
                       <td className="sticky left-0 z-10 border-r border-border/50 bg-card px-4 py-4 text-sm font-medium text-foreground">

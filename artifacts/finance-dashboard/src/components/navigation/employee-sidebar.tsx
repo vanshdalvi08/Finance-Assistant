@@ -2,11 +2,12 @@ import { Link, useLocation } from "wouter";
 import { routes } from "@/app/route-map";
 import { AppLogo } from "@/components/app/app-logo";
 import { useAuthStore } from "@/store/auth";
-import { CreditCard, LogOut, Sheet, UserCircle2 } from "lucide-react";
+import { CreditCard, LogOut, Receipt, Sheet, UserCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const items = [
   { href: routes.employeeTimesheet, label: "My Timesheet", icon: Sheet },
+  { href: routes.employeeExpenses, label: "My Expenses", icon: Receipt },
   { href: routes.employeeSalarySlips, label: "Salary Slips", icon: CreditCard },
   { href: routes.employeeProfile, label: "Profile", icon: UserCircle2 },
 ];

@@ -1,4 +1,10 @@
-import { deactivateEmployeeAccount, updateEmployeeAccount } from "@/auth/auth-service";
+import {
+  createEmployeeAccount,
+  deactivateEmployeeAccount,
+  listEmployeeAccounts,
+  updateEmployeeAccount,
+} from "@/auth/auth-service";
+import { requestJson } from "@/auth/http-client";
 import type { AuthUser } from "@/auth/types";
 
 export type ApprovalStatus = "draft" | "submitted" | "approved" | "rejected";
@@ -54,6 +60,7 @@ export interface Expense {
   id: string;
   employeeId?: string;
   employeeNameSnapshot?: string;
+  project?: string;
   category: string;
   group: "personal" | "office";
   amount: number;
@@ -61,6 +68,8 @@ export interface Expense {
   description: string;
   note?: string;
   attachmentName?: string;
+  attachmentPath?: string;
+  attachmentUrl?: string;
   reimbursable?: boolean;
   status: ApprovalStatus;
   reviewerNote?: string;
@@ -73,12 +82,15 @@ export interface Transaction {
   date: string;
   description: string;
   category: string;
+  project?: string;
 }
 
 export interface TimesheetTaskLine {
   id: string;
   project: string;
   task: string;
+  projectBudgetId?: string;
+  projectTaskId?: string;
   notes?: string;
   hours: Record<DayKey, number>;
 }
@@ -96,13 +108,65 @@ export interface TimesheetEntry {
   lines: TimesheetTaskLine[];
 }
 
-interface FinanceStore {
-  employees: Employee[];
-  salaries: Salary[];
-  funds: Fund[];
-  expenses: Expense[];
-  categories: ExpenseCategory[];
-  timesheets: TimesheetEntry[];
+export interface AuditTrailEntry {
+  id: string;
+  actorName: string;
+  actorRole: "admin" | "employee" | "system";
+  action: string;
+  entityType:
+    | "employee"
+    | "expense"
+    | "fund"
+    | "salary"
+    | "timesheet"
+    | "category"
+    | "project-budget"
+    | "purchase-order"
+    | "purchase-order-task";
+  entityId: string;
+  summary: string;
+  createdAt: string;
+}
+
+export interface ProjectBudget {
+  id: string;
+  project: string;
+  totalBudget: number;
+  client?: string;
+  note?: string;
+  notes?: string;
+  tasks: ProjectBudgetTask[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectBudgetTask {
+  id: string;
+  name: string;
+  description?: string;
+  status: "active" | "archived";
+}
+
+export interface PurchaseOrderTask {
+  id: string;
+  taskName: string;
+  description: string;
+  amount: number;
+  status: "pending" | "paid";
+  paidAt?: string;
+}
+
+export interface PurchaseOrder {
+  id: string;
+  title: string;
+  totalAmount: number;
+  usedAmount: number;
+  remainingAmount: number;
+  vendor?: string;
+  date: string;
+  notes?: string;
+  createdAt: string;
+  tasks: PurchaseOrderTask[];
 }
 
 interface CategoryInput {
@@ -153,6 +217,7 @@ interface UpdateEmployeeInput extends AddEmployeeInput {
 interface AddExpenseInput {
   employeeId?: string;
   employeeNameSnapshot?: string;
+  project?: string;
   category: string;
   group: "personal" | "office";
   amount: number;
@@ -160,479 +225,301 @@ interface AddExpenseInput {
   description: string;
   note?: string;
   attachmentName?: string;
+  attachmentPath?: string;
   reimbursable?: boolean;
   status?: ApprovalStatus;
   reviewerNote?: string;
 }
 
-const STORAGE_KEY = "finance-dashboard-store-v2";
-
-const DEFAULT_CATEGORIES: ExpenseCategory[] = [
-  { id: "oc1", name: "Software", color: "#6366f1", group: "office" },
-  { id: "oc2", name: "Office Rent", color: "#f59e0b", group: "office" },
-  { id: "oc3", name: "Travel", color: "#10b981", group: "office" },
-  { id: "oc4", name: "Marketing", color: "#3b82f6", group: "office" },
-  { id: "oc5", name: "Legal", color: "#ef4444", group: "office" },
-  { id: "oc6", name: "Equipment", color: "#8b5cf6", group: "office" },
-  { id: "pc1", name: "Rent", color: "#f97316", group: "personal" },
-  { id: "pc2", name: "Groceries", color: "#22c55e", group: "personal" },
-  { id: "pc3", name: "Subscriptions", color: "#a855f7", group: "personal" },
-  { id: "pc4", name: "Health", color: "#ec4899", group: "personal" },
-  { id: "pc5", name: "Transport", color: "#14b8a6", group: "personal" },
-  { id: "pc6", name: "Entertainment", color: "#f59e0b", group: "personal" },
-];
-
-const DAYS: DayKey[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-
-function cloneCategories(categories: ExpenseCategory[]): ExpenseCategory[] {
-  return categories.map((category) => ({ ...category }));
+interface SaveProjectBudgetInput {
+  id?: string;
+  project: string;
+  totalBudget: number;
+  client?: string;
+  note?: string;
+  tasks?: Array<{
+    id?: string;
+    name: string;
+    description?: string;
+    status?: "active" | "archived";
+  }>;
+  actorName?: string;
 }
 
-function sanitizeEmail(name: string): string {
-  return `${name.toLowerCase().trim().replace(/[^a-z0-9]+/g, ".").replace(/^\.+|\.+$/g, "") || "employee"}@yojak.local`;
+interface CreatePurchaseOrderInput {
+  title: string;
+  totalAmount: number;
+  vendor?: string;
+  date: string;
+  notes?: string;
+  tasks?: Array<{
+    taskName: string;
+    description?: string;
+    amount: number;
+  }>;
 }
 
-function normalizePayType(value?: string | null): "monthly" | "hourly" {
-  return String(value ?? "").toLowerCase() === "hourly" ? "hourly" : "monthly";
+interface AdminOverview {
+  totalFunds: number;
+  totalExpenses: number;
+  totalSalaryPaid: number;
+  activeEmployees: number;
+  currentBalance: number;
+  pendingExpenses: number;
+  pendingTimesheets: number;
+  monthToDateFunds: number;
+  monthToDateExpenses: number;
+  yearToDateFunds: number;
+  yearToDateExpenses: number;
 }
 
-function normalizeEmployeeStatus(value?: string | null): "Active" | "Inactive" {
-  return String(value ?? "").toLowerCase() === "inactive" ? "Inactive" : "Active";
+interface ChartPoint {
+  month: string;
+  funds: number;
+  expenses: number;
+  salary: number;
 }
 
-function shouldIgnoreRemoteSyncError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return true;
-  }
-
-  return error.message === "Request failed." || error.message.includes("404") || error.message.includes("Not Found");
+interface MonthCalendarDay {
+  date: string;
+  day: number;
+  isWeekend: boolean;
+  worked: boolean;
+  leave: boolean;
+  hours: number;
+  expenseCount: number;
 }
 
-function toLocalEmployee(account: AuthUser, existing?: Employee): Employee {
-  const payType = normalizePayType(account.payType ?? existing?.payType);
-
-  return {
-    id: account.id,
-    name: account.name?.trim() || existing?.name || account.email.split("@")[0],
-    email: account.email.trim().toLowerCase(),
-    phone: account.phone?.trim() || existing?.phone || "",
-    employeeId: account.employeeId?.trim() || existing?.employeeId || undefined,
-    profilePhotoUrl: account.profilePhotoUrl ?? existing?.profilePhotoUrl ?? null,
-    role: account.position?.trim() || existing?.role || "Operations Associate",
-    department: account.department?.trim() || existing?.department || "Operations",
-    salary: Math.max(0, Number(account.salary ?? existing?.salary ?? 0)),
-    payType,
-    hourlyRate: payType === "hourly" ? Math.abs(Number(account.hourlyRate ?? existing?.hourlyRate ?? 0)) : 0,
-    status: normalizeEmployeeStatus(account.status ?? existing?.status),
+interface MonthCalendar {
+  month: string;
+  monthLabel: string;
+  summary: {
+    daysWorked: number;
+    hoursLogged: number;
+    leaveDays: number;
+    expenseSubmissions: number;
   };
+  days: MonthCalendarDay[];
 }
 
-function syncRemoteEmployees(store: FinanceStore, accounts: AuthUser[]): FinanceStore {
-  return accounts.reduce((currentStore, account) => {
-    const existingById = currentStore.employees.find((employee) => employee.id === account.id) ?? null;
-    const existingByEmail =
-      currentStore.employees.find((employee) => employee.email.toLowerCase() === account.email.toLowerCase()) ?? null;
-    const existing = existingById ?? existingByEmail;
-    const employee = toLocalEmployee(account, existing ?? undefined);
-
-    const nextStore =
-      existing && existing.id !== employee.id
-        ? remapEmployeeReferences(currentStore, existing.id, employee.id, employee.name)
-        : currentStore;
-
-    return {
-      ...nextStore,
-      employees: [
-        employee,
-        ...nextStore.employees.filter((item) => item.id !== employee.id && item.id !== existing?.id),
-      ],
-    };
-  }, store);
+function createId(prefix: string) {
+  return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
 }
 
 function blankHours(): Record<DayKey, number> {
-  return {
-    mon: 0,
-    tue: 0,
-    wed: 0,
-    thu: 0,
-    fri: 0,
-    sat: 0,
-    sun: 0,
-  };
+  return { mon: 0, tue: 0, wed: 0, thu: 0, fri: 0, sat: 0, sun: 0 };
 }
 
-function cloneTimesheets(timesheets: TimesheetEntry[]): TimesheetEntry[] {
-  return timesheets.map((entry) => ({
-    ...entry,
-    lines: entry.lines.map((line) => ({
-      ...line,
-      hours: { ...line.hours },
-    })),
-  }));
-}
-
-function createDefaultStore(): FinanceStore {
-  return {
-    employees: [],
-    salaries: [],
-    funds: [],
-    expenses: [],
-    categories: cloneCategories(DEFAULT_CATEGORIES),
-    timesheets: [],
-  };
-}
-
-function cloneStore(store: FinanceStore): FinanceStore {
-  return {
-    employees: store.employees.map((employee) => ({ ...employee })),
-    salaries: store.salaries.map((salary) => ({ ...salary })),
-    funds: store.funds.map((fund) => ({ ...fund })),
-    expenses: store.expenses.map((expense) => ({ ...expense })),
-    categories: cloneCategories(store.categories),
-    timesheets: cloneTimesheets(store.timesheets),
-  };
-}
-
-function normalizeDate(value: string): string {
-  if (!value) {
-    return new Date().toISOString();
-  }
-
-  if (value.includes("T")) {
-    return new Date(value).toISOString();
-  }
-
-  return new Date(`${value}T12:00:00`).toISOString();
-}
-
-function startOfWeekIso(baseDate = new Date()): string {
+function startOfWeek(baseDate = new Date()) {
   const date = new Date(baseDate);
   const day = date.getDay();
   const diff = day === 0 ? -6 : 1 - day;
   date.setDate(date.getDate() + diff);
   date.setHours(12, 0, 0, 0);
-  return date.toISOString();
+  return date;
 }
 
-function normalizeWeekStart(weekStart?: string): string {
-  if (!weekStart) {
-    return startOfWeekIso();
-  }
-
-  return startOfWeekIso(new Date(weekStart));
+function normalizeWeekStart(weekStart?: string) {
+  return startOfWeek(weekStart ? new Date(weekStart) : new Date()).toISOString();
 }
 
-function monthKey(date: string): string {
-  const value = new Date(date);
-  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}`;
+function monthKey(date: string) {
+  return date.slice(0, 7);
 }
 
-function formatDateForNote(value: string): string {
-  return new Date(value).toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
-}
-
-function normalizeStore(value?: Partial<FinanceStore>): FinanceStore {
-  const categories =
-    Array.isArray(value?.categories) && value.categories.length > 0
-      ? value.categories
-      : DEFAULT_CATEGORIES;
-
-  return {
-      employees: Array.isArray(value?.employees)
-        ? value.employees.map((employee) => {
-            const payType = normalizePayType(employee.payType);
-
-            return {
-              ...employee,
-              email: employee.email || sanitizeEmail(employee.name),
-              phone: employee.phone ?? "",
-              employeeId: employee.employeeId ?? undefined,
-              profilePhotoUrl: employee.profilePhotoUrl ?? null,
-              payType,
-              hourlyRate: payType === "hourly" ? Math.abs(employee.hourlyRate ?? 0) : 0,
-              status: normalizeEmployeeStatus(employee.status),
-            };
-          })
-        : [],
-      salaries: Array.isArray(value?.salaries)
-        ? value.salaries.map((salary) => ({
-            ...salary,
-            amount: Math.abs(salary.amount),
-            date: normalizeDate(salary.date),
-            note: salary.note ?? "",
-            status: salary.status ?? "paid",
-            source: salary.source ?? "manual",
-            paidAt: salary.paidAt ? normalizeDate(salary.paidAt) : undefined,
-            weekStart: salary.weekStart ? normalizeWeekStart(salary.weekStart) : undefined,
-            hours: salary.hours ?? undefined,
-            rate: salary.rate ?? undefined,
-            timesheetId: salary.timesheetId ?? undefined,
-          }))
-        : [],
-    funds: Array.isArray(value?.funds)
-      ? value.funds.map((fund) => ({
-          ...fund,
-          amount: Math.abs(fund.amount),
-          date: normalizeDate(fund.date),
-          note: fund.note ?? "",
-        }))
-      : [],
-    expenses: Array.isArray(value?.expenses)
-      ? value.expenses.map((expense) => ({
-          ...expense,
-          amount: Math.abs(expense.amount),
-          date: normalizeDate(expense.date),
-          note: expense.note ?? "",
-          status: expense.status ?? "approved",
-          reimbursable: expense.reimbursable ?? expense.group === "office",
-        }))
-      : [],
-    categories: cloneCategories(categories),
-    timesheets: Array.isArray(value?.timesheets)
-      ? value.timesheets.map((entry) => ({
-          ...entry,
-          weekStart: normalizeWeekStart(entry.weekStart),
-          status: entry.status ?? "draft",
-          lines: Array.isArray(entry.lines) && entry.lines.length > 0
-            ? entry.lines.map((line) => ({
-                ...line,
-                notes: line.notes ?? "",
-                hours: { ...blankHours(), ...line.hours },
-              }))
-            : [
-                {
-                  id: createId("line"),
-                  project: "",
-                  task: "",
-                  notes: "",
-                  hours: blankHours(),
-                },
-              ],
-        }))
-      : [],
-  };
-}
-
-function isBrowser(): boolean {
-  return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
-}
-
-let memoryStore = createDefaultStore();
-
-function writeStore(store: FinanceStore): void {
-  memoryStore = cloneStore(store);
-
-  if (!isBrowser()) {
-    return;
-  }
-
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-}
-
-function readStore(): FinanceStore {
-  if (!isBrowser()) {
-    return cloneStore(memoryStore);
-  }
-
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-
-    if (!raw) {
-      const defaults = createDefaultStore();
-      writeStore(defaults);
-      return defaults;
-    }
-
-    const normalized = normalizeStore(JSON.parse(raw) as Partial<FinanceStore>);
-    memoryStore = cloneStore(normalized);
-    return normalized;
-  } catch {
-    const defaults = createDefaultStore();
-    writeStore(defaults);
-    return defaults;
-  }
-}
-
-function updateStore(updater: (store: FinanceStore) => FinanceStore): FinanceStore {
-  const next = updater(readStore());
-  writeStore(next);
-  return cloneStore(next);
-}
-
-function createId(prefix: string): string {
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function findEmployee(store: FinanceStore, employeeId?: string, email?: string) {
-  if (employeeId) {
-    const match = store.employees.find((employee) => employee.id === employeeId);
-    if (match) {
-      return match;
+function withQuery(path: string, params: Record<string, string | undefined>) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value && value.trim()) {
+      query.set(key, value);
     }
   }
 
-  if (email) {
-    return store.employees.find((employee) => employee.email.toLowerCase() === email.toLowerCase()) ?? null;
-  }
-
-  return null;
+  const suffix = query.toString();
+  return suffix ? `${path}?${suffix}` : path;
 }
 
-function remapEmployeeReferences(store: FinanceStore, fromId: string, toId: string, employeeName: string) {
-  return {
-    ...store,
-    salaries: store.salaries.map((salary) =>
-      salary.employeeId === fromId ? { ...salary, employeeId: toId, employeeNameSnapshot: employeeName } : salary,
-    ),
-    expenses: store.expenses.map((expense) =>
-      expense.employeeId === fromId
-        ? { ...expense, employeeId: toId, employeeNameSnapshot: employeeName }
-        : expense,
-    ),
-    timesheets: store.timesheets.map((entry) =>
-      entry.employeeId === fromId ? { ...entry, employeeId: toId, employeeNameSnapshot: employeeName } : entry,
-    ),
-  };
-}
-
-function approvedExpenses(store: FinanceStore) {
-  return store.expenses.filter((expense) => expense.status === "approved");
-}
-
-function paidSalaries(store: FinanceStore) {
-  return store.salaries.filter((salary) => salary.status === "paid");
-}
-
-function calculateHourlyPayroll(entry: TimesheetEntry, employee: Employee) {
-  const hours = sumTimesheetHours(entry);
-  const rate = employee.hourlyRate ?? 0;
-  return {
-    hours,
-    rate,
-    amount: Math.round(hours * rate),
-  };
-}
-
-function buildTransactions(store: FinanceStore): Transaction[] {
-  const employeeNames = new Map(store.employees.map((employee) => [employee.id, employee.name]));
-
-  return [
-    ...store.funds.map((fund) => ({
-      id: `tx_${fund.id}`,
-      type: "fund" as const,
-      amount: Math.abs(fund.amount),
-      date: fund.date,
-      description: fund.source,
-      category: "Funds",
-    })),
-    ...approvedExpenses(store).map((expense) => ({
-      id: `tx_${expense.id}`,
-      type: "expense" as const,
-      amount: -Math.abs(expense.amount),
-      date: expense.date,
-      description: expense.description,
-      category: expense.category,
-    })),
-    ...paidSalaries(store).map((salary) => ({
-      id: `tx_${salary.id}`,
-      type: "salary" as const,
-      amount: -Math.abs(salary.amount),
-      date: salary.paidAt ?? salary.date,
-      description: `${salary.employeeNameSnapshot ?? employeeNames.get(salary.employeeId) ?? "Employee"} Salary`,
-      category: "Payroll",
-    })),
-  ].sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime());
-}
-
-function buildChartData(store: FinanceStore) {
-  const now = new Date();
-  const months = Array.from({ length: 6 }, (_, index) => {
-    const date = new Date(now.getFullYear(), now.getMonth() - (5 - index), 1);
-    return {
-      key: monthKey(date.toISOString()),
-      month: date.toLocaleString("en-US", { month: "short" }),
-      funds: 0,
-      expenses: 0,
-      salary: 0,
-    };
-  });
-
-  const buckets = new Map(months.map((entry) => [entry.key, entry]));
-
-  for (const fund of store.funds) {
-    const bucket = buckets.get(monthKey(fund.date));
-    if (bucket) {
-      bucket.funds += Math.abs(fund.amount);
-    }
-  }
-
-  for (const expense of approvedExpenses(store)) {
-    const bucket = buckets.get(monthKey(expense.date));
-    if (bucket) {
-      bucket.expenses += Math.abs(expense.amount);
-    }
-  }
-
-  for (const salary of paidSalaries(store)) {
-    const bucket = buckets.get(monthKey(salary.paidAt ?? salary.date));
-    if (bucket) {
-      bucket.salary += Math.abs(salary.amount);
-    }
-  }
-
-  return months.map(({ month, funds, expenses, salary }) => ({
-    month,
-    funds,
-    expenses,
-    salary,
-  }));
-}
-
-function buildExpenseCategories(store: FinanceStore) {
-  const totals = new Map<string, number>();
-
-  for (const expense of approvedExpenses(store)) {
-    totals.set(expense.category, (totals.get(expense.category) ?? 0) + Math.abs(expense.amount));
-  }
-
-  return Array.from(totals.entries())
-    .map(([name, value]) => ({ name, value }))
-    .sort((left, right) => right.value - left.value);
-}
-
-function sumTimesheetHours(entry: TimesheetEntry): number {
+function sumTimesheetHours(entry: TimesheetEntry) {
   return entry.lines.reduce(
-    (total, line) => total + DAYS.reduce((sum, day) => sum + (line.hours[day] ?? 0), 0),
+    (sum, line) =>
+      sum +
+      (Number(line.hours.mon ?? 0) +
+        Number(line.hours.tue ?? 0) +
+        Number(line.hours.wed ?? 0) +
+        Number(line.hours.thu ?? 0) +
+        Number(line.hours.fri ?? 0) +
+        Number(line.hours.sat ?? 0) +
+        Number(line.hours.sun ?? 0)),
     0,
   );
 }
 
-function hasTimesheetContent(entry: TimesheetEntry): boolean {
-  return entry.lines.some((line) => {
-    const hasText = Boolean(line.project.trim() || line.task.trim() || line.notes?.trim());
-    const hasHours = DAYS.some((day) => Number(line.hours[day] ?? 0) > 0);
-    return hasText || hasHours;
+function mapAuthUserToEmployee(user: AuthUser): Employee {
+  return {
+    id: user.id,
+    name: user.name ?? user.email.split("@")[0],
+    email: user.email,
+    phone: user.phone ?? "",
+    employeeId: user.employeeId ?? undefined,
+    profilePhotoUrl: user.profilePhotoUrl ?? null,
+    role: user.position ?? "Employee",
+    department: user.department ?? "General",
+    salary: Number(user.salary ?? 0),
+    payType: user.payType ?? ((user.hourlyRate ?? 0) > 0 ? "hourly" : "monthly"),
+    hourlyRate: user.hourlyRate ?? undefined,
+    status: user.status === "inactive" ? "Inactive" : "Active",
+  };
+}
+
+function normalizeTimesheet(entry: TimesheetEntry): TimesheetEntry {
+  return {
+    ...entry,
+    weekStart: normalizeWeekStart(entry.weekStart),
+    lines: (entry.lines.length ? entry.lines : [{ id: createId("line"), project: "", task: "", notes: "", hours: blankHours() }]).map((line) => ({
+      ...line,
+      id: line.id || createId("line"),
+      notes: line.notes ?? "",
+      hours: { ...blankHours(), ...line.hours },
+    })),
+  };
+}
+
+function normalizeProjectBudget(project: ProjectBudget): ProjectBudget {
+  return {
+    ...project,
+    note: project.note ?? project.notes ?? "",
+    notes: project.notes ?? project.note ?? "",
+  };
+}
+
+async function getCurrentAuthUser() {
+  const response = await requestJson<{ user: AuthUser | null }>("/auth/me");
+  return response.user;
+}
+
+async function businessGet<T>(path: string) {
+  return requestJson<T>(`/business${path}`);
+}
+
+async function businessPost<T>(path: string, data?: unknown, method: "POST" | "PATCH" | "DELETE" = "POST") {
+  return requestJson<T>(`/business${path}`, {
+    method,
+    data,
   });
 }
 
+async function uploadBinary<T>(path: string, file: File) {
+  return requestJson<T>(path, {
+    method: "POST",
+    data: file,
+    headers: {
+      "Content-Type": file.type || "application/octet-stream",
+      "x-file-name": encodeURIComponent(file.name),
+    },
+  });
+}
+
+function buildMonthCalendar(month: string, employeeId: string, timesheets: TimesheetEntry[], expenses: Expense[]): MonthCalendar {
+  const [yearString, monthString] = month.split("-");
+  const year = Number(yearString);
+  const monthIndex = Number(monthString) - 1;
+  const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+  const daily = new Map<string, { hours: number; expenseCount: number }>();
+
+  for (const entry of timesheets.filter((item) => item.employeeId === employeeId && monthKey(item.weekStart) <= month)) {
+    const weekStart = new Date(entry.weekStart);
+    entry.lines.forEach((line) => {
+      const keys: DayKey[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+      keys.forEach((key, offset) => {
+        const amount = Number(line.hours[key] ?? 0);
+        const dayDate = new Date(weekStart);
+        dayDate.setDate(weekStart.getDate() + offset);
+        const iso = dayDate.toISOString().slice(0, 10);
+        if (dayDate.getFullYear() !== year || dayDate.getMonth() !== monthIndex) {
+          return;
+        }
+
+        const bucket = daily.get(iso) ?? { hours: 0, expenseCount: 0 };
+        bucket.hours += amount;
+        daily.set(iso, bucket);
+      });
+    });
+  }
+
+  for (const expense of expenses.filter((item) => item.employeeId === employeeId && monthKey(item.date) === month)) {
+    const iso = expense.date.slice(0, 10);
+    const bucket = daily.get(iso) ?? { hours: 0, expenseCount: 0 };
+    bucket.expenseCount += 1;
+    daily.set(iso, bucket);
+  }
+
+  const days: MonthCalendarDay[] = [];
+  let daysWorked = 0;
+  let leaveDays = 0;
+  let hoursLogged = 0;
+  let expenseSubmissions = 0;
+
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const date = new Date(year, monthIndex, day, 12, 0, 0, 0);
+    const iso = date.toISOString().slice(0, 10);
+    const bucket = daily.get(iso) ?? { hours: 0, expenseCount: 0 };
+    const isWeekend = date.getDay() === 0 || date.getDay() === 6;
+    const worked = bucket.hours > 0;
+    const leave = !worked && !isWeekend && bucket.expenseCount === 0;
+    if (worked) daysWorked += 1;
+    if (leave) leaveDays += 1;
+    hoursLogged += bucket.hours;
+    expenseSubmissions += bucket.expenseCount;
+
+    days.push({
+      date: `${iso}T12:00:00.000Z`,
+      day,
+      isWeekend,
+      worked,
+      leave,
+      hours: Number(bucket.hours.toFixed(1)),
+      expenseCount: bucket.expenseCount,
+    });
+  }
+
+  return {
+    month,
+    monthLabel: new Date(`${month}-01T00:00:00`).toLocaleString("en-US", { month: "long", year: "numeric" }),
+    summary: {
+      daysWorked,
+      hoursLogged: Number(hoursLogged.toFixed(1)),
+      leaveDays,
+      expenseSubmissions,
+    },
+    days,
+  };
+}
+
 export const api = {
-  getEmployees: async () => readStore().employees,
-  syncEmployeeAccounts: async (accounts: AuthUser[]) => {
-    const next = updateStore((store) => syncRemoteEmployees(store, accounts));
-    return next.employees;
+  uploadProfilePhoto: async (file: File) =>
+    uploadBinary<{ fileName: string; path: string; url: string }>("/uploads/profile-photo", file),
+
+  uploadExpenseAttachment: async (file: File) =>
+    uploadBinary<{ fileName: string; path: string; url: string }>("/uploads/expense-attachment", file),
+
+  getEmployees: async () => {
+    const result = await listEmployeeAccounts();
+    return result.employees
+      .filter((employee) => employee.role === "employee")
+      .map(mapAuthUserToEmployee)
+      .sort((left, right) => left.name.localeCompare(right.name));
   },
-  syncEmployeeAccount: async (account: AuthUser) => {
-    const next = updateStore((store) => syncRemoteEmployees(store, [account]));
-    return findEmployee(next, account.id, account.email);
-  },
+
   getEmployeeProfile: async (scope: { employeeId?: string; email?: string }) => {
-    return findEmployee(readStore(), scope.employeeId, scope.email);
+    const current = await getCurrentAuthUser();
+    if (current && (!scope.employeeId || current.id === scope.employeeId || current.email === scope.email)) {
+      return mapAuthUserToEmployee(current);
+    }
+
+    const employees = await api.getEmployees();
+    return employees.find((employee) => employee.id === scope.employeeId || employee.email === scope.email) ?? null;
   },
+
   ensureEmployeeProfile: async (input: {
     id: string;
     email: string;
@@ -645,622 +532,299 @@ export const api = {
     salary?: number;
     payType?: "monthly" | "hourly";
     hourlyRate?: number;
-    status?: "active" | "inactive" | "Active" | "Inactive";
+    status?: "Active" | "Inactive" | "active" | "inactive";
   }) => {
-    const next = updateStore((store) => {
-      const existingById = store.employees.find((employee) => employee.id === input.id);
-      if (existingById) {
-        return syncRemoteEmployees(store, [
-          {
-            id: input.id,
-              email: input.email,
-              name: input.name,
-              phone: input.phone,
-              employeeId: input.employeeId,
-              profilePhotoUrl: input.profilePhotoUrl,
-              position: input.role,
-            department: input.department,
-            salary: input.salary,
-            payType: input.payType,
-            hourlyRate: input.hourlyRate,
-            status: typeof input.status === "string" ? input.status.toLowerCase() as "active" | "inactive" : undefined,
-            role: "employee",
-          },
-        ]);
-      }
-
-      const existingByEmail = store.employees.find(
-        (employee) => employee.email.toLowerCase() === input.email.toLowerCase(),
-      );
-
-      if (!existingByEmail) {
-        return {
-          ...store,
-          employees: [
-            {
-              id: input.id,
-              name: input.name,
-              email: input.email,
-              phone: input.phone?.trim() ?? "",
-              employeeId: input.employeeId?.trim() || undefined,
-              profilePhotoUrl: input.profilePhotoUrl?.trim() || null,
-              role: input.role ?? "Operations Associate",
-              department: input.department ?? "Operations",
-              salary: Math.max(0, Number(input.salary ?? 420000)),
-              payType: normalizePayType(input.payType),
-              hourlyRate: normalizePayType(input.payType) === "hourly" ? Math.abs(input.hourlyRate ?? 0) : 0,
-              status: normalizeEmployeeStatus(input.status),
-            },
-            ...store.employees,
-          ],
-        };
-      }
-
-      const remappedStore = remapEmployeeReferences(store, existingByEmail.id, input.id, existingByEmail.name);
-      const syncedEmployee = toLocalEmployee(
-        {
-          id: input.id,
-          email: input.email,
-          name: input.name,
-          phone: input.phone,
-          employeeId: input.employeeId,
-          profilePhotoUrl: input.profilePhotoUrl,
-          position: input.role,
-          department: input.department,
-          salary: input.salary,
-          payType: input.payType,
-          hourlyRate: input.hourlyRate,
-          status: typeof input.status === "string" ? input.status.toLowerCase() as "active" | "inactive" : undefined,
-          role: "employee",
-        },
-        existingByEmail,
-      );
-
-      return {
-        ...remappedStore,
-        employees: [
-          syncedEmployee,
-          ...remappedStore.employees.filter((employee) => employee.id !== input.id && employee.id !== existingByEmail.id),
-        ],
-      };
-    });
-
-    return findEmployee(next, input.id, input.email);
-  },
-  getSalaries: async () => readStore().salaries,
-  getSalarySlips: async (scope?: { employeeId?: string }) => {
-    const salaries = [...readStore().salaries].sort(
-      (left, right) => new Date(right.paidAt ?? right.date).getTime() - new Date(left.paidAt ?? left.date).getTime(),
-    );
-
-    return scope?.employeeId
-      ? salaries.filter((salary) => salary.employeeId === scope.employeeId)
-      : salaries;
-  },
-  getFunds: async () => readStore().funds,
-  getExpenses: async (scope?: { employeeId?: string; status?: ApprovalStatus }) => {
-    let expenses = readStore().expenses;
-
-    if (scope?.employeeId) {
-      expenses = expenses.filter((expense) => expense.employeeId === scope.employeeId);
+    const existing = await api.getEmployeeProfile({ employeeId: input.id, email: input.email });
+    if (existing) {
+      return existing;
     }
-
-    if (scope?.status) {
-      expenses = expenses.filter((expense) => expense.status === scope.status);
-    }
-
-    return [...expenses].sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime());
-  },
-  getTransactions: async () => buildTransactions(readStore()),
-  getChartData: async () => buildChartData(readStore()),
-  getExpenseCategories: async () => buildExpenseCategories(readStore()),
-  getCategories: async () => readStore().categories,
-  getAdminOverview: async () => {
-    const store = readStore();
-    const approved = approvedExpenses(store);
-    const totalFunds = store.funds.reduce((sum, fund) => sum + fund.amount, 0);
-    const totalExpenses = approved.reduce((sum, expense) => sum + expense.amount, 0);
-    const totalSalaryPaid = paidSalaries(store).reduce((sum, salary) => sum + salary.amount, 0);
-    const activeEmployees = store.employees.filter((employee) => employee.status === "Active").length;
-    const currentBalance = totalFunds - totalExpenses - totalSalaryPaid;
-    const currentMonth = monthKey(new Date().toISOString());
-    const currentYear = new Date().getFullYear();
 
     return {
-      totalFunds,
-      totalExpenses,
-      totalSalaryPaid,
-      activeEmployees,
-      currentBalance,
-      pendingExpenses: store.expenses.filter((expense) => expense.status === "submitted").length,
-      pendingTimesheets: store.timesheets.filter((entry) => entry.status === "submitted").length,
-      monthToDateFunds: store.funds
-        .filter((fund) => monthKey(fund.date) === currentMonth)
-        .reduce((sum, fund) => sum + fund.amount, 0),
-      monthToDateExpenses: approved
-        .filter((expense) => monthKey(expense.date) === currentMonth)
-        .reduce((sum, expense) => sum + expense.amount, 0),
-      yearToDateFunds: store.funds
-        .filter((fund) => new Date(fund.date).getFullYear() === currentYear)
-        .reduce((sum, fund) => sum + fund.amount, 0),
-      yearToDateExpenses: approved
-        .filter((expense) => new Date(expense.date).getFullYear() === currentYear)
-        .reduce((sum, expense) => sum + expense.amount, 0),
+      id: input.id,
+      name: input.name,
+      email: input.email,
+      phone: input.phone ?? "",
+      employeeId: input.employeeId,
+      profilePhotoUrl: input.profilePhotoUrl ?? null,
+      role: input.role ?? "Employee",
+      department: input.department ?? "General",
+      salary: input.salary ?? 0,
+      payType: input.payType ?? "monthly",
+      hourlyRate: input.hourlyRate,
+      status: input.status === "inactive" || input.status === "Inactive" ? "Inactive" : "Active",
     };
   },
-  addEmployee: async (data: AddEmployeeInput) => {
-    const payType = normalizePayType(data.payType);
-    const store = readStore();
-    const existingById = data.id ? store.employees.find((item) => item.id === data.id) : null;
-    const existingByEmail = store.employees.find((item) => item.email.toLowerCase() === data.email.trim().toLowerCase()) ?? null;
-    const current = existingById ?? existingByEmail;
-    const employeeId = data.employeeId?.trim() || current?.employeeId || undefined;
-    const employee: Employee = {
-      id: data.id ?? current?.id ?? createId("emp"),
-      name: data.name.trim(),
-      email: data.email.trim().toLowerCase(),
-      phone: data.phone?.trim() ?? "",
-      employeeId,
-      profilePhotoUrl: data.profilePhotoUrl?.trim() || current?.profilePhotoUrl || null,
-      role: data.role.trim(),
-      department: data.department,
-      salary: data.salary,
-      payType,
-      hourlyRate: payType === "hourly" ? Math.abs(data.hourlyRate ?? 0) : 0,
-      status: normalizeEmployeeStatus(data.status),
-    };
 
-    updateStore((currentStore) => {
-      const previousId = current?.id;
-      const nextStore =
-        previousId && previousId !== employee.id
-          ? remapEmployeeReferences(currentStore, previousId, employee.id, employee.name)
-          : currentStore;
+  syncEmployeeAccounts: async (employees: AuthUser[]) => employees.filter((item) => item.role === "employee").map(mapAuthUserToEmployee),
+  syncEmployeeAccount: async (employee: AuthUser) => mapAuthUserToEmployee(employee),
 
-      if (previousId && previousId !== employee.id) {
-        return {
-          ...nextStore,
-          employees: [employee, ...nextStore.employees.filter((item) => item.id !== previousId && item.id !== employee.id)],
-        };
-      }
-
-      return {
-        ...nextStore,
-        employees: nextStore.employees.some((item) => item.id === employee.id)
-          ? nextStore.employees.map((item) => (item.id === employee.id ? employee : item))
-          : [employee, ...nextStore.employees],
-      };
+  addEmployee: async (input: AddEmployeeInput) => {
+    const result = await createEmployeeAccount({
+      name: input.name,
+      email: input.email,
+      phone: input.phone ?? "",
+      position: input.role,
+      salary: input.salary,
+      payType: input.payType,
+      hourlyRate: input.hourlyRate,
+      profilePhotoUrl: input.profilePhotoUrl,
+      department: input.department,
+      status: input.status === "Inactive" ? "inactive" : "active",
     });
 
-    return employee;
+    return mapAuthUserToEmployee(result.user);
   },
-  updateEmployee: async (data: UpdateEmployeeInput) => {
-    const payType = normalizePayType(data.payType);
-    const store = readStore();
-    const existing = store.employees.find((item) => item.id === data.id) ?? null;
-    const employee: Employee = {
-      id: data.id,
-      name: data.name.trim(),
-      email: data.email.trim().toLowerCase(),
-      phone: data.phone?.trim() ?? "",
-      employeeId: data.employeeId?.trim() || existing?.employeeId || undefined,
-      profilePhotoUrl: data.profilePhotoUrl?.trim() || existing?.profilePhotoUrl || null,
-      role: data.role.trim(),
-      department: data.department,
-      salary: data.salary,
-      payType,
-      hourlyRate: payType === "hourly" ? Math.abs(data.hourlyRate ?? 0) : 0,
-      status: normalizeEmployeeStatus(data.status),
-    };
 
-    try {
-      await updateEmployeeAccount({
-        id: employee.id,
-        name: employee.name,
-        email: employee.email,
-        phone: employee.phone ?? "",
-        position: employee.role,
-          salary: employee.salary,
-          payType: employee.payType,
-          hourlyRate: employee.hourlyRate,
-          profilePhotoUrl: employee.profilePhotoUrl ?? undefined,
-          department: employee.department,
-        status: employee.status === "Active" ? "active" : "inactive",
+  updateEmployee: async (input: UpdateEmployeeInput) => {
+    const current = await getCurrentAuthUser();
+    if (current?.id === input.id && current.role === "employee") {
+      const me = await getCurrentAuthUser();
+      if (!me) {
+        throw new Error("Employee profile not found.");
+      }
+      return mapAuthUserToEmployee({
+        ...me,
+        name: input.name,
+        email: input.email,
+        phone: input.phone,
+        position: input.role,
+        department: input.department,
+        profilePhotoUrl: input.profilePhotoUrl ?? me.profilePhotoUrl,
       });
-    } catch (error) {
-      if (!shouldIgnoreRemoteSyncError(error)) {
-        throw error;
-      }
     }
 
-    updateStore((currentStore) => ({
-      ...currentStore,
-      employees: currentStore.employees.some((item) => item.id === employee.id)
-        ? currentStore.employees.map((item) => (item.id === employee.id ? employee : item))
-        : [employee, ...currentStore.employees],
-      salaries: currentStore.salaries.map((salary) =>
-        salary.employeeId === employee.id
-          ? { ...salary, employeeNameSnapshot: employee.name }
-          : salary,
-      ),
-      expenses: currentStore.expenses.map((expense) =>
-        expense.employeeId === employee.id
-          ? { ...expense, employeeNameSnapshot: employee.name }
-          : expense,
-      ),
-      timesheets: currentStore.timesheets.map((entry) =>
-        entry.employeeId === employee.id
-          ? { ...entry, employeeNameSnapshot: employee.name }
-          : entry,
-      ),
-    }));
+    const result = await updateEmployeeAccount({
+      id: input.id,
+      name: input.name,
+      email: input.email,
+      phone: input.phone ?? "",
+      position: input.role,
+      salary: input.salary,
+      payType: input.payType,
+      hourlyRate: input.hourlyRate,
+      profilePhotoUrl: input.profilePhotoUrl,
+      department: input.department,
+      status: input.status === "Inactive" ? "inactive" : "active",
+    });
 
-    return employee;
+    return mapAuthUserToEmployee(result.user);
   },
+
   deleteEmployee: async (id: string) => {
-    try {
-      const result = await deactivateEmployeeAccount(id);
-      if (result?.user) {
-        updateStore((store) => ({
-          ...store,
-          employees: store.employees.filter((employee) => employee.id !== id),
-          salaries: store.salaries.filter((salary) => salary.employeeId !== id),
-          expenses: store.expenses.filter((expense) => expense.employeeId !== id),
-          timesheets: store.timesheets.filter((entry) => entry.employeeId !== id),
-        }));
-        return;
-      }
-    } catch (error) {
-      if (!shouldIgnoreRemoteSyncError(error)) {
-        throw error;
-      }
+    const [expenses, salaries, timesheets] = await Promise.all([
+      api.getExpenses({ employeeId: id }),
+      api.getSalaries({ employeeId: id }),
+      api.getTimesheets({ employeeId: id }),
+    ]);
+
+    await Promise.all([
+      ...expenses.map((expense) => businessPost<void>(`/expenses/${expense.id}`, undefined, "DELETE")),
+      ...salaries.map((salary) => businessPost<void>(`/salaries/${salary.id}`, undefined, "DELETE")),
+      ...timesheets.map((timesheet) => businessPost<void>(`/timesheets/${timesheet.id}`, undefined, "DELETE")),
+    ]);
+
+    await deactivateEmployeeAccount(id);
+  },
+
+  getFunds: async () => (await businessGet<{ funds: Fund[] }>("/funds")).funds,
+
+  addFund: async (input: AddFundInput) =>
+    (await businessPost<{ fund: Fund }>("/funds", input)).fund,
+
+  getCategories: async () => (await businessGet<{ categories: ExpenseCategory[] }>("/categories")).categories,
+
+  getExpenseCategories: async (group?: "personal" | "office") => {
+    const categories = await api.getCategories();
+    return group ? categories.filter((category) => category.group === group) : categories;
+  },
+
+  saveCategory: async (input: CategoryInput) => {
+    const payload = {
+      id: input.editId,
+      name: input.name,
+      color: input.color,
+      group: input.group,
+    };
+
+    if (input.editId) {
+      return (await businessPost<{ category: ExpenseCategory }>(`/categories/${input.editId}`, payload, "PATCH")).category;
     }
 
-    updateStore((store) => ({
-      ...store,
-      employees: store.employees.filter((employee) => employee.id !== id),
-      salaries: store.salaries.filter((salary) => salary.employeeId !== id),
-      expenses: store.expenses.filter((expense) => expense.employeeId !== id),
-      timesheets: store.timesheets.filter((entry) => entry.employeeId !== id),
-    }));
+    return (await businessPost<{ category: ExpenseCategory }>("/categories", payload)).category;
   },
-  addFund: async (data: AddFundInput) => {
-    const fund: Fund = {
-      id: createId("fund"),
-      source: data.source.trim(),
-      amount: Math.abs(data.amount),
-      date: normalizeDate(data.date),
-      note: data.note?.trim() ?? "",
-    };
 
-    updateStore((store) => ({
-      ...store,
-      funds: [fund, ...store.funds],
-    }));
-
-    return fund;
-  },
-  addExpense: async (data: AddExpenseInput) => {
-    const expense: Expense = {
-      id: createId("exp"),
-      employeeId: data.employeeId,
-      employeeNameSnapshot: data.employeeNameSnapshot,
-      category: data.category,
-      group: data.group,
-      amount: Math.abs(data.amount),
-      date: normalizeDate(data.date),
-      description: data.description.trim(),
-      note: data.note?.trim() ?? "",
-      attachmentName: data.attachmentName?.trim() || undefined,
-      reimbursable: data.reimbursable ?? data.group === "office",
-      status: data.status ?? "approved",
-      reviewerNote: data.reviewerNote,
-    };
-
-    updateStore((store) => ({
-      ...store,
-      expenses: [expense, ...store.expenses],
-    }));
-
-    return expense;
-  },
-  updateExpenseStatus: async (id: string, status: ApprovalStatus, reviewerNote?: string) => {
-    updateStore((store) => ({
-      ...store,
-      expenses: store.expenses.map((expense) =>
-        expense.id === id ? { ...expense, status, reviewerNote } : expense,
-      ),
-    }));
-  },
-  addSalary: async (data: AddSalaryInput) => {
-    const employee = readStore().employees.find((item) => item.id === data.employeeId);
-    const salary: Salary = {
-      id: createId("sal"),
-      employeeId: data.employeeId,
-      employeeNameSnapshot: employee?.name,
-      amount: Math.abs(data.amount),
-      date: new Date().toISOString(),
-      note: data.note?.trim() ?? "",
-      status: data.status ?? "pending",
-      source: data.source ?? "manual",
-      paidAt: data.status === "paid" ? new Date().toISOString() : undefined,
-      weekStart: data.weekStart ? normalizeWeekStart(data.weekStart) : undefined,
-      hours: data.hours,
-      rate: data.rate,
-      timesheetId: data.timesheetId,
-    };
-
-    updateStore((store) => {
-      const existingRecord = salary.timesheetId
-        ? store.salaries.find((entry) => entry.timesheetId === salary.timesheetId)
-        : store.salaries.find(
-            (entry) =>
-              entry.employeeId === salary.employeeId &&
-              entry.source === salary.source &&
-              entry.status === "pending" &&
-              monthKey(entry.date) === monthKey(salary.date),
-          );
-
-      return {
-        ...store,
-        salaries: existingRecord
-          ? [
-              salary,
-              ...store.salaries.filter((entry) => entry.id !== existingRecord.id),
-            ]
-          : [salary, ...store.salaries],
-      };
-    });
-
-    return salary;
-  },
-  paySalaryRecord: async (id: string, note?: string) => {
-    updateStore((store) => ({
-      ...store,
-      salaries: store.salaries.map((salary) =>
-        salary.id === id
-          ? {
-              ...salary,
-              status: "paid",
-              paidAt: new Date().toISOString(),
-              date: new Date().toISOString(),
-              note: note?.trim() || salary.note,
-            }
-          : salary,
-      ),
-    }));
-  },
-  saveCategory: async (data: CategoryInput) => {
-    const name = data.name.trim();
-
-    const store = updateStore((current) => {
-      if (data.editId) {
-        const existingCategory = current.categories.find((category) => category.id === data.editId);
-
-        return {
-          ...current,
-          categories: current.categories.map((category) =>
-            category.id === data.editId
-              ? {
-                  ...category,
-                  name,
-                  color: data.color,
-                  group: data.group,
-                }
-              : category,
-          ),
-          expenses: existingCategory
-            ? current.expenses.map((expense) =>
-                expense.category === existingCategory.name
-                  ? { ...expense, category: name, group: data.group }
-                  : expense,
-              )
-            : current.expenses,
-        };
-      }
-
-      const category: ExpenseCategory = {
-        id: createId("cat"),
-        name,
-        color: data.color,
-        group: data.group,
-      };
-
-      return {
-        ...current,
-        categories: [...current.categories, category],
-      };
-    });
-
-    return store.categories.find((category) => category.id === data.editId || category.name === name);
-  },
   deleteCategory: async (id: string) => {
-    updateStore((store) => ({
-      ...store,
-      categories: store.categories.filter((category) => category.id !== id),
-    }));
+    await businessPost<void>(`/categories/${id}`, undefined, "DELETE");
   },
-  getTimesheets: async (scope?: { employeeId?: string }) => {
-    const entries = readStore().timesheets
-      .filter((entry) => entry.status !== "draft" || hasTimesheetContent(entry))
-      .sort(
-      (left, right) => new Date(right.weekStart).getTime() - new Date(left.weekStart).getTime(),
-    );
 
-    return scope?.employeeId
-      ? entries.filter((entry) => entry.employeeId === scope.employeeId)
-      : entries;
+  getExpenses: async (scope?: { employeeId?: string; status?: ApprovalStatus }) => {
+    const path = withQuery("/expenses", {
+      employeeId: scope?.employeeId,
+      status: scope?.status,
+    });
+    return (await businessGet<{ expenses: Expense[] }>(path)).expenses;
   },
+
+  addExpense: async (input: AddExpenseInput) =>
+    (await businessPost<{ expense: Expense }>("/expenses", input)).expense,
+
+  updateExpenseStatus: async (id: string, status: ApprovalStatus, reviewerNote?: string) =>
+    (await businessPost<{ expense: Expense }>(`/expenses/${id}/status`, { status, reviewerNote }, "PATCH")).expense,
+
+  getSalaries: (async (...args: [{ employeeId?: string }?]) => {
+    const scope = args[0];
+    const path = withQuery("/salaries", { employeeId: scope?.employeeId });
+    return (await businessGet<{ salaries: Salary[] }>(path)).salaries;
+  }) as {
+    (): Promise<Salary[]>;
+    (scope: { employeeId?: string }): Promise<Salary[]>;
+  },
+
+  getSalarySlips: async (scope: { employeeId: string } | string) =>
+    api.getSalaries({ employeeId: typeof scope === "string" ? scope : scope.employeeId }),
+
+  addSalary: async (input: AddSalaryInput) =>
+    (await businessPost<{ salary: Salary }>("/salaries", {
+      ...input,
+      date: input.weekStart ?? new Date().toISOString(),
+      note: input.note ?? "",
+    })).salary,
+
+  paySalaryRecord: async (id: string) =>
+    (await businessPost<{ salary: Salary }>(`/salaries/${id}/pay`, {})).salary,
+
+  getTimesheets: async (scope?: { employeeId?: string }) => {
+    const path = withQuery("/timesheets", { employeeId: scope?.employeeId });
+    return (await businessGet<{ timesheets: TimesheetEntry[] }>(path)).timesheets.map(normalizeTimesheet);
+  },
+
   getTimesheetByWeek: async (employeeId: string, weekStart: string) => {
-    return (
-      readStore().timesheets.find(
-        (entry) =>
-          entry.employeeId === employeeId &&
-          normalizeWeekStart(entry.weekStart) === normalizeWeekStart(weekStart),
-      ) ?? null
-    );
+    const path = withQuery("/timesheets/by-week", { employeeId, weekStart: normalizeWeekStart(weekStart) });
+    const result = await businessGet<{ timesheet: TimesheetEntry | null }>(path);
+    return result.timesheet ? normalizeTimesheet(result.timesheet) : null;
   },
+
   createTimesheetDraft: async (input: {
     employeeId: string;
     employeeNameSnapshot: string;
     weekStart?: string;
   }) => {
-    const store = readStore();
-    const weekStart = normalizeWeekStart(input.weekStart);
-    const existing = store.timesheets.find(
-      (entry) => entry.employeeId === input.employeeId && entry.weekStart === weekStart,
-    );
-
+    const existing = await api.getTimesheetByWeek(input.employeeId, input.weekStart ?? new Date().toISOString());
     if (existing) {
       return existing;
     }
 
-    const entry: TimesheetEntry = {
+    return {
       id: createId("ts"),
       employeeId: input.employeeId,
       employeeNameSnapshot: input.employeeNameSnapshot,
-      weekStart,
-      status: "draft",
+      weekStart: normalizeWeekStart(input.weekStart),
+      status: "draft" as const,
       lines: [
         {
           id: createId("line"),
           project: "",
           task: "",
+          projectBudgetId: undefined,
+          projectTaskId: undefined,
           notes: "",
           hours: blankHours(),
         },
       ],
     };
-
-    updateStore((current) => ({
-      ...current,
-      timesheets: [entry, ...current.timesheets],
-    }));
-
-    return entry;
   },
-  saveTimesheet: async (entry: TimesheetEntry) => {
-    const normalized: TimesheetEntry = {
-      ...entry,
-      weekStart: normalizeWeekStart(entry.weekStart),
-      status: entry.status ?? "draft",
-      lines: entry.lines.map((line) => ({
-        ...line,
-        notes: line.notes ?? "",
-        hours: { ...blankHours(), ...line.hours },
-        })),
-    };
 
-    if (normalized.status === "draft" && !hasTimesheetContent(normalized)) {
-      updateStore((store) => ({
-        ...store,
-        timesheets: store.timesheets.filter((item) => item.id !== normalized.id),
-      }));
+  saveTimesheet: async (entry: TimesheetEntry) =>
+    normalizeTimesheet((await businessPost<{ timesheet: TimesheetEntry }>("/timesheets", normalizeTimesheet(entry))).timesheet),
 
-      return normalized;
-    }
+  submitTimesheet: async (id: string) =>
+    normalizeTimesheet((await businessPost<{ timesheet: TimesheetEntry }>(`/timesheets/${id}/submit`, {})).timesheet),
 
-    updateStore((store) => ({
-      ...store,
-      timesheets: store.timesheets.some((item) => item.id === normalized.id)
-        ? store.timesheets.map((item) => (item.id === normalized.id ? normalized : item))
-        : [normalized, ...store.timesheets],
-    }));
+  approveTimesheet: async (id: string, _reviewer: string, note?: string) =>
+    normalizeTimesheet((await businessPost<{ timesheet: TimesheetEntry }>(`/timesheets/${id}/approve`, { note })).timesheet),
 
-    return normalized;
-  },
-  submitTimesheet: async (id: string) => {
-    updateStore((store) => ({
-      ...store,
-      timesheets: store.timesheets.map((entry) =>
-        entry.id === id
-          ? {
-              ...entry,
-              status: "submitted",
-              submittedAt: new Date().toISOString(),
-              reviewedAt: undefined,
-              reviewedBy: undefined,
-              reviewNotes: undefined,
-            }
-          : entry,
-      ),
-    }));
-  },
-  approveTimesheet: async (id: string, reviewer: string, note?: string) => {
-    updateStore((store) => {
-      const target = store.timesheets.find((entry) => entry.id === id);
-      const employee = target ? store.employees.find((item) => item.id === target.employeeId) : null;
+  rejectTimesheet: async (id: string, _reviewer: string, note: string) =>
+    normalizeTimesheet((await businessPost<{ timesheet: TimesheetEntry }>(`/timesheets/${id}/reject`, { note })).timesheet),
 
-      const timesheets: TimesheetEntry[] = store.timesheets.map((entry) =>
-        entry.id === id
-          ? {
-              ...entry,
-              status: "approved",
-              reviewedAt: new Date().toISOString(),
-              reviewedBy: reviewer,
-              reviewNotes: note,
-            }
-          : entry,
-      );
-
-      if (!target || !employee || employee.payType !== "hourly" || !(employee.hourlyRate ?? 0)) {
-        return {
-          ...store,
-          timesheets,
-        };
-      }
-
-      const payroll = calculateHourlyPayroll(target, employee);
-      const existingPayroll = store.salaries.find((salary) => salary.timesheetId === target.id);
-      const payrollRecord: Salary = {
-        id: existingPayroll?.id ?? createId("sal"),
-        employeeId: employee.id,
-        employeeNameSnapshot: employee.name,
-        amount: payroll.amount,
-        date: new Date().toISOString(),
-        note: note?.trim() || `Timesheet payout for week of ${formatDateForNote(target.weekStart)}`,
-        status: existingPayroll?.status === "paid" ? "paid" : "pending",
-        source: "timesheet",
-        paidAt: existingPayroll?.status === "paid" ? existingPayroll.paidAt ?? existingPayroll.date : undefined,
-        weekStart: target.weekStart,
-        hours: payroll.hours,
-        rate: payroll.rate,
-        timesheetId: target.id,
-      };
-
-      return {
-        ...store,
-        timesheets,
-        salaries: [payrollRecord, ...store.salaries.filter((salary) => salary.id !== existingPayroll?.id)],
-      };
-    });
-  },
-  rejectTimesheet: async (id: string, reviewer: string, note: string) => {
-    updateStore((store) => ({
-      ...store,
-      timesheets: store.timesheets.map((entry) =>
-        entry.id === id
-          ? {
-              ...entry,
-              status: "rejected",
-              reviewedAt: new Date().toISOString(),
-              reviewedBy: reviewer,
-              reviewNotes: note,
-            }
-          : entry,
-      ),
-    }));
-  },
   getTimesheetSummary: async (scope?: { employeeId?: string }) => {
-    const timesheets = scope?.employeeId
-      ? readStore().timesheets.filter((entry) => entry.employeeId === scope.employeeId)
-      : readStore().timesheets;
-
-    return {
-      pending: timesheets.filter((entry) => entry.status === "submitted").length,
-      approved: timesheets.filter((entry) => entry.status === "approved").length,
-      rejected: timesheets.filter((entry) => entry.status === "rejected").length,
-      totalHours: timesheets.reduce((sum, entry) => sum + sumTimesheetHours(entry), 0),
-    };
+    const path = withQuery("/timesheets/summary", { employeeId: scope?.employeeId });
+    return businessGet<{
+      pending: number;
+      approved: number;
+      rejected: number;
+      totalHours: number;
+    }>(path);
   },
+
+  getEmployeeMonthCalendar: async ({ employeeId, month }: { employeeId: string; month: string }) => {
+    const [timesheets, expenses] = await Promise.all([
+      api.getTimesheets({ employeeId }),
+      api.getExpenses({ employeeId }),
+    ]);
+    return buildMonthCalendar(month, employeeId, timesheets, expenses);
+  },
+
+  getProjectBudgets: async () => (await businessGet<{ projects: ProjectBudget[] }>("/projects")).projects.map(normalizeProjectBudget),
+
+  getProjectNames: async () => (await api.getProjectBudgets()).map((project) => project.project),
+
+  getProjectCatalog: async () => (await businessGet<{ projects: ProjectBudget[] }>("/projects/catalog")).projects.map(normalizeProjectBudget),
+
+  getProjectBudgetSummary: async () =>
+    (await businessGet<{
+      projects: Array<{
+        id: string;
+        project: string;
+        labourHours: number;
+        labourCost: number;
+        expenseCost: number;
+        totalBudget: number;
+        client?: string;
+        note?: string;
+        spent: number;
+        remainingBudget: number;
+        utilisation: number;
+      }>;
+    }>("/projects/summary")).projects,
+
+  saveProjectBudget: async (input: SaveProjectBudgetInput) => {
+    if (input.id) {
+      return normalizeProjectBudget((await businessPost<{ project: ProjectBudget }>(`/projects/${input.id}`, input, "PATCH")).project);
+    }
+    return normalizeProjectBudget((await businessPost<{ project: ProjectBudget }>("/projects", input)).project);
+  },
+
+  deleteProjectBudget: async (id: string, _actorName?: string) => {
+    await businessPost<void>(`/projects/${id}`, undefined, "DELETE");
+  },
+
+  getPurchaseOrders: async () =>
+    (await businessGet<{ purchaseOrders: PurchaseOrder[] }>("/purchase-orders")).purchaseOrders,
+
+  createPurchaseOrder: async (input: CreatePurchaseOrderInput) =>
+    (await businessPost<{ purchaseOrder: PurchaseOrder }>("/purchase-orders", input)).purchaseOrder,
+
+  updatePurchaseOrder: async (input: {
+    id: string;
+    title: string;
+    totalAmount: number;
+    vendor?: string;
+    date: string;
+    notes?: string;
+  }) =>
+    (await businessPost<{ purchaseOrder: PurchaseOrder }>(`/purchase-orders/${input.id}`, input, "PATCH")).purchaseOrder,
+
+  addPurchaseOrderTask: async (input: { poId: string; taskName: string; description?: string; amount: number }) =>
+    (await businessPost<{ task: PurchaseOrderTask }>(`/purchase-orders/${input.poId}/tasks`, input)).task,
+
+  payPurchaseOrderTask: async (input: { poId: string; taskId: string; actorName?: string }) =>
+    (await businessPost<{ purchaseOrder: PurchaseOrder }>(`/purchase-orders/${input.poId}/tasks/${input.taskId}/pay`, {})).purchaseOrder,
+
+  getTransactions: async () => (await businessGet<{ transactions: Transaction[] }>("/transactions")).transactions,
+
+  getChartData: async () => (await businessGet<{ finance: ChartPoint[] }>("/charts")).finance,
+
+  getAdminOverview: async () => businessGet<AdminOverview>("/overview"),
+
+  getAuditTrail: async () => (await businessGet<{ auditTrail: AuditTrailEntry[] }>("/audit-trail")).auditTrail,
 };

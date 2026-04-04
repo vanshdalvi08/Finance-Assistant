@@ -123,6 +123,38 @@ export async function requestJson<T>(
   }
 }
 
+export async function requestFormData<T>(
+  path: string,
+  data: FormData,
+  config: AxiosRequestConfig = {},
+  options: { auth?: boolean } = {},
+): Promise<T> {
+  const client = options.auth === false ? authlessAxios : authAxios;
+
+  try {
+    const response = await client.request<T>({
+      url: path,
+      method: config.method ?? "POST",
+      ...config,
+      data,
+    });
+    return response.data;
+  } catch (error) {
+    throw new Error(toErrorMessage(error, "Upload failed."));
+  }
+}
+
 export async function rawAuthRequest<T>(path: string, config: AxiosRequestConfig = {}): Promise<T> {
   return requestJson<T>(path, config, { auth: false });
+}
+
+export async function requestBinary<T>(path: string, file: File, headers: Record<string, string> = {}): Promise<T> {
+  return requestJson<T>(path, {
+    method: "POST",
+    data: file,
+    headers: {
+      "Content-Type": file.type || "application/octet-stream",
+      ...headers,
+    },
+  });
 }

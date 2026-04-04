@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ChangeEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { DashboardCard } from "@/components/dashboard-card";
@@ -13,6 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { uploadExpenseAttachment } from "@/lib/uploads";
 
 function formatCurrency(value: number) {
   return value.toLocaleString("en-IN", { style: "currency", currency: "INR" });
@@ -35,12 +36,16 @@ export default function EmployeeExpensesPage() {
   const [group, setGroup] = useState<"office" | "personal">("office");
   const [form, setForm] = useState({
     category: "",
+    project: "",
     amount: "",
     date: new Date().toISOString().slice(0, 10),
     description: "",
     note: "",
     attachmentName: "",
   });
+  const [attachmentLabel, setAttachmentLabel] = useState("");
+  const [attachmentPath, setAttachmentPath] = useState("");
+  const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
 
   const { data: employee } = useQuery({
     queryKey: ["employee-profile", user?.id, user?.email],
@@ -99,12 +104,14 @@ export default function EmployeeExpensesPage() {
         employeeId: employee?.id,
         employeeNameSnapshot: employee?.name ?? user?.name ?? user?.email ?? "Employee",
         category: form.category,
+        project: form.project.trim() || undefined,
         group,
         amount: Number(form.amount),
         date: form.date,
         description: form.description.trim(),
         note: form.note.trim(),
         attachmentName: form.attachmentName.trim() || undefined,
+        attachmentPath: attachmentPath.trim() || undefined,
         reimbursable: group === "office",
         status: "submitted",
       }),
@@ -114,14 +121,43 @@ export default function EmployeeExpensesPage() {
       await queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
       setForm({
         category: "",
+        project: "",
         amount: "",
         date: new Date().toISOString().slice(0, 10),
         description: "",
         note: "",
         attachmentName: "",
       });
+      setAttachmentLabel("");
+      setAttachmentPath("");
+      setIsUploadingAttachment(false);
     },
   });
+
+  async function handleAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    try {
+      setIsUploadingAttachment(true);
+      const uploaded = await uploadExpenseAttachment(file);
+      setForm((current) => ({
+        ...current,
+        attachmentName: uploaded.fileName,
+      }));
+      setAttachmentPath(uploaded.path ?? "");
+      setAttachmentLabel(uploaded.fileName);
+    } catch {
+      setAttachmentLabel("");
+      setForm((current) => ({ ...current, attachmentName: "" }));
+      setAttachmentPath("");
+    } finally {
+      setIsUploadingAttachment(false);
+      event.target.value = "";
+    }
+  }
 
   return (
     <DashboardLayout>
@@ -174,16 +210,31 @@ export default function EmployeeExpensesPage() {
                 <Input value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} />
               </div>
               <div className="space-y-2">
+                <Label>Project</Label>
+                <Input
+                  placeholder="Optional project tag"
+                  value={form.project}
+                  onChange={(event) => setForm((current) => ({ ...current, project: event.target.value }))}
+                />
+              </div>
+              <div className="space-y-2">
                 <Label>Date</Label>
                 <Input type="date" value={form.date} onChange={(event) => setForm((current) => ({ ...current, date: event.target.value }))} />
               </div>
               <div className="space-y-2">
                 <Label>Attachment</Label>
-                <Input
-                  value={form.attachmentName}
-                  onChange={(event) => setForm((current) => ({ ...current, attachmentName: event.target.value }))}
-                  placeholder="receipt.pdf"
-                />
+                <div className="flex items-center gap-2 rounded-md border border-border bg-background px-3">
+                  <Input
+                    type="file"
+                    accept="image/*,.pdf"
+                    className="border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
+                    onChange={(event) => void handleAttachmentChange(event)}
+                    disabled={isUploadingAttachment}
+                  />
+                  <span className="text-xs text-muted-foreground whitespace-nowrap">
+                    {isUploadingAttachment ? "Uploading..." : attachmentLabel || "Optional"}
+                  </span>
+                </div>
               </div>
               <div className="space-y-2">
                 <Label>Note</Label>
@@ -192,7 +243,7 @@ export default function EmployeeExpensesPage() {
             </div>
             <div className="flex justify-end">
               <Button
-                disabled={!form.category || !form.description.trim() || !form.amount || addMutation.isPending}
+                disabled={!form.category || !form.description.trim() || !form.amount || addMutation.isPending || isUploadingAttachment}
                 onClick={() => addMutation.mutate()}
               >
                 Submit Expense
@@ -249,7 +300,18 @@ function ExpenseLedger({
                   <TableCell className="font-medium">
                     <div>
                       <div>{expense.description}</div>
+                      {expense.project ? <div className="text-xs text-muted-foreground mt-0.5">Project: {expense.project}</div> : null}
                       {expense.note ? <div className="text-xs text-muted-foreground mt-0.5">{expense.note}</div> : null}
+                      {expense.attachmentUrl ? (
+                        <a
+                          href={expense.attachmentUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="mt-1 inline-block text-xs text-primary hover:underline"
+                        >
+                          {expense.attachmentName || "Open attachment"}
+                        </a>
+                      ) : null}
                     </div>
                   </TableCell>
                   <TableCell>{expense.category}</TableCell>

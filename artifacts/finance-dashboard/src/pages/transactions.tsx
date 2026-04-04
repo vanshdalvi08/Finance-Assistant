@@ -37,6 +37,14 @@ const TYPE_CONFIG = {
     dot: "bg-rose-400",
     icon: Receipt,
   },
+  "purchase-order": {
+    label: "Budget Sheet",
+    color: "text-primary",
+    bg: "bg-primary/10",
+    border: "border-primary/20",
+    dot: "bg-primary",
+    icon: Wallet,
+  },
 };
 
 export default function Transactions() {
@@ -141,6 +149,7 @@ export default function Transactions() {
                     <SelectItem value="fund">Fund Inflow</SelectItem>
                     <SelectItem value="expense">Expenses</SelectItem>
                     <SelectItem value="salary">Salary</SelectItem>
+                    <SelectItem value="purchase-order">Budget Sheets</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

@@ -8,11 +8,12 @@ interface DashboardCardProps {
   trend?: number;
   trendLabel?: string;
   icon?: React.ReactNode;
+  className?: string;
 }
 
-export function DashboardCard({ label, value, trend, trendLabel, icon }: DashboardCardProps) {
+export function DashboardCard({ label, value, trend, trendLabel, icon, className }: DashboardCardProps) {
   return (
-    <Card className="hover:bg-card/90 transition-colors border-border/50">
+    <Card className={cn("hover:bg-card/90 transition-colors border-border/50", className)}>
       <CardContent className="p-6">
         <div className="flex justify-between items-start">
           <div className="space-y-2">

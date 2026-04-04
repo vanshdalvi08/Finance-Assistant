@@ -81,6 +81,12 @@ export default function EmployeeProfilePage() {
     enabled: Boolean(employee?.id),
   });
 
+  const { data: expenses = [] } = useQuery({
+    queryKey: ["employee-expenses", employee?.id],
+    queryFn: () => api.getExpenses({ employeeId: employee?.id ?? "" }),
+    enabled: Boolean(employee?.id),
+  });
+
   const { data: salaries = [] } = useQuery({
     queryKey: ["employee-salaries", employee?.id],
     queryFn: () => api.getSalarySlips({ employeeId: employee?.id ?? "" }),
@@ -143,6 +149,12 @@ export default function EmployeeProfilePage() {
         label: dateLabel(entry.weekStart),
         detail: entry.status,
       })),
+      ...expenses.slice(0, 2).map((expense) => ({
+        id: `e-${expense.id}`,
+        type: "Expense",
+        label: expense.description,
+        detail: expense.status,
+      })),
       ...salaries.slice(0, 2).map((salary) => ({
         id: `s-${salary.id}`,
         type: "Salary",
@@ -150,7 +162,7 @@ export default function EmployeeProfilePage() {
         detail: formatCurrency(salary.amount),
       })),
     ].slice(0, 6);
-  }, [salaries, timesheets]);
+  }, [expenses, salaries, timesheets]);
 
   return (
     <DashboardLayout>

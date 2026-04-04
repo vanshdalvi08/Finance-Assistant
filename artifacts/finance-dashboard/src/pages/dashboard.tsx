@@ -1,3 +1,4 @@
+import { useMemo, useState } from "react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { DashboardCard } from "@/components/dashboard-card";
 import { api } from "@/lib/api";
@@ -6,7 +7,8 @@ import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Too
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { ArrowDownRight, ArrowUpRight, DollarSign, Users, Wallet, Receipt } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ArrowDownRight, ArrowUpRight, DollarSign, Wallet, Receipt } from "lucide-react";
 import { format } from "date-fns";
 
 function getMonthWindow(offset: number) {
@@ -33,6 +35,14 @@ function calculatePercentChange(current: number, previous: number) {
   return Number((((current - previous) / previous) * 100).toFixed(1));
 }
 
+function monthKey(date: string) {
+  return date.slice(0, 7);
+}
+
+function formatMonthLabel(value: string) {
+  return format(new Date(`${value}-01T00:00:00`), "MMMM yyyy");
+}
+
 export default function Dashboard() {
   const { data: chartData = [] } = useQuery({ queryKey: ["chartData"], queryFn: api.getChartData });
   const { data: transactions = [] } = useQuery({ queryKey: ["transactions"], queryFn: api.getTransactions });
@@ -41,61 +51,138 @@ export default function Dashboard() {
   const { data: expenses = [] } = useQuery({ queryKey: ["expenses"], queryFn: () => api.getExpenses() });
   const { data: salaries = [] } = useQuery({ queryKey: ["salaries"], queryFn: api.getSalaries });
   const { data: overview } = useQuery({ queryKey: ["adminOverview"], queryFn: api.getAdminOverview });
+  const [selectedPeriod, setSelectedPeriod] = useState("all");
   const approvedExpenses = expenses.filter((expense) => expense.status === "approved");
+  const paidSalaries = salaries.filter((salary) => salary.status === "paid");
 
-  const activeEmployees = overview?.activeEmployees ?? employees.filter((employee) => employee.status === "Active").length;
-  const totalFunds = overview?.totalFunds ?? funds.reduce((sum, fund) => sum + fund.amount, 0);
-  const totalExpenses = overview?.totalExpenses ?? expenses.reduce((sum, expense) => sum + expense.amount, 0);
-  const totalSalaryPaid = overview?.totalSalaryPaid ?? salaries.reduce((sum, salary) => sum + salary.amount, 0);
-  const recentTransactions = transactions.slice(0, 6);
+  const monthOptions = useMemo(() => {
+    const values = new Set<string>();
+    for (const fund of funds) values.add(monthKey(fund.date));
+    for (const expense of approvedExpenses) values.add(monthKey(expense.date));
+    for (const salary of paidSalaries) values.add(monthKey(salary.paidAt ?? salary.date));
+    for (const transaction of transactions) values.add(monthKey(transaction.date));
+    return Array.from(values)
+      .filter(Boolean)
+      .sort((left, right) => right.localeCompare(left));
+  }, [approvedExpenses, funds, paidSalaries, transactions]);
+
+  const selectedMonth = selectedPeriod === "all" ? null : new Date(`${selectedPeriod}-01T00:00:00`);
+  const comparisonMonth = selectedMonth
+    ? new Date(selectedMonth.getFullYear(), selectedMonth.getMonth() - 1, 1)
+    : null;
+
+  const totalFunds = selectedMonth
+    ? sumForMonth(funds, selectedMonth)
+    : overview?.totalFunds ?? funds.reduce((sum, fund) => sum + fund.amount, 0);
+  const totalExpenses = selectedMonth
+    ? sumForMonth(approvedExpenses, selectedMonth)
+    : overview?.totalExpenses ?? approvedExpenses.reduce((sum, expense) => sum + expense.amount, 0);
+  const totalSalaryPaid = selectedMonth
+    ? paidSalaries
+        .filter((salary) => isSameMonth(salary.paidAt ?? salary.date, selectedMonth))
+        .reduce((sum, salary) => sum + salary.amount, 0)
+    : overview?.totalSalaryPaid ?? paidSalaries.reduce((sum, salary) => sum + salary.amount, 0);
+  const availableFunds = selectedMonth
+    ? totalFunds - totalExpenses - totalSalaryPaid
+    : overview?.currentBalance ?? totalFunds - totalExpenses - totalSalaryPaid;
+  const recentTransactions = (
+    selectedMonth
+      ? transactions.filter((transaction) => isSameMonth(transaction.date, selectedMonth))
+      : transactions
+  ).slice(0, 6);
   const currentMonth = getMonthWindow(0);
   const previousMonth = getMonthWindow(-1);
 
-  const currentMonthFunds = sumForMonth(funds, currentMonth);
-  const previousMonthFunds = sumForMonth(funds, previousMonth);
-  const currentMonthExpenses = sumForMonth(approvedExpenses, currentMonth);
-  const previousMonthExpenses = sumForMonth(approvedExpenses, previousMonth);
-  const currentMonthSalaries = sumForMonth(salaries, currentMonth);
-  const previousMonthSalaries = sumForMonth(salaries, previousMonth);
+  const trendBaseMonth = selectedMonth ?? currentMonth;
+  const trendCompareMonth = comparisonMonth ?? previousMonth;
+
+  const currentMonthFunds = sumForMonth(funds, trendBaseMonth);
+  const previousMonthFunds = sumForMonth(funds, trendCompareMonth);
+  const currentMonthExpenses = sumForMonth(approvedExpenses, trendBaseMonth);
+  const previousMonthExpenses = sumForMonth(approvedExpenses, trendCompareMonth);
+  const currentMonthSalaries = paidSalaries
+    .filter((salary) => isSameMonth(salary.paidAt ?? salary.date, trendBaseMonth))
+    .reduce((sum, salary) => sum + salary.amount, 0);
+  const previousMonthSalaries = paidSalaries
+    .filter((salary) => isSameMonth(salary.paidAt ?? salary.date, trendCompareMonth))
+    .reduce((sum, salary) => sum + salary.amount, 0);
 
   const fundsTrend = calculatePercentChange(currentMonthFunds, previousMonthFunds);
   const expensesTrend = calculatePercentChange(previousMonthExpenses, currentMonthExpenses);
   const salaryTrend = calculatePercentChange(currentMonthSalaries, previousMonthSalaries);
+  const periodLabel = selectedMonth ? formatMonthLabel(selectedPeriod) : "All Time";
 
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Overview</h1>
-          <p className="text-muted-foreground text-sm mt-1">Your institutional financial summary.</p>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">Overview</h1>
+            <p className="text-muted-foreground text-sm mt-1">Your institutional financial summary.</p>
+          </div>
+          <div className="w-full max-w-[220px] space-y-1">
+            <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Period</p>
+            <Select value={selectedPeriod} onValueChange={setSelectedPeriod}>
+              <SelectTrigger className="rounded-xl border-border/60 bg-card/70">
+                <SelectValue placeholder="Select period" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Time</SelectItem>
+                {monthOptions.map((month) => (
+                  <SelectItem key={month} value={month}>
+                    {formatMonthLabel(month)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+          <Card className="relative overflow-hidden border-emerald-500/15 bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.10),transparent_36%),hsl(var(--card))] shadow-[0_0_0_1px_rgba(16,185,129,0.06),0_10px_30px_rgba(0,0,0,0.18)]">
+            <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-emerald-400/60 to-transparent" />
+            <CardContent className="p-6">
+              <div className="flex justify-between items-start">
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.45)]" />
+                    <p className="text-sm font-medium text-muted-foreground">Available Funds</p>
+                  </div>
+                  <p className="text-3xl font-bold tracking-tight">
+                    {availableFunds.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {selectedMonth
+                      ? `Balance for ${periodLabel}.`
+                      : "Live balance after approved expenses and paid salary."}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-emerald-500/8 p-2 text-emerald-300">
+                  <Wallet className="w-5 h-5" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
           <DashboardCard
-            label="Total Funds"
+            label={selectedMonth ? "Funds Added" : "Total Funds Added"}
             value={totalFunds.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
-            trend={fundsTrend}
-            trendLabel="vs last month"
+            trend={selectedMonth ? fundsTrend : undefined}
+            trendLabel={selectedMonth ? "vs previous month" : undefined}
             icon={<Wallet className="w-5 h-5" />}
           />
           <DashboardCard
-            label="Total Expenses"
+            label={selectedMonth ? "Expenses" : "Total Expenses"}
             value={totalExpenses.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
-            trend={expensesTrend}
-            trendLabel="vs last month"
+            trend={selectedMonth ? expensesTrend : undefined}
+            trendLabel={selectedMonth ? "vs previous month" : undefined}
             icon={<Receipt className="w-5 h-5" />}
           />
           <DashboardCard
-            label="Total Salary Paid"
+            label={selectedMonth ? "Salary Paid" : "Total Salary Paid"}
             value={totalSalaryPaid.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
-            trend={salaryTrend}
-            trendLabel="vs last month"
+            trend={selectedMonth ? salaryTrend : undefined}
+            trendLabel={selectedMonth ? "vs previous month" : undefined}
             icon={<DollarSign className="w-5 h-5" />}
-          />
-          <DashboardCard
-            label="Active Employees"
-            value={activeEmployees.toString()}
-            icon={<Users className="w-5 h-5" />}
           />
         </div>
 
@@ -178,7 +265,7 @@ export default function Dashboard() {
 
         <Card className="border-border/50">
           <CardHeader>
-            <CardTitle className="text-base">Recent Transactions</CardTitle>
+            <CardTitle className="text-base">Transactions · {periodLabel}</CardTitle>
           </CardHeader>
           <CardContent>
             <Table>
