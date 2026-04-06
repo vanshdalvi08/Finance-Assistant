@@ -1,11 +1,12 @@
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "@workspace/db";
 import { passwordResetTokensTable, refreshSessionsTable, usersTable, type User } from "@workspace/db/schema";
-import { getAppUrl, isProduction, optionalEnv } from "./env";
+import { getAppUrl, getSmtpConfig, isProduction, optionalEnv } from "./env";
 import { generateRandomToken, generateTemporaryPassword, hashPassword, hashSha256, verifyPassword } from "./security";
 import { ACCESS_TOKEN_TTL, REFRESH_TOKEN_TTL, signAccessToken, signRefreshToken, verifyRefreshToken } from "./jwt";
 import { sendMail } from "./mailer";
 import { onboardingEmailTemplate, passwordResetEmailTemplate } from "./email-templates";
+import { createWelcomeNotification } from "./notifications";
 import { uploadProfilePhotoDataUrl } from "./storage";
 
 export interface PublicUser {
@@ -18,6 +19,8 @@ export interface PublicUser {
   position: string | null;
   department: string | null;
   salary: number;
+  payType: "monthly" | "hourly";
+  hourlyRate: number;
   profilePhotoUrl: string | null;
   status: "active" | "inactive";
   createdAt: Date;
@@ -37,6 +40,8 @@ export interface CreateEmployeeInput {
   phone: string;
   position: string;
   salary: number;
+  payType?: "monthly" | "hourly";
+  hourlyRate?: number;
   profilePhotoUrl?: string | null;
   department?: string | null;
   status?: "active" | "inactive";
@@ -49,6 +54,8 @@ export interface UpdateEmployeeInput {
   phone: string;
   position: string;
   salary: number;
+  payType?: "monthly" | "hourly";
+  hourlyRate?: number;
   profilePhotoUrl?: string | null;
   department?: string | null;
   status?: "active" | "inactive";
@@ -61,6 +68,12 @@ export interface UpdateOwnProfileInput {
   position?: string | null;
   department?: string | null;
   profilePhotoUrl?: string | null;
+}
+
+function runAuthSideEffect(work: Promise<unknown>, label: string) {
+  void work.catch((error) => {
+    console.error(`Failed auth side effect: ${label}`, error);
+  });
 }
 
 function normalizeEmail(email: string): string {
@@ -100,6 +113,8 @@ function publicUser(user: User): PublicUser {
     position: user.position ?? null,
     department: user.department ?? null,
     salary: user.salary,
+    payType: user.payType,
+    hourlyRate: user.hourlyRate,
     profilePhotoUrl: user.profilePhotoUrl ?? null,
     status: user.status,
     createdAt: user.createdAt,
@@ -285,6 +300,8 @@ export async function createEmployeeAccount(input: CreateEmployeeInput): Promise
         position: input.position.trim(),
         department: input.department?.trim() || null,
         salary: Math.max(0, Math.round(input.salary)),
+        payType: input.payType ?? "monthly",
+        hourlyRate: Math.max(0, Math.round(input.hourlyRate ?? 0)),
         profilePhotoUrl,
         hashedPassword,
         status: input.status ?? "active",
@@ -310,18 +327,21 @@ export async function createEmployeeAccount(input: CreateEmployeeInput): Promise
     loginEmail: user.email,
   });
 
-  let onboardingEmailSent = false;
-  try {
-    onboardingEmailSent = await sendMail({
-      to: user.email,
-      subject: onboarding.subject,
-      text: onboarding.text,
-      html: onboarding.html,
-    });
-  } catch (error) {
-    onboardingEmailSent = false;
-    console.error("Failed to send onboarding email", error);
+  const onboardingEmailSent = Boolean(getSmtpConfig());
+
+  if (onboardingEmailSent) {
+    runAuthSideEffect(
+      sendMail({
+        to: user.email,
+        subject: onboarding.subject,
+        text: onboarding.text,
+        html: onboarding.html,
+      }),
+      `send onboarding email to ${user.email}`,
+    );
   }
+
+  runAuthSideEffect(createWelcomeNotification(user.id), `create welcome notification for ${user.id}`);
 
   return {
     user: publicUser(user),
@@ -357,6 +377,8 @@ export async function updateEmployeeAccount(input: UpdateEmployeeInput): Promise
         position: input.position.trim(),
         department: input.department?.trim() || null,
         salary: Math.max(0, Math.round(input.salary)),
+        payType: input.payType ?? existing.payType ?? "monthly",
+        hourlyRate: Math.max(0, Math.round(input.hourlyRate ?? existing.hourlyRate ?? 0)),
         profilePhotoUrl,
         status: input.status ?? "active",
         updatedAt: now,

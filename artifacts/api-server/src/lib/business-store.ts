@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { db, usersTable } from "@workspace/db";
-import { asc, desc, eq } from "drizzle-orm";
+import { asc, desc, eq, inArray } from "drizzle-orm";
 import {
   auditTrailTable,
   businessStateTable,
@@ -135,6 +135,8 @@ export interface PurchaseOrderTask {
   id: string;
   taskName: string;
   description: string;
+  hours: number;
+  rate: number;
   amount: number;
   status: "pending" | "paid";
   paidAt?: string;
@@ -221,6 +223,8 @@ export const DEFAULT_CATEGORIES: ExpenseCategoryRecord[] = [
 const STATE_ID = "default";
 let schemaReady: Promise<void> | null = null;
 let storeWriteQueue: Promise<void> = Promise.resolve();
+let storeCache: BusinessStore | null = null;
+let storeReadPromise: Promise<BusinessStore> | null = null;
 
 export function createId(prefix: string): string {
   void prefix;
@@ -317,6 +321,16 @@ function toIso(value?: string | Date | null): string {
   }
 
   return nowIso();
+}
+
+function calculatePurchaseOrderTaskAmount(hours?: number | null, rate?: number | null, fallbackAmount?: number | null): number {
+  const normalizedHours = Math.max(0, Number(hours ?? 0));
+  const normalizedRate = Math.max(0, Number(rate ?? 0));
+  if (normalizedHours > 0 || normalizedRate > 0) {
+    return Math.round(normalizedHours * normalizedRate);
+  }
+
+  return Math.abs(Math.round(Number(fallbackAmount ?? 0)));
 }
 
 function stripNormalizedStore(store: BusinessStore): BusinessStateData {
@@ -487,7 +501,9 @@ function purchaseOrderFromRow(row: DbPurchaseOrder): PurchaseOrder {
           id: task.id ?? createId("po_task"),
           taskName: String(task.taskName ?? "").trim(),
           description: String(task.description ?? "").trim(),
-          amount: Math.abs(Number(task.amount ?? 0)),
+          hours: Math.max(0, Number(task.hours ?? (Number(task.amount ?? 0) > 0 ? 1 : 0))),
+          rate: Math.max(0, Number(task.rate ?? Number(task.amount ?? 0))),
+          amount: calculatePurchaseOrderTaskAmount(task.hours, task.rate, Number(task.amount ?? 0)),
           status: task.status === "paid" ? "paid" : "pending",
           paidAt: task.paidAt ? normalizeDate(String(task.paidAt)) : undefined,
         }))
@@ -511,7 +527,9 @@ function purchaseOrderToRow(order: PurchaseOrder) {
       id: task.id ?? createId("po_task"),
       taskName: task.taskName.trim(),
       description: task.description.trim(),
-      amount: Math.abs(Number(task.amount ?? 0)),
+      hours: Math.max(0, Number(task.hours ?? 0)),
+      rate: Math.max(0, Number(task.rate ?? 0)),
+      amount: calculatePurchaseOrderTaskAmount(task.hours, task.rate, task.amount),
       status: task.status === "paid" ? ("paid" as const) : ("pending" as const),
       paidAt: task.paidAt ? normalizeDate(task.paidAt) : undefined,
     })),
@@ -763,25 +781,40 @@ function projectTasksToRows(budget: ProjectBudget, createdById: string | null) {
   }));
 }
 
-function timesheetLinesToRows(entry: TimesheetEntry) {
-  return (entry.lines ?? []).map((line, index) => ({
-    id: line.id ?? createId("line"),
-    timesheetId: entry.id,
-    projectBudgetId: null,
-    projectId: line.projectBudgetId?.trim() || null,
-    projectTaskId: line.projectTaskId?.trim() || null,
-    sortOrder: index,
-    notes: line.notes?.trim() || "",
-    mon: Number(line.hours.mon ?? 0),
-    tue: Number(line.hours.tue ?? 0),
-    wed: Number(line.hours.wed ?? 0),
-    thu: Number(line.hours.thu ?? 0),
-    fri: Number(line.hours.fri ?? 0),
-    sat: Number(line.hours.sat ?? 0),
-    sun: Number(line.hours.sun ?? 0),
-    createdAt: toDate(entry.createdAt),
-    updatedAt: toDate(entry.updatedAt),
-  }));
+function timesheetLinesToRows(
+  entry: TimesheetEntry,
+  validProjectIds?: Set<string>,
+  validTaskIds?: Set<string>,
+) {
+  return (entry.lines ?? []).map((line, index) => {
+    const projectId = line.projectBudgetId?.trim() || null;
+    const taskId = line.projectTaskId?.trim() || null;
+
+    return {
+      id: line.id ?? createId("line"),
+      timesheetId: entry.id,
+      projectBudgetId: null,
+      projectId:
+        projectId && (!validProjectIds || validProjectIds.has(projectId))
+          ? projectId
+          : null,
+      projectTaskId:
+        taskId && (!validTaskIds || validTaskIds.has(taskId))
+          ? taskId
+          : null,
+      sortOrder: index,
+      notes: line.notes?.trim() || "",
+      mon: Number(line.hours.mon ?? 0),
+      tue: Number(line.hours.tue ?? 0),
+      wed: Number(line.hours.wed ?? 0),
+      thu: Number(line.hours.thu ?? 0),
+      fri: Number(line.hours.fri ?? 0),
+      sat: Number(line.hours.sat ?? 0),
+      sun: Number(line.hours.sun ?? 0),
+      createdAt: toDate(entry.createdAt),
+      updatedAt: toDate(entry.updatedAt),
+    };
+  });
 }
 
 async function ensureNormalizedBusinessMigration(store: BusinessStore) {
@@ -825,7 +858,9 @@ async function ensureNormalizedBusinessMigration(store: BusinessStore) {
 
   const defaultActorId = null;
   const projectTasks = store.projectBudgets.flatMap((budget) => projectTasksToRows(budget, defaultActorId));
-  const timesheetLines = store.timesheets.flatMap((entry) => timesheetLinesToRows(entry));
+  const validProjectIds = new Set(store.projectBudgets.map((budget) => budget.id));
+  const validTaskIds = new Set(projectTasks.map((task) => task.id));
+  const timesheetLines = store.timesheets.flatMap((entry) => timesheetLinesToRows(entry, validProjectIds, validTaskIds));
 
   await db.transaction(async (tx) => {
     if (needsFunds) {
@@ -997,7 +1032,9 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
         id: task.id ?? createId("po_task"),
         taskName: String(task.taskName ?? "").trim(),
         description: String(task.description ?? "").trim(),
-        amount: Math.abs(Number(task.amount ?? 0)),
+        hours: Math.max(0, Number(task.hours ?? (Number(task.amount ?? 0) > 0 ? 1 : 0))),
+        rate: Math.max(0, Number(task.rate ?? Number(task.amount ?? 0))),
+        amount: calculatePurchaseOrderTaskAmount(task.hours, task.rate, Number(task.amount ?? 0)),
         status: task.status === "paid" ? "paid" : "pending",
         paidAt: task.paidAt ? normalizeDate(String(task.paidAt)) : undefined,
       })) : [],
@@ -1044,7 +1081,15 @@ export async function ensureSchema() {
   return schemaReady;
 }
 
-export async function readStore(): Promise<BusinessStore> {
+function cacheStore(store: BusinessStore) {
+  storeCache = cloneStore(store);
+}
+
+function sameSlice<T>(left: T, right: T) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+async function loadStoreFromDatabase(): Promise<BusinessStore> {
   await ensureSchema();
   const stateRows = await db
     .select({ data: businessStateTable.data })
@@ -1172,7 +1217,7 @@ export async function readStore(): Promise<BusinessStore> {
       : timesheetFromRow(row),
   );
 
-  return normalizeStore({
+  const store = normalizeStore({
     ...legacyStore,
     funds: fundRows.map(fundFromRow),
     categories: categoryRows.map(categoryFromRow),
@@ -1183,9 +1228,30 @@ export async function readStore(): Promise<BusinessStore> {
     purchaseOrders: purchaseOrderRows.map(purchaseOrderFromRow),
     auditTrail: auditRows.map(auditEntryFromRow),
   });
+
+  cacheStore(store);
+  return store;
 }
 
-async function persistStoreUnsafe(store: BusinessStore): Promise<void> {
+export async function readStore(options?: { fresh?: boolean }): Promise<BusinessStore> {
+  if (!options?.fresh && storeCache) {
+    return cloneStore(storeCache);
+  }
+
+  if (!options?.fresh) {
+    if (!storeReadPromise) {
+      storeReadPromise = loadStoreFromDatabase().finally(() => {
+        storeReadPromise = null;
+      });
+    }
+
+    return cloneStore(await storeReadPromise);
+  }
+
+  return cloneStore(await loadStoreFromDatabase());
+}
+
+async function persistStoreUnsafe(previousStore: BusinessStore | null, store: BusinessStore): Promise<void> {
   const funds = store.funds.map(fundToRow);
   const categories = store.categories.map(categoryToRow);
   const expenses = store.expenses.map(expenseToRow);
@@ -1193,96 +1259,588 @@ async function persistStoreUnsafe(store: BusinessStore): Promise<void> {
   const projectBudgets = store.projectBudgets.map(projectBudgetToRow);
   const projects = store.projectBudgets.map((budget) => projectBudgetToNormalizedRow(budget, null));
   const projectTasks = store.projectBudgets.flatMap((budget) => projectTasksToRows(budget, null));
+  const validProjectIds = new Set(store.projectBudgets.map((budget) => budget.id));
+  const validTaskIds = new Set(projectTasks.map((task) => task.id));
   const timesheets = store.timesheets.map(timesheetToRow);
-  const timesheetLines = store.timesheets.flatMap((entry) => timesheetLinesToRows(entry));
+  const timesheetLines = store.timesheets.flatMap((entry) => timesheetLinesToRows(entry, validProjectIds, validTaskIds));
   const purchaseOrders = store.purchaseOrders.map(purchaseOrderToRow);
   const auditTrail = store.auditTrail.map(auditEntryToRow);
+  const fundsChanged = !previousStore || !sameSlice(previousStore.funds, store.funds);
+  const categoriesChanged = !previousStore || !sameSlice(previousStore.categories, store.categories);
+  const expensesChanged = !previousStore || !sameSlice(previousStore.expenses, store.expenses);
+  const salariesChanged = !previousStore || !sameSlice(previousStore.salaries, store.salaries);
+  const projectsChanged = !previousStore || !sameSlice(previousStore.projectBudgets, store.projectBudgets);
+  const timesheetsChanged = !previousStore || !sameSlice(previousStore.timesheets, store.timesheets);
+  const purchaseOrdersChanged = !previousStore || !sameSlice(previousStore.purchaseOrders, store.purchaseOrders);
+  const auditTrailChanged = !previousStore || !sameSlice(previousStore.auditTrail, store.auditTrail);
+  const businessStateChanged = !previousStore || !sameSlice(stripNormalizedStore(previousStore), stripNormalizedStore(store));
 
   await db.transaction(async (tx) => {
-    await tx.delete(auditTrailTable);
-    await tx.delete(purchaseOrdersTable);
-    await tx.delete(timesheetLinesTable);
-    await tx.delete(salariesTable);
-    await tx.delete(expensesTable);
-    await tx.delete(expenseCategoriesTable);
-    await tx.delete(fundsTable);
-    await tx.delete(projectTasksTable);
-    await tx.delete(projectBudgetsTable);
-    await tx.delete(projectsTable);
-    await tx.delete(timesheetsTable);
+    if (auditTrailChanged) {
+      const previousIds = new Set(previousStore?.auditTrail.map((entry) => entry.id) ?? []);
+      const nextIds = new Set(store.auditTrail.map((entry) => entry.id));
+      const removedIds = [...previousIds].filter((id) => !nextIds.has(id));
+      const newEntries = store.auditTrail.filter((entry) => !previousIds.has(entry.id)).map(auditEntryToRow);
 
-    if (funds.length > 0) {
-      await tx.insert(fundsTable).values(funds);
+      if (removedIds.length > 0) {
+        await tx.delete(auditTrailTable).where(inArray(auditTrailTable.id, removedIds));
+      }
+
+      if (newEntries.length > 0) {
+        await tx.insert(auditTrailTable).values(newEntries);
+      }
     }
 
-    if (categories.length > 0) {
-      await tx.insert(expenseCategoriesTable).values(categories);
+    if (purchaseOrdersChanged) {
+      const previousOrders = new Map(previousStore?.purchaseOrders.map((order) => [order.id, order]) ?? []);
+      const nextOrders = new Map(store.purchaseOrders.map((order) => [order.id, order]));
+      const removedIds = [...previousOrders.keys()].filter((id) => !nextOrders.has(id));
+      const changedIds = store.purchaseOrders
+        .filter((order) => !previousOrders.has(order.id) || !sameSlice(previousOrders.get(order.id), order))
+        .map((order) => order.id);
+
+      if (removedIds.length > 0) {
+        await tx.delete(purchaseOrdersTable).where(inArray(purchaseOrdersTable.id, removedIds));
+      }
+
+      for (const order of purchaseOrders.filter((row) => changedIds.includes(row.id))) {
+        const { id: _orderId, createdAt: _orderCreatedAt, ...updateValues } = order;
+        if (previousOrders.has(order.id)) {
+          await tx.update(purchaseOrdersTable).set(updateValues).where(eq(purchaseOrdersTable.id, order.id));
+        } else {
+          await tx.insert(purchaseOrdersTable).values(order);
+        }
+      }
     }
 
-    if (expenses.length > 0) {
-      await tx.insert(expensesTable).values(expenses);
+    if (timesheetsChanged) {
+      await tx.delete(timesheetLinesTable);
+      await tx.delete(timesheetsTable);
+      if (timesheets.length > 0) {
+        await tx.insert(timesheetsTable).values(timesheets);
+      }
+      if (timesheetLines.length > 0) {
+        await tx.insert(timesheetLinesTable).values(timesheetLines);
+      }
     }
 
-    if (salaries.length > 0) {
-      await tx.insert(salariesTable).values(salaries);
+    if (salariesChanged) {
+      const previousSalaries = new Map(previousStore?.salaries.map((salary) => [salary.id, salary]) ?? []);
+      const nextSalaries = new Map(store.salaries.map((salary) => [salary.id, salary]));
+      const removedIds = [...previousSalaries.keys()].filter((id) => !nextSalaries.has(id));
+      const changedIds = store.salaries
+        .filter((salary) => !previousSalaries.has(salary.id) || !sameSlice(previousSalaries.get(salary.id), salary))
+        .map((salary) => salary.id);
+
+      if (removedIds.length > 0) {
+        await tx.delete(salariesTable).where(inArray(salariesTable.id, removedIds));
+      }
+
+      for (const salary of salaries.filter((row) => changedIds.includes(row.id))) {
+        const { id: _salaryId, createdAt: _salaryCreatedAt, ...updateValues } = salary;
+        if (previousSalaries.has(salary.id)) {
+          await tx.update(salariesTable).set(updateValues).where(eq(salariesTable.id, salary.id));
+        } else {
+          await tx.insert(salariesTable).values(salary);
+        }
+      }
     }
 
-    if (projectBudgets.length > 0) {
-      await tx.insert(projectBudgetsTable).values(projectBudgets);
+    if (expensesChanged) {
+      const previousExpenses = new Map(previousStore?.expenses.map((expense) => [expense.id, expense]) ?? []);
+      const nextExpenses = new Map(store.expenses.map((expense) => [expense.id, expense]));
+      const removedIds = [...previousExpenses.keys()].filter((id) => !nextExpenses.has(id));
+      const changedIds = store.expenses
+        .filter((expense) => !previousExpenses.has(expense.id) || !sameSlice(previousExpenses.get(expense.id), expense))
+        .map((expense) => expense.id);
+
+      if (removedIds.length > 0) {
+        await tx.delete(expensesTable).where(inArray(expensesTable.id, removedIds));
+      }
+
+      for (const expense of expenses.filter((row) => changedIds.includes(row.id))) {
+        const { id: _expenseId, createdAt: _expenseCreatedAt, ...updateValues } = expense;
+        if (previousExpenses.has(expense.id)) {
+          await tx.update(expensesTable).set(updateValues).where(eq(expensesTable.id, expense.id));
+        } else {
+          await tx.insert(expensesTable).values(expense);
+        }
+      }
     }
 
-    if (projects.length > 0) {
-      await tx.insert(projectsTable).values(projects);
+    if (categoriesChanged) {
+      const previousCategories = new Map(previousStore?.categories.map((category) => [category.id, category]) ?? []);
+      const nextCategories = new Map(store.categories.map((category) => [category.id, category]));
+      const removedIds = [...previousCategories.keys()].filter((id) => !nextCategories.has(id));
+      const changedIds = store.categories
+        .filter((category) => !previousCategories.has(category.id) || !sameSlice(previousCategories.get(category.id), category))
+        .map((category) => category.id);
+
+      if (removedIds.length > 0) {
+        await tx.delete(expenseCategoriesTable).where(inArray(expenseCategoriesTable.id, removedIds));
+      }
+
+      for (const category of categories.filter((row) => changedIds.includes(row.id))) {
+        const { id: _categoryId, createdAt: _categoryCreatedAt, ...updateValues } = category;
+        if (previousCategories.has(category.id)) {
+          await tx.update(expenseCategoriesTable).set(updateValues).where(eq(expenseCategoriesTable.id, category.id));
+        } else {
+          await tx.insert(expenseCategoriesTable).values(category);
+        }
+      }
     }
 
-    if (projectTasks.length > 0) {
-      await tx.insert(projectTasksTable).values(projectTasks);
+    if (fundsChanged) {
+      const previousFunds = new Map(previousStore?.funds.map((fund) => [fund.id, fund]) ?? []);
+      const nextFunds = new Map(store.funds.map((fund) => [fund.id, fund]));
+      const removedIds = [...previousFunds.keys()].filter((id) => !nextFunds.has(id));
+      const changedIds = store.funds
+        .filter((fund) => !previousFunds.has(fund.id) || !sameSlice(previousFunds.get(fund.id), fund))
+        .map((fund) => fund.id);
+
+      if (removedIds.length > 0) {
+        await tx.delete(fundsTable).where(inArray(fundsTable.id, removedIds));
+      }
+
+      for (const fund of funds.filter((row) => changedIds.includes(row.id))) {
+        const { id: _fundId, createdAt: _fundCreatedAt, ...updateValues } = fund;
+        if (previousFunds.has(fund.id)) {
+          await tx.update(fundsTable).set(updateValues).where(eq(fundsTable.id, fund.id));
+        } else {
+          await tx.insert(fundsTable).values(fund);
+        }
+      }
     }
 
-    if (timesheets.length > 0) {
-      await tx.insert(timesheetsTable).values(timesheets);
+    if (projectsChanged) {
+      const previousBudgets = new Map(previousStore?.projectBudgets.map((budget) => [budget.id, budget]) ?? []);
+      const nextBudgets = new Map(store.projectBudgets.map((budget) => [budget.id, budget]));
+      const removedProjectIds = [...previousBudgets.keys()].filter((id) => !nextBudgets.has(id));
+      const changedProjectIds = store.projectBudgets
+        .filter((budget) => !previousBudgets.has(budget.id) || !sameSlice(previousBudgets.get(budget.id), budget))
+        .map((budget) => budget.id);
+
+      if (removedProjectIds.length > 0) {
+        await tx.delete(projectBudgetsTable).where(inArray(projectBudgetsTable.id, removedProjectIds));
+        await tx.delete(projectsTable).where(inArray(projectsTable.id, removedProjectIds));
+      }
+
+      for (const budget of store.projectBudgets.filter((item) => changedProjectIds.includes(item.id))) {
+        const budgetRow = projectBudgetToRow(budget);
+        const projectRow = projectBudgetToNormalizedRow(budget, null);
+        const taskRows = projectTasksToRows(budget, null);
+        const previousBudget = previousBudgets.get(budget.id);
+        const previousTaskIds = new Set(previousBudget?.tasks.map((task) => task.id) ?? []);
+        const nextTaskIds = new Set(budget.tasks.map((task) => task.id));
+        const removedTaskIds = [...previousTaskIds].filter((id) => !nextTaskIds.has(id));
+        const { id: _budgetId, createdAt: _budgetCreatedAt, ...budgetUpdateValues } = budgetRow;
+        const { id: _projectId, createdAt: _projectCreatedAt, ...projectUpdateValues } = projectRow;
+
+        if (previousBudgets.has(budget.id)) {
+          await tx.update(projectBudgetsTable).set(budgetUpdateValues).where(eq(projectBudgetsTable.id, budget.id));
+          await tx.update(projectsTable).set(projectUpdateValues).where(eq(projectsTable.id, budget.id));
+        } else {
+          await tx.insert(projectBudgetsTable).values(budgetRow);
+          await tx.insert(projectsTable).values(projectRow);
+        }
+
+        if (removedTaskIds.length > 0) {
+          await tx.delete(projectTasksTable).where(inArray(projectTasksTable.id, removedTaskIds));
+        }
+
+        for (const taskRow of taskRows) {
+          const { id: _taskId, createdAt: _taskCreatedAt, ...taskUpdateValues } = taskRow;
+          if (previousTaskIds.has(taskRow.id)) {
+            await tx.update(projectTasksTable).set(taskUpdateValues).where(eq(projectTasksTable.id, taskRow.id));
+          } else {
+            await tx.insert(projectTasksTable).values(taskRow);
+          }
+        }
+      }
     }
 
-    if (timesheetLines.length > 0) {
-      await tx.insert(timesheetLinesTable).values(timesheetLines);
-    }
-
-    if (purchaseOrders.length > 0) {
-      await tx.insert(purchaseOrdersTable).values(purchaseOrders);
-    }
-
-    if (auditTrail.length > 0) {
-      await tx.insert(auditTrailTable).values(auditTrail);
-    }
-
-    await tx
-      .insert(businessStateTable)
-      .values({
-        id: STATE_ID,
-        data: stripNormalizedStore(store),
-      })
-      .onConflictDoUpdate({
-        target: businessStateTable.id,
-        set: {
+    if (businessStateChanged) {
+      await tx
+        .insert(businessStateTable)
+        .values({
+          id: STATE_ID,
           data: stripNormalizedStore(store),
-          updatedAt: new Date(),
-        },
-      });
+        })
+        .onConflictDoUpdate({
+          target: businessStateTable.id,
+          set: {
+            data: stripNormalizedStore(store),
+            updatedAt: new Date(),
+          },
+        });
+    } else if (!previousStore) {
+      // Ensure the singleton row exists on first write even if the normalized payload is empty.
+      await tx
+        .insert(businessStateTable)
+        .values({
+          id: STATE_ID,
+          data: stripNormalizedStore(store),
+        })
+        .onConflictDoNothing();
+    }
+  });
+}
+
+function hasPersistedTimesheetContent(entry: TimesheetEntry): boolean {
+  return entry.lines.some((line) => {
+    const hasText = Boolean(line.project.trim() || line.task.trim() || line.notes?.trim());
+    const hasHours = DAY_KEYS.some((day) => Number(line.hours[day] ?? 0) > 0);
+    return hasText || hasHours;
+  });
+}
+
+function createAuditEntry(input: Omit<AuditTrailEntry, "id" | "createdAt">): AuditTrailEntry {
+  return {
+    id: createId("audit"),
+    createdAt: nowIso(),
+    ...input,
+  };
+}
+
+async function persistTargetedTimesheetUnsafe(input: {
+  currentStore: BusinessStore;
+  nextStore: BusinessStore;
+  entry?: TimesheetEntry | null;
+  deleteTimesheetId?: string | null;
+  salary?: SalaryRecord | null;
+  auditEntry?: AuditTrailEntry | null;
+}): Promise<void> {
+  const { currentStore, nextStore, entry, deleteTimesheetId, salary, auditEntry } = input;
+  const projectTasks = nextStore.projectBudgets.flatMap((budget) => budget.tasks ?? []);
+  const validProjectIds = new Set(nextStore.projectBudgets.map((budget) => budget.id));
+  const validTaskIds = new Set(projectTasks.map((task) => task.id));
+
+  await db.transaction(async (tx) => {
+    if (deleteTimesheetId) {
+      await tx.delete(timesheetLinesTable).where(eq(timesheetLinesTable.timesheetId, deleteTimesheetId));
+      await tx.delete(timesheetsTable).where(eq(timesheetsTable.id, deleteTimesheetId));
+    }
+
+    if (entry) {
+      const row = timesheetToRow(entry);
+      const { id: _rowId, createdAt: _rowCreatedAt, ...updateValues } = row;
+      const alreadyExists = currentStore.timesheets.some((timesheet) => timesheet.id === entry.id);
+
+      if (alreadyExists) {
+        await tx.update(timesheetsTable).set(updateValues).where(eq(timesheetsTable.id, entry.id));
+      } else {
+        await tx.insert(timesheetsTable).values(row);
+      }
+
+      await tx.delete(timesheetLinesTable).where(eq(timesheetLinesTable.timesheetId, entry.id));
+
+      const lineRows = timesheetLinesToRows(entry, validProjectIds, validTaskIds);
+      if (lineRows.length > 0) {
+        await tx.insert(timesheetLinesTable).values(lineRows);
+      }
+    }
+
+    if (salary) {
+      const row = salaryToRow(salary);
+      const { id: _salaryId, createdAt: _salaryCreatedAt, ...salaryUpdateValues } = row;
+      const alreadyExists = currentStore.salaries.some((item) => item.id === salary.id);
+      if (alreadyExists) {
+        await tx.update(salariesTable).set(salaryUpdateValues).where(eq(salariesTable.id, salary.id));
+      } else {
+        await tx.insert(salariesTable).values(row);
+      }
+    }
+
+    if (auditEntry) {
+      await tx.insert(auditTrailTable).values(auditEntryToRow(auditEntry));
+    }
   });
 }
 
 export async function writeStore(store: BusinessStore): Promise<void> {
   await ensureSchema();
-  await withStoreWriteLock(() => persistStoreUnsafe(store));
+  await withStoreWriteLock(async () => {
+    storeReadPromise = null;
+    const previous = storeCache ?? await readStore({ fresh: true });
+    const next = normalizeStore(store);
+    await persistStoreUnsafe(previous, next);
+    cacheStore(next);
+  });
 }
 
 export async function updateStore(mutator: (current: BusinessStore) => BusinessStore): Promise<BusinessStore> {
   await ensureSchema();
   return withStoreWriteLock(async () => {
-    const current = await readStore();
+    storeReadPromise = null;
+    const current = storeCache ?? await readStore({ fresh: true });
     const next = normalizeStore(mutator(cloneStore(current)));
-    await persistStoreUnsafe(next);
-    return next;
+    await persistStoreUnsafe(current, next);
+    cacheStore(next);
+    return cloneStore(next);
+  });
+}
+
+export async function saveTimesheetFast(input: {
+  entry: TimesheetEntry;
+  audit?: Omit<AuditTrailEntry, "id" | "createdAt">;
+}): Promise<TimesheetEntry | null> {
+  await ensureSchema();
+  return withStoreWriteLock(async () => {
+    storeReadPromise = null;
+    const current = storeCache ?? await readStore({ fresh: true });
+    const normalizedEntry = normalizeStore({ timesheets: [input.entry] }).timesheets[0];
+    const existing = current.timesheets.find((timesheet) => timesheet.id === normalizedEntry.id);
+
+    if (normalizedEntry.status === "draft" && !hasPersistedTimesheetContent(normalizedEntry)) {
+      if (!existing) {
+        return null;
+      }
+
+      const auditEntry = input.audit
+        ? createAuditEntry({
+            ...input.audit,
+            entityId: existing.id,
+          })
+        : null;
+
+      const nextStore = normalizeStore({
+        ...current,
+        timesheets: current.timesheets.filter((timesheet) => timesheet.id !== existing.id),
+        auditTrail: auditEntry ? [auditEntry, ...current.auditTrail].slice(0, 250) : current.auditTrail,
+      });
+
+      await persistTargetedTimesheetUnsafe({
+        currentStore: current,
+        nextStore,
+        deleteTimesheetId: existing.id,
+        auditEntry,
+      });
+      cacheStore(nextStore);
+      return null;
+    }
+
+    const nextStore = normalizeStore({
+      ...current,
+      timesheets: existing
+        ? current.timesheets.map((timesheet) => (timesheet.id === normalizedEntry.id ? normalizedEntry : timesheet))
+        : [normalizedEntry, ...current.timesheets],
+      auditTrail: input.audit
+        ? [createAuditEntry({ ...input.audit, entityId: normalizedEntry.id }), ...current.auditTrail].slice(0, 250)
+        : current.auditTrail,
+    });
+
+    const auditEntry = input.audit ? nextStore.auditTrail[0] ?? null : null;
+
+    await persistTargetedTimesheetUnsafe({
+      currentStore: current,
+      nextStore,
+      entry: normalizedEntry,
+      auditEntry,
+    });
+    cacheStore(nextStore);
+    return structuredClone(normalizedEntry);
+  });
+}
+
+export async function submitTimesheetFast(input: {
+  id: string;
+  actorName: string;
+  actorRole: ActorRole;
+}): Promise<TimesheetEntry | null> {
+  await ensureSchema();
+  return withStoreWriteLock(async () => {
+    storeReadPromise = null;
+    const current = storeCache ?? await readStore({ fresh: true });
+    const existing = current.timesheets.find((timesheet) => timesheet.id === input.id);
+
+    if (!existing) {
+      return null;
+    }
+
+    const updatedEntry = normalizeStore({
+      timesheets: [
+        {
+          ...existing,
+          status: "submitted" as const,
+          submittedAt: nowIso(),
+          reviewedAt: undefined,
+          reviewedBy: undefined,
+          reviewNotes: undefined,
+          updatedAt: nowIso(),
+        },
+      ],
+    }).timesheets[0];
+
+    const auditEntry = createAuditEntry({
+      actorName: input.actorName,
+      actorRole: input.actorRole,
+      action: "submitted",
+      entityType: "timesheet",
+      entityId: existing.id,
+      summary: "Submitted a timesheet for review.",
+    });
+
+    const nextStore = normalizeStore({
+      ...current,
+      timesheets: current.timesheets.map((timesheet) => (timesheet.id === existing.id ? updatedEntry : timesheet)),
+      auditTrail: [auditEntry, ...current.auditTrail].slice(0, 250),
+    });
+
+    await persistTargetedTimesheetUnsafe({
+      currentStore: current,
+      nextStore,
+      entry: updatedEntry,
+      auditEntry,
+    });
+    cacheStore(nextStore);
+    return structuredClone(updatedEntry);
+  });
+}
+
+export async function submitTimesheetEntryFast(input: {
+  entry: TimesheetEntry;
+  actorName: string;
+  actorRole: ActorRole;
+}): Promise<TimesheetEntry> {
+  await ensureSchema();
+  return withStoreWriteLock(async () => {
+    storeReadPromise = null;
+    const current = storeCache ?? await readStore({ fresh: true });
+    const normalizedEntry = normalizeStore({ timesheets: [input.entry] }).timesheets[0];
+    const existing = current.timesheets.find((timesheet) => timesheet.id === normalizedEntry.id);
+    const submittedEntry = normalizeStore({
+      timesheets: [
+        {
+          ...normalizedEntry,
+          submittedAt: nowIso(),
+          reviewedAt: undefined,
+          reviewedBy: undefined,
+          reviewNotes: undefined,
+          status: "submitted" as const,
+          updatedAt: nowIso(),
+          createdAt: existing?.createdAt ?? normalizedEntry.createdAt,
+        },
+      ],
+    }).timesheets[0];
+
+    const auditEntry = createAuditEntry({
+      actorName: input.actorName,
+      actorRole: input.actorRole,
+      action: "submitted",
+      entityType: "timesheet",
+      entityId: submittedEntry.id,
+      summary: "Submitted a timesheet for review.",
+    });
+
+    const nextStore = normalizeStore({
+      ...current,
+      timesheets: existing
+        ? current.timesheets.map((timesheet) => (timesheet.id === submittedEntry.id ? submittedEntry : timesheet))
+        : [submittedEntry, ...current.timesheets],
+      auditTrail: [auditEntry, ...current.auditTrail].slice(0, 250),
+    });
+
+    await persistTargetedTimesheetUnsafe({
+      currentStore: current,
+      nextStore,
+      entry: submittedEntry,
+      auditEntry,
+    });
+    cacheStore(nextStore);
+    return structuredClone(submittedEntry);
+  });
+}
+
+export async function reviewTimesheetFast(input: {
+  id: string;
+  status: "approved" | "rejected";
+  actorName: string;
+  note?: string;
+  employee?: UserProfile | null;
+}): Promise<{ timesheet: TimesheetEntry; salary?: SalaryRecord }> {
+  await ensureSchema();
+  return withStoreWriteLock(async () => {
+    storeReadPromise = null;
+    const current = storeCache ?? await readStore({ fresh: true });
+    const existing = current.timesheets.find((timesheet) => timesheet.id === input.id);
+
+    if (!existing) {
+      throw new Error("Timesheet not found");
+    }
+
+    const now = nowIso();
+    const reviewedEntry = normalizeStore({
+      timesheets: [
+        {
+          ...existing,
+          status: input.status,
+          reviewedAt: now,
+          reviewedBy: input.actorName,
+          reviewNotes: input.note?.trim() || undefined,
+          updatedAt: now,
+        },
+      ],
+    }).timesheets[0];
+
+    let salary: SalaryRecord | undefined;
+    if (input.status === "approved" && input.employee && input.employee.payType === "hourly" && effectiveHourlyRate(input.employee) > 0) {
+      const existingPayroll = current.salaries.find((item) => item.timesheetId === existing.id);
+      const hours = sumTimesheetHours(existing);
+      const rate = effectiveHourlyRate(input.employee);
+      salary = {
+        id: existingPayroll?.id ?? createId("sal"),
+        employeeId: input.employee.id,
+        employeeNameSnapshot: input.employee.name,
+        amount: Math.round(hours * rate),
+        date: now,
+        note: input.note?.trim() || `Timesheet payout for week of ${existing.weekStart}`,
+        status: existingPayroll?.status === "paid" ? "paid" : "pending",
+        source: "timesheet",
+        paidAt: existingPayroll?.status === "paid" ? existingPayroll.paidAt ?? existingPayroll.date : undefined,
+        weekStart: existing.weekStart,
+        hours,
+        rate,
+        timesheetId: existing.id,
+        createdAt: existingPayroll?.createdAt ?? now,
+        updatedAt: now,
+      };
+    }
+
+    const auditEntry = createAuditEntry({
+      actorName: input.actorName,
+      actorRole: "admin",
+      action: input.status === "approved" ? "approved" : "reverted",
+      entityType: "timesheet",
+      entityId: existing.id,
+      summary:
+        input.status === "approved"
+          ? `Approved timesheet for ${existing.employeeNameSnapshot}.`
+          : "Returned a timesheet for changes.",
+    });
+
+    const nextStore = normalizeStore({
+      ...current,
+      timesheets: current.timesheets.map((timesheet) => (timesheet.id === existing.id ? reviewedEntry : timesheet)),
+      salaries: salary
+        ? current.salaries.some((item) => item.id === salary!.id)
+          ? current.salaries.map((item) => (item.id === salary!.id ? salary! : item))
+          : [salary, ...current.salaries]
+        : current.salaries,
+      auditTrail: [auditEntry, ...current.auditTrail].slice(0, 250),
+    });
+
+    await persistTargetedTimesheetUnsafe({
+      currentStore: current,
+      nextStore,
+      entry: reviewedEntry,
+      salary: salary ?? null,
+      auditEntry,
+    });
+    cacheStore(nextStore);
+    return {
+      timesheet: structuredClone(reviewedEntry),
+      salary: salary ? structuredClone(salary) : undefined,
+    };
   });
 }
 

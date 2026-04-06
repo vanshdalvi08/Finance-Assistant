@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import { CreditCard, Clock3, BadgeCheck } from "lucide-react";
+import type { AdminOverview, ChartPoint, Transaction } from "@/lib/api";
 
 type PayrollStatus = "pending" | "paid";
 
@@ -57,6 +58,72 @@ function getPayrollDate(record: SalaryRecord) {
   return record.paidAt ?? record.date;
 }
 
+function upsertSalaryRecord(current: SalaryRecord[] | undefined, nextRecord: SalaryRecord) {
+  if (!current) {
+    return [nextRecord];
+  }
+
+  const existingIndex = current.findIndex((record) => record.id === nextRecord.id);
+  if (existingIndex === -1) {
+    return [nextRecord, ...current];
+  }
+
+  return current.map((record) => (record.id === nextRecord.id ? nextRecord : record));
+}
+
+function patchChartData(current: ChartPoint[] | undefined, nextRecord: SalaryRecord) {
+  if (!current) {
+    return current;
+  }
+
+  const monthKey = getPayrollDate(nextRecord).slice(0, 7);
+  const next = current.map((point) =>
+    point.month === monthKey ? { ...point, salary: point.salary + nextRecord.amount } : point,
+  );
+
+  if (next.some((point) => point.month === monthKey)) {
+    return next;
+  }
+
+  return [...current, { month: monthKey, funds: 0, expenses: 0, salary: nextRecord.amount }].sort((left, right) =>
+    left.month.localeCompare(right.month),
+  );
+}
+
+function patchOverview(current: AdminOverview | undefined, nextRecord: SalaryRecord, previousStatus?: PayrollStatus) {
+  if (!current) {
+    return current;
+  }
+
+  const amount = getPayrollAmount(nextRecord);
+  const previousWasPaid = previousStatus === "paid";
+  const nextIsPaid = getPayrollStatus(nextRecord) === "paid";
+  const delta = nextIsPaid && !previousWasPaid ? amount : 0;
+
+  return {
+    ...current,
+    totalSalaryPaid: current.totalSalaryPaid + delta,
+    currentBalance: current.currentBalance - delta,
+  };
+}
+
+function patchTransactions(current: Transaction[] | undefined, nextRecord: SalaryRecord, employeeName: string) {
+  if (!current) {
+    return current;
+  }
+
+  const nextTransaction: Transaction = {
+    id: `txn_${nextRecord.id}`,
+    type: "salary",
+    amount: -getPayrollAmount(nextRecord),
+    date: getPayrollDate(nextRecord),
+    description: `${employeeName} salary`,
+    category: "payroll",
+  };
+
+  return [nextTransaction, ...current.filter((transaction) => transaction.id !== nextTransaction.id)];
+}
+
 export default function Salary() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -78,38 +145,55 @@ export default function Salary() {
     | ((payload: string | { id: string }) => Promise<unknown>);
 
   const payMutation = useMutation({
-    mutationFn: async (record: SalaryRecord): Promise<{ persisted: boolean }> => {
+    mutationFn: async (record: SalaryRecord): Promise<{ persisted: boolean; record: SalaryRecord }> => {
       if (typeof paySalaryRecord === "function") {
+        let updatedRecord: SalaryRecord | null = null;
+
         try {
-          await paySalaryRecord(record.id);
+          updatedRecord = (await paySalaryRecord(record.id)) as SalaryRecord;
         } catch {
-          await paySalaryRecord({ id: record.id });
+          updatedRecord = (await paySalaryRecord({ id: record.id })) as SalaryRecord;
         }
 
-        return { persisted: true };
+        return { persisted: true, record: updatedRecord ?? record };
       }
 
-      queryClient.setQueryData<SalaryRecord[]>(["salaries"], (current) =>
-        (current ?? []).map((item) =>
-          item.id === record.id
-            ? {
-                ...item,
-                status: "paid",
-                paidAt: new Date().toISOString(),
-                date: item.date ?? new Date().toISOString(),
-              }
-            : item
-        )
+      const updatedRecord = {
+        ...record,
+        status: "paid" as const,
+        paidAt: new Date().toISOString(),
+        date: record.date ?? new Date().toISOString(),
+      };
+
+      queryClient.setQueryData<SalaryRecord[]>(["salaries"], (current) => upsertSalaryRecord(current, updatedRecord));
+      queryClient.setQueryData<SalaryRecord[]>(["employee-salaries", record.employeeId], (current) =>
+        upsertSalaryRecord(current, updatedRecord),
       );
 
-      return { persisted: false };
+      return { persisted: false, record: updatedRecord };
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["salaries"] });
-      await queryClient.invalidateQueries({ queryKey: ["employee-salaries"] });
-      await queryClient.invalidateQueries({ queryKey: ["transactions"] });
-      await queryClient.invalidateQueries({ queryKey: ["chartData"] });
-      await queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
+    onSuccess: (_result, record) => {
+      const updatedRecord =
+        _result.record ??
+        ({
+          ...record,
+          status: "paid" as const,
+          paidAt: new Date().toISOString(),
+          date: record.date ?? new Date().toISOString(),
+        } satisfies SalaryRecord);
+      const previousStatus = getPayrollStatus(record);
+
+      queryClient.setQueryData<SalaryRecord[]>(["salaries"], (current) => upsertSalaryRecord(current, updatedRecord));
+      queryClient.setQueryData<SalaryRecord[]>(["employee-salaries", record.employeeId], (current) =>
+        upsertSalaryRecord(current, updatedRecord),
+      );
+      queryClient.setQueryData<ChartPoint[]>(["chartData"], (current) => patchChartData(current, updatedRecord));
+      queryClient.setQueryData<AdminOverview>(["adminOverview"], (current) =>
+        patchOverview(current, updatedRecord, previousStatus),
+      );
+      queryClient.setQueryData<Transaction[]>(["transactions"], (current) =>
+        patchTransactions(current, updatedRecord, updatedRecord.employeeNameSnapshot ?? record.employeeNameSnapshot ?? "Employee"),
+      );
 
       toast({
         title: "Salary paid",

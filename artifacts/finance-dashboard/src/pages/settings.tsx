@@ -135,10 +135,12 @@ export default function Settings() {
   const saveMutation = useMutation({
     mutationFn: api.saveCategory,
     onSuccess: (_savedCategory, data) => {
-      queryClient.invalidateQueries({ queryKey: ["categories"] });
-      queryClient.invalidateQueries({ queryKey: ["expenses"] });
-      queryClient.invalidateQueries({ queryKey: ["transactions"] });
-      queryClient.invalidateQueries({ queryKey: ["expenseCategories"] });
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["categories"] }),
+        queryClient.invalidateQueries({ queryKey: ["expenses"] }),
+        queryClient.invalidateQueries({ queryKey: ["transactions"] }),
+        queryClient.invalidateQueries({ queryKey: ["expenseCategories"] }),
+      ]);
       toast({
         title: data.editId ? "Category updated" : "Category added",
         description: `"${data.name}" has been ${data.editId ? "updated" : "created"}.`,
@@ -153,10 +155,12 @@ export default function Settings() {
       return category;
     },
     onSuccess: (category) => {
-      queryClient.invalidateQueries({ queryKey: ["categories"] });
-      queryClient.invalidateQueries({ queryKey: ["expenses"] });
-      queryClient.invalidateQueries({ queryKey: ["transactions"] });
-      queryClient.invalidateQueries({ queryKey: ["expenseCategories"] });
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["categories"] }),
+        queryClient.invalidateQueries({ queryKey: ["expenses"] }),
+        queryClient.invalidateQueries({ queryKey: ["transactions"] }),
+        queryClient.invalidateQueries({ queryKey: ["expenseCategories"] }),
+      ]);
       toast({ title: "Category deleted", description: `"${category.name}" removed.` });
     },
   });

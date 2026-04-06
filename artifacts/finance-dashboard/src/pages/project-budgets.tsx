@@ -138,7 +138,7 @@ export default function ProjectBudgetsPage() {
         }))
         .filter((task) => task.name.length > 0);
 
-      await api.saveProjectBudget({
+      return api.saveProjectBudget({
         id: form.id,
         project,
         totalBudget: 0,
@@ -148,11 +148,20 @@ export default function ProjectBudgetsPage() {
         actorName: "Admin",
       });
     },
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["projectBudgets"] }),
-        queryClient.invalidateQueries({ queryKey: ["projectCatalog"] }),
-        queryClient.invalidateQueries({ queryKey: ["projectNames"] }),
+    onSuccess: (project) => {
+      queryClient.setQueryData<ProjectRecord[]>(["projectBudgets"], (current = []) => [
+        project,
+        ...current.filter((item) => item.id !== project.id),
+      ]);
+      queryClient.setQueryData<ProjectRecord[]>(["projectCatalog"], (current = []) => [
+        project,
+        ...current.filter((item) => item.id !== project.id),
+      ]);
+      queryClient.setQueryData<string[]>(["projectNames"], (current = []) => [
+        project.project,
+        ...current.filter((name) => name !== project.project),
+      ]);
+      void Promise.all([
         queryClient.invalidateQueries({ queryKey: ["projectBudgetSummary"] }),
         queryClient.invalidateQueries({ queryKey: ["auditTrail"] }),
       ]);
@@ -174,11 +183,21 @@ export default function ProjectBudgetsPage() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.deleteProjectBudget(id, "Admin"),
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["projectBudgets"] }),
-        queryClient.invalidateQueries({ queryKey: ["projectCatalog"] }),
-        queryClient.invalidateQueries({ queryKey: ["projectNames"] }),
+    onSuccess: (_data, deletedId) => {
+      const deletedProject = queryClient
+        .getQueryData<ProjectRecord[]>(["projectBudgets"])
+        ?.find((project) => project.id === deletedId);
+
+      queryClient.setQueryData<ProjectRecord[]>(["projectBudgets"], (current = []) =>
+        current.filter((project) => project.id !== deletedId),
+      );
+      queryClient.setQueryData<ProjectRecord[]>(["projectCatalog"], (current = []) =>
+        current.filter((project) => project.id !== deletedId),
+      );
+      queryClient.setQueryData<string[]>(["projectNames"], (current = []) =>
+        deletedProject ? current.filter((name) => name !== deletedProject.project) : current,
+      );
+      void Promise.all([
         queryClient.invalidateQueries({ queryKey: ["projectBudgetSummary"] }),
         queryClient.invalidateQueries({ queryKey: ["auditTrail"] }),
       ]);

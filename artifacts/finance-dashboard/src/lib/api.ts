@@ -128,6 +128,19 @@ export interface AuditTrailEntry {
   createdAt: string;
 }
 
+export interface NotificationItem {
+  id: string;
+  kind: "timesheet" | "expense" | "salary" | "purchase-order" | "employee" | "system";
+  title: string;
+  message: string;
+  entityType?: string;
+  entityId?: string;
+  readAt?: string | null;
+  emailSentAt?: string | null;
+  createdAt: string;
+  link?: string;
+}
+
 export interface ProjectBudget {
   id: string;
   project: string;
@@ -151,6 +164,8 @@ export interface PurchaseOrderTask {
   id: string;
   taskName: string;
   description: string;
+  hours: number;
+  rate: number;
   amount: number;
   status: "pending" | "paid";
   paidAt?: string;
@@ -255,11 +270,12 @@ interface CreatePurchaseOrderInput {
   tasks?: Array<{
     taskName: string;
     description?: string;
-    amount: number;
+    hours: number;
+    rate: number;
   }>;
 }
 
-interface AdminOverview {
+export interface AdminOverview {
   totalFunds: number;
   totalExpenses: number;
   totalSalaryPaid: number;
@@ -273,7 +289,12 @@ interface AdminOverview {
   yearToDateExpenses: number;
 }
 
-interface ChartPoint {
+interface NotificationsResponse {
+  notifications: NotificationItem[];
+  unreadCount?: number;
+}
+
+export interface ChartPoint {
   month: string;
   funds: number;
   expenses: number;
@@ -737,6 +758,11 @@ export const api = {
   saveTimesheet: async (entry: TimesheetEntry) =>
     normalizeTimesheet((await businessPost<{ timesheet: TimesheetEntry }>("/timesheets", normalizeTimesheet(entry))).timesheet),
 
+  submitTimesheetEntry: async (entry: TimesheetEntry) =>
+    normalizeTimesheet(
+      (await businessPost<{ timesheet: TimesheetEntry }>("/timesheets/submit", normalizeTimesheet(entry))).timesheet,
+    ),
+
   submitTimesheet: async (id: string) =>
     normalizeTimesheet((await businessPost<{ timesheet: TimesheetEntry }>(`/timesheets/${id}/submit`, {})).timesheet),
 
@@ -814,7 +840,11 @@ export const api = {
   }) =>
     (await businessPost<{ purchaseOrder: PurchaseOrder }>(`/purchase-orders/${input.id}`, input, "PATCH")).purchaseOrder,
 
-  addPurchaseOrderTask: async (input: { poId: string; taskName: string; description?: string; amount: number }) =>
+  deletePurchaseOrder: async (id: string) => {
+    await businessPost<void>(`/purchase-orders/${id}`, undefined, "DELETE");
+  },
+
+  addPurchaseOrderTask: async (input: { poId: string; taskName: string; description?: string; hours: number; rate: number }) =>
     (await businessPost<{ task: PurchaseOrderTask }>(`/purchase-orders/${input.poId}/tasks`, input)).task,
 
   payPurchaseOrderTask: async (input: { poId: string; taskId: string; actorName?: string }) =>
@@ -827,4 +857,21 @@ export const api = {
   getAdminOverview: async () => businessGet<AdminOverview>("/overview"),
 
   getAuditTrail: async () => (await businessGet<{ auditTrail: AuditTrailEntry[] }>("/audit-trail")).auditTrail,
+
+  getNotifications: async () => {
+    const response = await requestJson<NotificationsResponse>("/notifications");
+    return {
+      notifications: response.notifications,
+      unreadCount:
+        typeof response.unreadCount === "number"
+          ? response.unreadCount
+          : response.notifications.filter((item) => !item.readAt).length,
+    };
+  },
+
+  markNotificationRead: async (id: string) =>
+    (await requestJson<{ notification: NotificationItem }>(`/notifications/${id}/read`, { method: "POST", data: {} })).notification,
+
+  markAllNotificationsRead: async () =>
+    requestJson<void>("/notifications/read-all", { method: "POST", data: {} }),
 };

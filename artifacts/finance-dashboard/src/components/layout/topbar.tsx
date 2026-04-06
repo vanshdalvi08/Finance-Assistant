@@ -2,6 +2,7 @@ import { Moon, Sun } from "lucide-react";
 import { useTheme } from "@/components/theme-provider";
 import { useUIStore } from "@/store/ui";
 import { cn } from "@/lib/utils";
+import { NotificationCenter } from "./notification-center";
 
 export function Topbar() {
   const { theme, setTheme } = useTheme();
@@ -19,6 +20,7 @@ export function Topbar() {
       </div>
 
       <div className="flex items-center gap-4">
+        <NotificationCenter />
         <button
           onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
           className="w-8 h-8 rounded-full flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"

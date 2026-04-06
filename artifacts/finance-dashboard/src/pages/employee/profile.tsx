@@ -134,10 +134,12 @@ export default function EmployeeProfilePage() {
 
       return result;
     },
-    onSuccess: async (result) => {
+    onSuccess: (result) => {
       replaceUser(result.user);
-      await queryClient.invalidateQueries({ queryKey: ["employee-profile"] });
-      await queryClient.invalidateQueries({ queryKey: ["employees"] });
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["employee-profile"] }),
+        queryClient.invalidateQueries({ queryKey: ["employees"] }),
+      ]);
     },
   });
 

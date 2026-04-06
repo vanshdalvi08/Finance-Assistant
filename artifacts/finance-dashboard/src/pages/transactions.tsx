@@ -1,83 +1,98 @@
-import { useState, useMemo } from "react";
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { format } from "date-fns";
+import { BanknoteArrowDown, BanknoteArrowUp, Search, Wallet, X } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { api, Transaction } from "@/lib/api";
-import { useQuery } from "@tanstack/react-query";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Button } from "@/components/ui/button";
-import { format } from "date-fns";
-import { DollarSign, Receipt, Wallet, TrendingUp, TrendingDown, X } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 
 const TYPE_CONFIG = {
   fund: {
     label: "Fund Inflow",
-    color: "text-primary",
-    bg: "bg-primary/10",
-    border: "border-primary/20",
-    dot: "bg-primary",
-    icon: Wallet,
+    badge: "border-primary/20 bg-primary/10 text-primary",
   },
   salary: {
     label: "Salary",
-    color: "text-orange-400",
-    bg: "bg-orange-500/10",
-    border: "border-orange-500/20",
-    dot: "bg-orange-400",
-    icon: DollarSign,
+    badge: "border-orange-500/20 bg-orange-500/10 text-orange-300",
   },
   expense: {
     label: "Expense",
-    color: "text-rose-400",
-    bg: "bg-rose-500/10",
-    border: "border-rose-500/20",
-    dot: "bg-rose-400",
-    icon: Receipt,
+    badge: "border-rose-500/20 bg-rose-500/10 text-rose-300",
   },
   "purchase-order": {
     label: "Budget Sheet",
-    color: "text-primary",
-    bg: "bg-primary/10",
-    border: "border-primary/20",
-    dot: "bg-primary",
-    icon: Wallet,
+    badge: "border-primary/20 bg-primary/10 text-primary",
   },
-};
+} as const;
 
 export default function Transactions() {
-  const [filterType, setFilterType] = useState<string>("all");
+  const initialType =
+    typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("type") : null;
+  const [filterType, setFilterType] = useState<string>(
+    initialType && ["fund", "expense", "salary"].includes(initialType) ? initialType : "all",
+  );
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
   const [filterAmountMin, setFilterAmountMin] = useState("");
   const [filterAmountMax, setFilterAmountMax] = useState("");
+  const [search, setSearch] = useState("");
 
   const { data: transactions = [], isLoading } = useQuery({
     queryKey: ["transactions"],
     queryFn: api.getTransactions,
   });
+  const { data: overview } = useQuery({
+    queryKey: ["adminOverview"],
+    queryFn: api.getAdminOverview,
+  });
 
   const sorted = useMemo(
     () => [...transactions].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()),
-    [transactions]
+    [transactions],
   );
 
   const filtered = useMemo(() => {
-    return sorted.filter((t) => {
-      if (filterType !== "all" && t.type !== filterType) return false;
-      if (filterDateFrom && t.date < filterDateFrom) return false;
-      if (filterDateTo && t.date > filterDateTo + "T23:59:59Z") return false;
-      const abs = Math.abs(t.amount);
-      if (filterAmountMin && abs < Number(filterAmountMin)) return false;
-      if (filterAmountMax && abs > Number(filterAmountMax)) return false;
+    return sorted.filter((transaction) => {
+      if (filterType !== "all" && transaction.type !== filterType) return false;
+      if (filterDateFrom && transaction.date < filterDateFrom) return false;
+      if (filterDateTo && transaction.date > `${filterDateTo}T23:59:59Z`) return false;
+
+      const amount = Math.abs(transaction.amount);
+      if (filterAmountMin && amount < Number(filterAmountMin)) return false;
+      if (filterAmountMax && amount > Number(filterAmountMax)) return false;
+
+      if (
+        search.trim() &&
+        !`${transaction.description} ${transaction.category} ${transaction.project ?? ""}`
+          .toLowerCase()
+          .includes(search.trim().toLowerCase())
+      ) {
+        return false;
+      }
+
       return true;
     });
-  }, [sorted, filterType, filterDateFrom, filterDateTo, filterAmountMin, filterAmountMax]);
+  }, [sorted, filterType, filterDateFrom, filterDateTo, filterAmountMin, filterAmountMax, search]);
 
   const hasFilter =
-    filterType !== "all" || filterDateFrom || filterDateTo || filterAmountMin || filterAmountMax;
+    filterType !== "all" || filterDateFrom || filterDateTo || filterAmountMin || filterAmountMax || search;
+
+  const totalInflow = filtered
+    .filter((transaction) => transaction.type === "fund")
+    .reduce((sum, transaction) => sum + transaction.amount, 0);
+
+  const totalOutflow = filtered
+    .filter((transaction) => transaction.type !== "fund")
+    .reduce((sum, transaction) => sum + Math.abs(transaction.amount), 0);
+
+  const availableFunds = overview?.currentBalance ?? totalInflow - totalOutflow;
 
   function clearFilters() {
     setFilterType("all");
@@ -85,63 +100,87 @@ export default function Transactions() {
     setFilterDateTo("");
     setFilterAmountMin("");
     setFilterAmountMax("");
+    setSearch("");
   }
-
-  const totalInflow = filtered
-    .filter((t) => t.type === "fund")
-    .reduce((s, t) => s + t.amount, 0);
-  const totalOutflow = filtered
-    .filter((t) => t.type !== "fund")
-    .reduce((s, t) => s + Math.abs(t.amount), 0);
 
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">History</h1>
-          <p className="text-muted-foreground text-sm mt-1">
-            Complete chronological record of all financial movements.
-          </p>
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">Transactions</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              A clean ledger of inflows, payouts, and approved operating movement.
+            </p>
+          </div>
+          <div className="relative w-full max-w-sm">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search description, category, or project"
+              className="h-10 rounded-xl border-border/60 bg-card/70 pl-9"
+            />
+          </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <Card className="border-border/50 bg-card/50">
-            <CardContent className="pt-5 pb-4 px-5">
-              <p className="text-xs text-muted-foreground mb-1">Total Records</p>
-              <p className="text-2xl font-bold">{filtered.length}</p>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <Card className="border-emerald-500/10 bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.08),transparent_36%),hsl(var(--card))] shadow-[0_0_0_1px_rgba(16,185,129,0.05),0_6px_18px_rgba(0,0,0,0.08)]">
+            <CardContent className="px-5 py-5">
+              <div className="mb-3 flex items-center justify-between">
+                <p className="text-xs uppercase tracking-[0.14em] text-muted-foreground">Available Funds</p>
+                <div className="rounded-lg bg-emerald-500/10 p-2 text-emerald-300">
+                  <Wallet className="h-4 w-4" />
+                </div>
+              </div>
+              <p className="text-3xl font-bold tracking-tight">
+                {availableFunds.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
+              </p>
+              <p className="mt-2 text-xs text-muted-foreground">Live balance after approved expenses and paid salary.</p>
             </CardContent>
           </Card>
-          <Card className="border-border/50 bg-card/50">
-            <CardContent className="pt-5 pb-4 px-5">
-              <div className="flex items-center gap-2 mb-1">
-                <TrendingUp className="w-3.5 h-3.5 text-primary" />
-                <p className="text-xs text-muted-foreground">Total Inflow</p>
+
+          <Card className="border-border/50 bg-card/60">
+            <CardContent className="px-5 py-5">
+              <div className="mb-3 flex items-center justify-between">
+                <p className="text-xs uppercase tracking-[0.14em] text-muted-foreground">Inflow</p>
+                <div className="rounded-lg bg-primary/10 p-2 text-primary">
+                  <BanknoteArrowUp className="h-4 w-4" />
+                </div>
               </div>
-              <p className="text-2xl font-bold text-primary">
+              <p className="text-3xl font-bold tracking-tight text-primary">
                 +{totalInflow.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
               </p>
+              <p className="mt-2 text-xs text-muted-foreground">{filtered.length} records in the current view.</p>
             </CardContent>
           </Card>
-          <Card className="border-border/50 bg-card/50">
-            <CardContent className="pt-5 pb-4 px-5">
-              <div className="flex items-center gap-2 mb-1">
-                <TrendingDown className="w-3.5 h-3.5 text-rose-400" />
-                <p className="text-xs text-muted-foreground">Total Outflow</p>
+
+          <Card className="border-border/50 bg-card/60">
+            <CardContent className="px-5 py-5">
+              <div className="mb-3 flex items-center justify-between">
+                <p className="text-xs uppercase tracking-[0.14em] text-muted-foreground">Outflow</p>
+                <div className="rounded-lg bg-rose-500/10 p-2 text-rose-300">
+                  <BanknoteArrowDown className="h-4 w-4" />
+                </div>
               </div>
-              <p className="text-2xl font-bold text-rose-400">
+              <p className="text-3xl font-bold tracking-tight text-rose-300">
                 -{totalOutflow.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
               </p>
+              <p className="mt-2 text-xs text-muted-foreground">Expenses, payroll, and approved operational deductions.</p>
             </CardContent>
           </Card>
         </div>
 
         <Card className="border-border/50">
-          <CardContent className="pt-4 pb-3 px-5">
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 items-end">
-              <div className="sm:col-span-1 space-y-1">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Ledger Filters</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4 px-5 pb-5 pt-0">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">Type</Label>
                 <Select value={filterType} onValueChange={setFilterType}>
-                  <SelectTrigger className="h-8 text-xs">
+                  <SelectTrigger className="h-10 rounded-xl border-border/60 bg-card/70 text-xs">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -153,125 +192,125 @@ export default function Transactions() {
                   </SelectContent>
                 </Select>
               </div>
+
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">From Date</Label>
                 <Input
                   type="date"
-                  className="h-8 text-xs"
+                  className="h-10 rounded-xl border-border/60 bg-card/70 text-xs"
                   value={filterDateFrom}
-                  onChange={(e) => setFilterDateFrom(e.target.value)}
+                  onChange={(event) => setFilterDateFrom(event.target.value)}
                 />
               </div>
+
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">To Date</Label>
                 <Input
                   type="date"
-                  className="h-8 text-xs"
+                  className="h-10 rounded-xl border-border/60 bg-card/70 text-xs"
                   value={filterDateTo}
-                  onChange={(e) => setFilterDateTo(e.target.value)}
+                  onChange={(event) => setFilterDateTo(event.target.value)}
                 />
               </div>
+
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">Min Amount (₹)</Label>
                 <Input
                   type="number"
                   placeholder="0"
-                  className="h-8 text-xs"
+                  className="h-10 rounded-xl border-border/60 bg-card/70 text-xs"
                   value={filterAmountMin}
-                  onChange={(e) => setFilterAmountMin(e.target.value)}
+                  onChange={(event) => setFilterAmountMin(event.target.value)}
                 />
               </div>
+
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">Max Amount (₹)</Label>
                 <Input
                   type="number"
                   placeholder="Any"
-                  className="h-8 text-xs"
+                  className="h-10 rounded-xl border-border/60 bg-card/70 text-xs"
                   value={filterAmountMax}
-                  onChange={(e) => setFilterAmountMax(e.target.value)}
+                  onChange={(event) => setFilterAmountMax(event.target.value)}
                 />
               </div>
             </div>
-            {hasFilter && (
-              <div className="mt-3 pt-3 border-t border-border/50 flex justify-end">
-                <Button variant="ghost" size="sm" onClick={clearFilters} className="h-7 text-xs gap-1">
-                  <X className="w-3 h-3" /> Clear filters
+
+            {hasFilter ? (
+              <div className="flex justify-end border-t border-border/50 pt-3">
+                <Button variant="ghost" size="sm" onClick={clearFilters} className="h-8 gap-1 text-xs">
+                  <X className="h-3 w-3" /> Clear filters
                 </Button>
               </div>
-            )}
+            ) : null}
           </CardContent>
         </Card>
 
         {isLoading ? (
-          <div className="text-center py-12 text-muted-foreground">Loading history...</div>
+          <div className="py-12 text-center text-muted-foreground">Loading transactions...</div>
         ) : filtered.length === 0 ? (
-          <div className="text-center py-12 text-muted-foreground">No records match your filters.</div>
+          <div className="py-12 text-center text-muted-foreground">No records match your filters.</div>
         ) : (
-          <div className="relative">
-            <div className="absolute left-[19px] top-2 bottom-2 w-px bg-border/60" />
-            <div className="space-y-0">
-              {filtered.map((tx, i) => {
-                const cfg = TYPE_CONFIG[tx.type];
-                const Icon = cfg.icon;
-                const isPositive = tx.amount > 0;
+          <Card className="border-border/50">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Transaction Ledger</CardTitle>
+            </CardHeader>
+            <CardContent className="px-5 pb-5 pt-0">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-border/50 hover:bg-transparent">
+                    <TableHead className="pl-0">Description</TableHead>
+                    <TableHead>Type</TableHead>
+                    <TableHead>Category</TableHead>
+                    <TableHead>Project</TableHead>
+                    <TableHead>Date</TableHead>
+                    <TableHead className="pr-0 text-right">Amount</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filtered.map((transaction) => {
+                    const config = TYPE_CONFIG[transaction.type];
+                    const isPositive = transaction.amount > 0;
 
-                return (
-                  <div key={tx.id} className="relative flex gap-4 pb-0">
-                    <div className="relative z-10 mt-4 flex-shrink-0">
-                      <div
-                        className={cn(
-                          "w-10 h-10 rounded-full flex items-center justify-center border-2",
-                          cfg.bg,
-                          cfg.border.replace("border-", "border-")
-                        )}
-                        style={{ borderColor: "hsl(var(--border))" }}
-                      >
-                        <Icon className={cn("w-4 h-4", cfg.color)} />
-                      </div>
-                    </div>
-
-                    <div
-                      className={cn(
-                        "flex-1 mb-3 rounded-xl border border-border/50 bg-card/40 px-4 py-3 hover:bg-card/70 transition-colors",
-                        i === 0 && "mt-0"
-                      )}
-                    >
-                      <div className="flex items-start justify-between gap-3 flex-wrap">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-medium text-sm text-foreground">
-                            {tx.description}
-                          </span>
-                          <Badge
-                            variant="outline"
-                            className={cn("text-xs font-normal", cfg.color, cfg.border)}
-                            style={{}}
-                          >
-                            <span className={cn("w-1.5 h-1.5 rounded-full mr-1.5 inline-block", cfg.dot)} />
-                            {tx.category}
+                    return (
+                      <TableRow key={transaction.id} className="border-border/50 hover:bg-card/40">
+                        <TableCell className="pl-0">
+                          <div className="space-y-1">
+                            <p className="font-medium text-foreground">{transaction.description}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {format(new Date(transaction.date), "MMM dd, yyyy • HH:mm")}
+                            </p>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="outline" className={config.badge}>
+                            {config.label}
                           </Badge>
-                        </div>
-                        <span
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">{transaction.category}</TableCell>
+                        <TableCell className="text-muted-foreground">{transaction.project || "—"}</TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {format(new Date(transaction.date), "dd MMM yyyy")}
+                        </TableCell>
+                        <TableCell
                           className={cn(
-                            "text-sm font-semibold tabular-nums",
-                            isPositive ? "text-primary" : "text-foreground"
+                            "pr-0 text-right font-semibold tabular-nums",
+                            isPositive ? "text-primary" : "text-foreground",
                           )}
                         >
                           {isPositive ? "+" : ""}
-                          {tx.amount.toLocaleString("en-IN", {
+                          {transaction.amount.toLocaleString("en-IN", {
                             style: "currency",
                             currency: "INR",
                           })}
-                        </span>
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-1 font-mono tracking-tight">
-                        {format(new Date(tx.date), "MMM dd, yyyy — HH:mm")}
-                      </p>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
         )}
       </div>
     </DashboardLayout>

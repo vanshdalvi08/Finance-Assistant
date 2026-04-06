@@ -27,7 +27,7 @@ import { api } from "@/lib/api";
 
 const adminNavItems = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
-  { href: "/transactions", label: "History", icon: History },
+  { href: "/transactions", label: "Transactions", icon: History },
   { href: "/employees", label: "Employees", icon: Users },
   { href: "/salary", label: "Salary", icon: CreditCard },
   { href: "/funds", label: "Funds", icon: Wallet },

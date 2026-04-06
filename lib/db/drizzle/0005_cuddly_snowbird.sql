@@ -1,0 +1,1 @@
+ALTER TABLE "salaries" ALTER COLUMN "hours" SET DATA TYPE real;

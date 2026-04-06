@@ -1,6 +1,6 @@
 import { useState, type ChangeEvent } from "react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
-import { api, Expense, ExpenseCategory } from "@/lib/api";
+import { api, type AdminOverview, type ChartPoint, Expense, ExpenseCategory, type Transaction } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { DashboardCard } from "@/components/dashboard-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -39,6 +39,82 @@ const expenseSchema = z.object({
 });
 
 type ExpenseForm = z.infer<typeof expenseSchema>;
+
+function isPendingExpense(status: Expense["status"]) {
+  return status === "submitted" || status === "draft";
+}
+
+function patchExpenseList(current: Expense[] | undefined, nextExpense: Expense) {
+  if (!current) {
+    return [nextExpense];
+  }
+
+  const existingIndex = current.findIndex((expense) => expense.id === nextExpense.id);
+  if (existingIndex === -1) {
+    return [nextExpense, ...current];
+  }
+
+  return current.map((expense) => (expense.id === nextExpense.id ? nextExpense : expense));
+}
+
+function patchChartData(current: ChartPoint[] | undefined, expense: Expense) {
+  if (!current) {
+    return current;
+  }
+
+  const monthKey = expense.date.slice(0, 7);
+  const next = current.map((point) =>
+    point.month === monthKey ? { ...point, expenses: point.expenses + expense.amount } : point,
+  );
+
+  if (next.some((point) => point.month === monthKey)) {
+    return next;
+  }
+
+  return [...current, { month: monthKey, funds: 0, expenses: expense.amount, salary: 0 }].sort((left, right) =>
+    left.month.localeCompare(right.month),
+  );
+}
+
+function patchOverviewForExpense(current: AdminOverview | undefined, previous: Expense | undefined, nextExpense: Expense) {
+  if (!current) {
+    return current;
+  }
+
+  const expenseMonth = nextExpense.date.slice(0, 7);
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const currentYear = new Date().getFullYear();
+  const nextPending = isPendingExpense(nextExpense.status) ? 1 : 0;
+  const previousPending = previous && isPendingExpense(previous.status) ? 1 : 0;
+  const amountDelta = previous ? 0 : nextExpense.amount;
+
+  return {
+    ...current,
+    totalExpenses: current.totalExpenses + amountDelta,
+    currentBalance: current.currentBalance - amountDelta,
+    monthToDateExpenses: current.monthToDateExpenses + (previous ? 0 : expenseMonth === currentMonth ? nextExpense.amount : 0),
+    yearToDateExpenses: current.yearToDateExpenses + (previous ? 0 : new Date(nextExpense.date).getFullYear() === currentYear ? nextExpense.amount : 0),
+    pendingExpenses: current.pendingExpenses + nextPending - previousPending,
+  };
+}
+
+function patchTransactions(current: Transaction[] | undefined, expense: Expense) {
+  if (!current) {
+    return current;
+  }
+
+  const nextTransaction: Transaction = {
+    id: `txn_${expense.id}`,
+    type: "expense",
+    amount: -expense.amount,
+    date: expense.date,
+    description: expense.description,
+    category: expense.category,
+    project: expense.project,
+  };
+
+  return [nextTransaction, ...current.filter((transaction) => transaction.id !== nextTransaction.id)];
+}
 
 function ExpenseTable({
   expenses,
@@ -352,12 +428,11 @@ export default function Expenses() {
         ...data,
         attachmentPath: attachmentPath.trim() || undefined,
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["expenses"] });
-      queryClient.invalidateQueries({ queryKey: ["transactions"] });
-      queryClient.invalidateQueries({ queryKey: ["chartData"] });
-      queryClient.invalidateQueries({ queryKey: ["expenseCategories"] });
-      queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
+    onSuccess: (createdExpense) => {
+      queryClient.setQueryData<Expense[]>(["expenses"], (current) => patchExpenseList(current, createdExpense));
+      queryClient.setQueryData<ChartPoint[]>(["chartData"], (current) => patchChartData(current, createdExpense));
+      queryClient.setQueryData<AdminOverview>(["adminOverview"], (current) => patchOverviewForExpense(current, undefined, createdExpense));
+      queryClient.setQueryData<Transaction[]>(["transactions"], (current) => patchTransactions(current, createdExpense));
       toast({ title: "Expense logged", description: "Expense recorded successfully." });
       setIsDialogOpen(false);
       setFileSelected("");
@@ -399,12 +474,15 @@ export default function Expenses() {
   const reviewMutation = useMutation({
     mutationFn: ({ id, status }: { id: string; status: "approved" | "rejected" }) =>
       api.updateExpenseStatus(id, status),
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: ["expenses"] });
-      queryClient.invalidateQueries({ queryKey: ["transactions"] });
-      queryClient.invalidateQueries({ queryKey: ["chartData"] });
-      queryClient.invalidateQueries({ queryKey: ["expenseCategories"] });
-      queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
+    onSuccess: (updatedExpense, variables) => {
+      const previousExpense = queryClient
+        .getQueryData<Expense[]>(["expenses"])
+        ?.find((expense) => expense.id === updatedExpense.id);
+
+      queryClient.setQueryData<Expense[]>(["expenses"], (current) => patchExpenseList(current, updatedExpense));
+      queryClient.setQueryData<AdminOverview>(["adminOverview"], (current) =>
+        patchOverviewForExpense(current, previousExpense, updatedExpense),
+      );
       toast({
         title: variables.status === "approved" ? "Expense approved" : "Expense rejected",
       });

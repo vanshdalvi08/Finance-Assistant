@@ -151,27 +151,13 @@ export default function Employees() {
         department: payload.department,
         status: payload.status === "Active" ? "active" : "inactive",
       });
-
-      const employee = await api.addEmployee({
-        id: authAccount.user.id,
-        name: authAccount.user.name ?? payload.name,
-        email: authAccount.user.email,
-        phone: authAccount.user.phone ?? payload.phone,
-        role: payload.role,
-        department: payload.department,
-        salary: payload.salary,
-        payType: payload.payType,
-        hourlyRate: payload.hourlyRate,
-        profilePhotoUrl: payload.profilePhotoUrl ?? undefined,
-        status: authAccount.user.status === "inactive" ? "Inactive" : "Active",
-        employeeId: authAccount.employeeId ?? authAccount.user.employeeId,
-      });
-
-      return { authAccount, employee };
+      return { authAccount };
     },
     onSuccess: ({ authAccount }) => {
-      queryClient.invalidateQueries({ queryKey: ["employees"] });
-      queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["employees"] }),
+        queryClient.invalidateQueries({ queryKey: ["adminOverview"] }),
+      ]);
       toast({
         title: "Employee added successfully",
         description: authAccount.onboardingEmailSent
@@ -194,8 +180,10 @@ export default function Employees() {
   const updateMutation = useMutation({
     mutationFn: (payload: { id: string } & EmployeeMutationInput) => api.updateEmployee(payload),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["employees"] });
-      queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["employees"] }),
+        queryClient.invalidateQueries({ queryKey: ["adminOverview"] }),
+      ]);
       toast({ title: "Employee updated successfully" });
       closeDialog();
     },
@@ -211,8 +199,10 @@ export default function Employees() {
   const deleteMutation = useMutation({
     mutationFn: api.deleteEmployee,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["employees"] });
-      queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["employees"] }),
+        queryClient.invalidateQueries({ queryKey: ["adminOverview"] }),
+      ]);
       setEmployeeToDelete(null);
       toast({ title: "Employee deleted successfully" });
     },

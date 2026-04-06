@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import { z } from "zod";
 import { createEmployeeAccount, deactivateEmployeeAccount, listEmployees, updateEmployeeAccount } from "../lib/auth-service";
 import { requireAuth, requireRole } from "../middlewares/auth";
+import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../lib/notifications";
 
 const router: IRouter = Router();
 
@@ -11,6 +12,8 @@ const createEmployeeSchema = z.object({
   phone: z.string().trim().min(7),
   position: z.string().trim().min(2),
   salary: z.coerce.number().min(0),
+  payType: z.enum(["monthly", "hourly"]).optional(),
+  hourlyRate: z.coerce.number().min(0).optional(),
   profilePhotoUrl: z.string().trim().max(2_500_000).nullable().optional(),
   department: z.string().trim().min(2).optional(),
   status: z.enum(["active", "inactive"]).optional(),
@@ -19,6 +22,21 @@ const createEmployeeSchema = z.object({
 const updateEmployeeSchema = createEmployeeSchema.extend({
   id: z.string().trim().uuid(),
 });
+
+function notificationActor(request: Parameters<typeof requireAuth>[0]) {
+  return {
+    id: request.auth?.user.id,
+    name: request.auth?.user.name ?? "System",
+    role: request.auth?.user.role ?? "system",
+  } as const;
+}
+
+function deliverNotification(work: Promise<unknown>) {
+  void work.catch((error) => {
+    console.error("Failed to deliver notification", error);
+  });
+  return Promise.resolve();
+}
 
 router.use(requireAuth, requireRole("admin"));
 
@@ -36,6 +54,57 @@ router.post("/employees", async (request, response) => {
 
   try {
     const result = await createEmployeeAccount(parsed.data);
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyUsersByIds(
+        actor.id ? [actor.id] : [],
+        actor,
+        {
+          type: "employee_onboarded",
+          title: "Employee account created",
+          body: `${result.user.name} was added to the team.`,
+          link: "/employees",
+          email: false,
+          metadata: {
+            employeeId: result.user.employeeId,
+            userId: result.user.id,
+          },
+        },
+      ),
+    );
+    await deliverNotification(
+      notifyEmployee(
+        result.user.id,
+        actor,
+        {
+          type: "employee_onboarded",
+          title: "Your Yojak account is ready",
+          body: "Your employee profile has been created and your onboarding email has been sent.",
+          link: "/login",
+          email: false,
+          metadata: {
+            employeeId: result.user.employeeId,
+          },
+        },
+      ),
+    );
+    await deliverNotification(
+      notifyAdmins(
+        actor,
+        {
+          type: "employee_onboarded",
+          title: "New employee added",
+          body: `${result.user.name} joined the team.`,
+          link: "/employees",
+          email: false,
+          metadata: {
+            employeeId: result.user.employeeId,
+            userId: result.user.id,
+          },
+        },
+        actor.id ? [actor.id] : [],
+      ),
+    );
     response.status(201).json({
       user: result.user,
       employeeId: result.user.employeeId,
@@ -60,6 +129,40 @@ router.patch("/employees/:id", async (request, response) => {
 
   try {
     const result = await updateEmployeeAccount(parsed.data);
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyUsersByIds(
+        actor.id ? [actor.id] : [],
+        actor,
+        {
+          type: "employee_updated",
+          title: "Employee updated",
+          body: `${result.user.name}'s profile was updated.`,
+          link: "/employees",
+          email: false,
+          metadata: {
+            employeeId: result.user.employeeId,
+            userId: result.user.id,
+          },
+        },
+      ),
+    );
+    await deliverNotification(
+      notifyEmployee(
+        result.user.id,
+        actor,
+        {
+          type: "employee_updated",
+          title: "Your employee profile was updated",
+          body: "An admin updated your employee record. Please review it when convenient.",
+          link: "/employee/profile",
+          email: false,
+          metadata: {
+            employeeId: result.user.employeeId,
+          },
+        },
+      ),
+    );
     response.json({
       user: result.user,
     });
@@ -78,6 +181,40 @@ router.delete("/employees/:id", async (request, response) => {
 
   try {
     const result = await deactivateEmployeeAccount(parsed.data);
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyUsersByIds(
+        actor.id ? [actor.id] : [],
+        actor,
+        {
+          type: "employee_deactivated",
+          title: "Employee deactivated",
+          body: `${result.user.name} was removed from active access.`,
+          link: "/employees",
+          email: false,
+          metadata: {
+            employeeId: result.user.employeeId,
+            userId: result.user.id,
+          },
+        },
+      ),
+    );
+    await deliverNotification(
+      notifyEmployee(
+        result.user.id,
+        actor,
+        {
+          type: "employee_deactivated",
+          title: "Your account has been deactivated",
+          body: "Your Yojak access has been removed. Please contact the administrator if you need help.",
+          link: "/login",
+          email: true,
+          metadata: {
+            employeeId: result.user.employeeId,
+          },
+        },
+      ),
+    );
     response.json({
       user: result.user,
       message: "Employee deactivated",

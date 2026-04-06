@@ -15,12 +15,12 @@ export function DashboardCard({ label, value, trend, trendLabel, icon, className
   return (
     <Card className={cn("hover:bg-card/90 transition-colors border-border/50", className)}>
       <CardContent className="p-6">
-        <div className="flex justify-between items-start">
-          <div className="space-y-2">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1 space-y-2">
             <p className="text-sm font-medium text-muted-foreground">{label}</p>
             <p className="text-3xl font-bold tracking-tight">{value}</p>
           </div>
-          {icon && <div className="text-muted-foreground p-2 bg-secondary/50 rounded-lg">{icon}</div>}
+          {icon && <div className="shrink-0 rounded-lg bg-secondary/50 p-2 text-muted-foreground">{icon}</div>}
         </div>
         
         {(trend !== undefined) && (

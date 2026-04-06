@@ -25,6 +25,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/hooks/use-toast";
 
 const DAYS: Array<{ key: DayKey; label: string }> = [
   { key: "mon", label: "Mon" },
@@ -146,6 +147,7 @@ function hasDraftContent(entry: TimesheetEntry | null) {
 
 export default function EmployeeTimesheetPage() {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const user = useAuthStore((state) => state.user);
   const [selectedWeek, setSelectedWeek] = useState(() => weekStartIso());
   const [draft, setDraft] = useState<TimesheetEntry | null>(null);
@@ -417,21 +419,58 @@ export default function EmployeeTimesheetPage() {
     );
   }, [current, employee?.id, employee?.name, selectedWeek, user?.email, user?.id, user?.name]);
 
+  function syncTimesheetCache(nextEntry: TimesheetEntry) {
+    if (!employee?.id) {
+      return;
+    }
+
+    queryClient.setQueryData<TimesheetEntry[]>(["employee-timesheets", employee.id], (currentEntries = []) => {
+      const otherEntries = currentEntries.filter((entry) => entry.id !== nextEntry.id);
+      return [nextEntry, ...otherEntries].sort(
+        (left, right) => new Date(right.weekStart).getTime() - new Date(left.weekStart).getTime(),
+      );
+    });
+  }
+
   const saveMutation = useMutation({
     mutationFn: (entry: TimesheetEntry) => api.saveTimesheet(entry),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["employee-timesheets", employee?.id] });
+    onSuccess: (savedEntry) => {
+      setDraft(savedEntry);
+      syncTimesheetCache(savedEntry);
+      toast({
+        title: "Draft saved",
+        description: "Your timesheet draft has been saved.",
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "Could not save draft",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
     },
   });
 
   const submitMutation = useMutation({
-    mutationFn: async (entry: TimesheetEntry) => {
-      await api.saveTimesheet(entry);
-      await api.submitTimesheet(entry.id);
+    mutationFn: (entry: TimesheetEntry) => api.submitTimesheetEntry(entry),
+    onSuccess: (submittedEntry) => {
+      setDraft(submittedEntry);
+      syncTimesheetCache(submittedEntry);
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["adminOverview"] }),
+        queryClient.invalidateQueries({ queryKey: ["notifications"] }),
+      ]);
+      toast({
+        title: "Timesheet submitted",
+        description: "Your week has been sent for review.",
+      });
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["employee-timesheets", employee?.id] });
-      await queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
+    onError: (error) => {
+      toast({
+        title: "Could not submit timesheet",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
     },
   });
 

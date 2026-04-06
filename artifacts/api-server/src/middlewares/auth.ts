@@ -31,6 +31,8 @@ async function loadUser(userId: string): Promise<PublicUser | null> {
     position: user.position ?? null,
     department: user.department ?? null,
     salary: user.salary,
+    payType: user.payType,
+    hourlyRate: user.hourlyRate,
     profilePhotoUrl: user.profilePhotoUrl ?? null,
     status: user.status,
     createdAt: user.createdAt,

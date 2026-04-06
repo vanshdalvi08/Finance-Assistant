@@ -27,8 +27,13 @@ import {
   blankHours,
   sumTimesheetHours,
   effectiveHourlyRate,
+  reviewTimesheetFast,
+  saveTimesheetFast,
+  submitTimesheetEntryFast,
+  submitTimesheetFast,
 } from "../lib/business-store";
 import { resolveExpenseAttachmentUrl } from "../lib/storage";
+import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../lib/notifications";
 
 const router: IRouter = Router();
 
@@ -141,7 +146,8 @@ const poTaskSchema = z.object({
   id: businessIdSchema.optional(),
   taskName: z.string().trim().min(2),
   description: z.string().trim().optional(),
-  amount: z.coerce.number().min(0),
+  hours: z.coerce.number().min(0),
+  rate: z.coerce.number().min(0),
 });
 
 const poSchema = z.object({
@@ -193,6 +199,14 @@ function ensureFunds(store: BusinessStore, amount: number, label: string) {
   }
 }
 
+function calculatePoTaskAmount(hours: number, rate: number) {
+  return Math.round(Math.max(0, Number(hours ?? 0)) * Math.max(0, Number(rate ?? 0)));
+}
+
+function sumPurchaseOrderTasks(tasks: Array<{ amount: number }>) {
+  return tasks.reduce((sum, task) => sum + Math.abs(Number(task.amount ?? 0)), 0);
+}
+
 function timesheetHasContent(entry: TimesheetEntry) {
   return entry.lines.some((line) => {
     const hasText = Boolean(line.project.trim() || line.task.trim() || line.notes?.trim());
@@ -206,6 +220,21 @@ function recordActor(request: Request): { actorName: string; actorRole: ActorRol
     actorName: request.auth?.user.name ?? "System",
     actorRole: request.auth?.user.role ?? "system",
   };
+}
+
+function notificationActor(request: Request) {
+  return {
+    id: request.auth?.user.id,
+    name: request.auth?.user.name ?? "System",
+    role: request.auth?.user.role ?? "system",
+  } as const;
+}
+
+function deliverNotification(work: Promise<unknown>) {
+  void work.catch((error) => {
+    console.error("Failed to deliver notification", error);
+  });
+  return Promise.resolve();
 }
 
 async function serializeExpense(expense: ExpenseRecord) {
@@ -368,6 +397,37 @@ router.route("/funds").get(requireRole("admin"), async (_request, response) => {
   );
 
   await updateStore(() => next);
+  {
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyUsersByIds(
+        actor.id ? [actor.id] : [],
+        actor,
+        {
+          type: "fund_created",
+          title: "Fund entry saved",
+          body: `Fund inflow from ${fund.source} was recorded.`,
+          link: "/funds",
+          email: false,
+          metadata: { fundId: fund.id, amount: fund.amount },
+        },
+      ),
+    );
+    await deliverNotification(
+      notifyAdmins(
+        actor,
+        {
+          type: "fund_created",
+          title: "Fund updated",
+          body: `A fund inflow from ${fund.source} was recorded.`,
+          link: "/funds",
+          email: false,
+          metadata: { fundId: fund.id, amount: fund.amount },
+        },
+        actor.id ? [actor.id] : [],
+      ),
+    );
+  }
   response.status(existing ? 200 : 201).json({ fund });
 });
 
@@ -418,6 +478,37 @@ router.route("/funds/:id").get(requireRole("admin"), async (request, response) =
   );
 
   await updateStore(() => next);
+  {
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyUsersByIds(
+        actor.id ? [actor.id] : [],
+        actor,
+        {
+          type: "fund_created",
+          title: "Fund entry updated",
+          body: `Fund inflow from ${fund.source} was updated.`,
+          link: "/funds",
+          email: false,
+          metadata: { fundId: fund.id, amount: fund.amount },
+        },
+      ),
+    );
+    await deliverNotification(
+      notifyAdmins(
+        actor,
+        {
+          type: "fund_created",
+          title: "Fund entry updated",
+          body: `A fund inflow from ${fund.source} was updated.`,
+          link: "/funds",
+          email: false,
+          metadata: { fundId: fund.id, amount: fund.amount },
+        },
+        actor.id ? [actor.id] : [],
+      ),
+    );
+  }
   response.json({ fund });
 }).delete(requireRole("admin"), async (request, response) => {
   const store = await readStore();
@@ -442,6 +533,37 @@ router.route("/funds/:id").get(requireRole("admin"), async (request, response) =
   );
 
   await updateStore(() => next);
+  {
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyUsersByIds(
+        actor.id ? [actor.id] : [],
+        actor,
+        {
+          type: "fund_created",
+          title: "Fund entry deleted",
+          body: `Fund inflow from ${target.source} was removed.`,
+          link: "/funds",
+          email: false,
+          metadata: { fundId: target.id, amount: target.amount },
+        },
+      ),
+    );
+    await deliverNotification(
+      notifyAdmins(
+        actor,
+        {
+          type: "fund_created",
+          title: "Fund entry deleted",
+          body: `A fund inflow from ${target.source} was removed.`,
+          link: "/funds",
+          email: false,
+          metadata: { fundId: target.id, amount: target.amount },
+        },
+        actor.id ? [actor.id] : [],
+      ),
+    );
+  }
   response.status(204).send();
 });
 
@@ -640,6 +762,37 @@ router.post("/expenses", async (request, response) => {
   );
 
   await updateStore(() => next);
+  if (request.auth?.user.role === "employee" && !existing) {
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyUsersByIds(
+        actor.id ? [actor.id] : [],
+        actor,
+        {
+          type: "expense_submitted",
+          title: "Expense submitted",
+          body: `Your ${expense.group} expense for ${expense.amount.toLocaleString("en-IN")} INR is awaiting review.`,
+          link: "/employee/expenses",
+          email: false,
+          metadata: { expenseId: expense.id, category: expense.category },
+        },
+      ),
+    );
+    await deliverNotification(
+      notifyAdmins(
+        actor,
+        {
+          type: "expense_submitted",
+          title: "New expense needs review",
+          body: `${expense.employeeNameSnapshot ?? "An employee"} submitted ${expense.group} expense for ${expense.amount.toLocaleString("en-IN")} INR.`,
+          link: "/expenses",
+          email: true,
+          metadata: { expenseId: expense.id, category: expense.category, employeeId: expense.employeeId },
+        },
+        actor.id ? [actor.id] : [],
+      ),
+    );
+  }
   response.status(existing ? 200 : 201).json({ expense: await serializeExpense(expense) });
 });
 
@@ -794,6 +947,26 @@ router.patch("/expenses/:id/status", requireRole("admin"), async (request, respo
   );
 
   await updateStore(() => next);
+  if (expense.employeeId && expense.status !== existing.status && (expense.status === "approved" || expense.status === "rejected")) {
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyEmployee(
+        expense.employeeId,
+        actor,
+        {
+          type: expense.status === "approved" ? "expense_approved" : "expense_rejected",
+          title: expense.status === "approved" ? "Expense approved" : "Expense returned",
+          body:
+            expense.status === "approved"
+              ? `Your expense for ${expense.amount.toLocaleString("en-IN")} INR was approved.`
+              : `Your expense was rejected${expense.reviewerNote ? `: ${expense.reviewerNote}` : "."}`,
+          link: "/employee/expenses",
+          email: true,
+          metadata: { expenseId: expense.id, reviewerNote: expense.reviewerNote },
+        },
+      ),
+    );
+  }
   response.json({ expense: await serializeExpense(expense) });
 });
 
@@ -940,6 +1113,37 @@ router.route("/salaries/:id").get(async (request, response) => {
   );
 
   await updateStore(() => next);
+  if (salary.employeeId && status === "paid" && existing.status !== "paid") {
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyUsersByIds(
+        actor.id ? [actor.id] : [],
+        actor,
+        {
+          type: "salary_paid",
+          title: "Salary updated",
+          body: `Salary record for ${salary.employeeNameSnapshot ?? "an employee"} was marked as paid.`,
+          link: "/salary",
+          email: false,
+          metadata: { salaryId: salary.id, employeeId: salary.employeeId },
+        },
+      ),
+    );
+    await deliverNotification(
+      notifyEmployee(
+        salary.employeeId,
+        actor,
+        {
+          type: "salary_paid",
+          title: "Salary paid",
+          body: `Your salary payment of ${salary.amount.toLocaleString("en-IN")} INR has been marked as paid.`,
+          link: "/employee/salary-slips",
+          email: true,
+          metadata: { salaryId: salary.id, amount: salary.amount },
+        },
+      ),
+    );
+  }
   response.json({ salary });
 }).delete(requireRole("admin"), async (request, response) => {
   const store = await readStore();
@@ -1009,6 +1213,37 @@ router.post("/salaries/:id/pay", requireRole("admin"), async (request, response)
   );
 
   await updateStore(() => next);
+  {
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyUsersByIds(
+        actor.id ? [actor.id] : [],
+        actor,
+        {
+          type: "salary_paid",
+          title: "Salary payment completed",
+          body: `Marked salary payment of ${salary.amount.toLocaleString("en-IN")} INR as paid.`,
+          link: "/salary",
+          email: false,
+          metadata: { salaryId: salary.id, employeeId: salary.employeeId },
+        },
+      ),
+    );
+    await deliverNotification(
+      notifyEmployee(
+        salary.employeeId,
+        actor,
+        {
+          type: "salary_paid",
+          title: "Salary paid",
+          body: `Your salary payment of ${salary.amount.toLocaleString("en-IN")} INR has been marked as paid.`,
+          link: "/employee/salary-slips",
+          email: true,
+          metadata: { salaryId: salary.id, employeeId: salary.employeeId, amount: salary.amount },
+        },
+      ),
+    );
+  }
   response.json({ salary });
 });
 
@@ -1083,7 +1318,13 @@ router.post("/timesheets", async (request, response) => {
   const store = await readStore();
   const actor = recordActor(request);
   const employeeId = request.auth?.user.role === "employee" ? request.auth.user.id : parsed.data.employeeId;
-  const employee = await loadEmployeeProfile(employeeId);
+  const employee =
+    request.auth?.user.role === "employee"
+      ? {
+          id: request.auth.user.id,
+          name: request.auth.user.name ?? "Employee",
+        }
+      : await loadEmployeeProfile(employeeId);
   if (!employee) {
     respondNotFound(response, "Employee not found");
     return;
@@ -1123,32 +1364,25 @@ router.post("/timesheets", async (request, response) => {
 
   if (entry.status === "draft" && !timesheetHasContent(entry)) {
     if (existing) {
-      const next = pushAuditEvent(
-        {
-          ...store,
-          timesheets: store.timesheets.filter((item) => item.id !== entry.id),
-        },
-        {
+      await saveTimesheetFast({
+        entry,
+        audit: {
           ...actor,
           action: "deleted",
           entityType: "timesheet",
           entityId: entry.id,
           summary: `Removed an empty draft for week of ${entry.weekStart}.`,
         },
-      );
-      await updateStore(() => next);
+      });
     }
 
     response.status(existing ? 200 : 201).json({ timesheet: entry });
     return;
   }
 
-  const next = pushAuditEvent(
-    {
-      ...store,
-      timesheets: existing ? store.timesheets.map((item) => (item.id === entry.id ? entry : item)) : [entry, ...store.timesheets],
-    },
-    {
+  const savedEntry = await saveTimesheetFast({
+    entry,
+    audit: {
       actorName: actor.actorName,
       actorRole: request.auth?.user.role ?? "system",
       action: existing ? "saved" : "created",
@@ -1156,10 +1390,9 @@ router.post("/timesheets", async (request, response) => {
       entityId: entry.id,
       summary: `${existing ? "Saved" : "Started"} timesheet draft for week of ${entry.weekStart}.`,
     },
-  );
+  });
 
-  await updateStore(() => next);
-  response.status(existing ? 200 : 201).json({ timesheet: entry });
+  response.status(existing ? 200 : 201).json({ timesheet: savedEntry ?? entry });
 });
 
 router.patch("/timesheets/:id", async (request, response) => {
@@ -1182,7 +1415,13 @@ router.patch("/timesheets/:id", async (request, response) => {
   }
 
   const employeeId = request.auth?.user.role === "employee" ? request.auth.user.id : parsed.data.employeeId;
-  const employee = await loadEmployeeProfile(employeeId);
+  const employee =
+    request.auth?.user.role === "employee"
+      ? {
+          id: request.auth.user.id,
+          name: request.auth.user.name ?? existing.employeeNameSnapshot,
+        }
+      : await loadEmployeeProfile(employeeId);
   if (!employee) {
     respondNotFound(response, "Employee not found");
     return;
@@ -1213,22 +1452,129 @@ router.patch("/timesheets/:id", async (request, response) => {
     updatedAt: nowIso(),
   };
 
-  const next = pushAuditEvent(
-    {
-      ...store,
-      timesheets: store.timesheets.map((item) => (item.id === entry.id ? entry : item)),
-    },
-    {
+  const savedEntry = await saveTimesheetFast({
+    entry,
+    audit: {
       ...recordActor(request),
       action: "saved",
       entityType: "timesheet",
       entityId: entry.id,
       summary: `Saved timesheet draft for week of ${entry.weekStart}.`,
     },
-  );
+  });
 
-  await updateStore(() => next);
-  response.json({ timesheet: entry });
+  response.json({ timesheet: savedEntry ?? entry });
+});
+
+router.post("/timesheets/submit", async (request, response) => {
+  const parsed = timesheetSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid timesheet payload" });
+    return;
+  }
+
+  const store = await readStore();
+  const employeeId = request.auth?.user.role === "employee" ? request.auth.user.id : parsed.data.employeeId;
+  const employee =
+    request.auth?.user.role === "employee"
+      ? {
+          id: request.auth.user.id,
+          name: request.auth.user.name ?? "Employee",
+        }
+      : await loadEmployeeProfile(employeeId);
+
+  if (!employee) {
+    respondNotFound(response, "Employee not found");
+    return;
+  }
+
+  const existing = parsed.data.id
+    ? store.timesheets.find((entry) => entry.id === parsed.data.id)
+    : store.timesheets.find(
+        (entry) =>
+          entry.employeeId === employeeId && normalizeWeekStart(entry.weekStart) === normalizeWeekStart(parsed.data.weekStart),
+      );
+
+  const lines = parsed.data.lines.map((line) => ({
+    id: line.id ?? createId("line"),
+    project: line.project?.trim() || "",
+    task: line.task?.trim() || "",
+    projectBudgetId: line.projectBudgetId?.trim() || undefined,
+    projectTaskId: line.projectTaskId?.trim() || undefined,
+    notes: line.notes?.trim() || undefined,
+    hours: { ...blankHours(), ...line.hours },
+  }));
+
+  const entry: TimesheetEntry = {
+    id: parsed.data.id ?? existing?.id ?? createId("ts"),
+    employeeId,
+    employeeNameSnapshot:
+      request.auth?.user.role === "employee"
+        ? request.auth.user.name
+        : parsed.data.employeeNameSnapshot?.trim() || employee.name,
+    weekStart: normalizeWeekStart(parsed.data.weekStart),
+    status: "submitted",
+    submittedAt: nowIso(),
+    reviewedAt: undefined,
+    reviewedBy: undefined,
+    reviewNotes: undefined,
+    lines,
+    createdAt: existing?.createdAt ?? nowIso(),
+    updatedAt: nowIso(),
+  };
+
+  if (!timesheetHasContent(entry)) {
+    response.status(400).json({ message: "Timesheet must include at least one task or logged hour before submission." });
+    return;
+  }
+
+  const submittedEntry = await submitTimesheetEntryFast({
+    entry,
+    actorName: request.auth?.user.name ?? "System",
+    actorRole: request.auth?.user.role ?? "system",
+  });
+
+  if (request.auth?.user.role === "employee") {
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyUsersByIds(
+        actor.id ? [actor.id] : [],
+        actor,
+        {
+          type: "timesheet_submitted",
+          title: "Timesheet submitted",
+          body: `Your timesheet for the week of ${new Date(submittedEntry.weekStart).toLocaleDateString("en-IN", {
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+          })} is waiting for review.`,
+          link: "/employee/timesheet",
+          email: false,
+          metadata: { timesheetId: submittedEntry.id, weekStart: submittedEntry.weekStart },
+        },
+      ),
+    );
+    await deliverNotification(
+      notifyAdmins(
+        actor,
+        {
+          type: "timesheet_submitted",
+          title: "New timesheet submitted",
+          body: `${submittedEntry.employeeNameSnapshot} submitted a timesheet for the week of ${new Date(submittedEntry.weekStart).toLocaleDateString("en-IN", {
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+          })}.`,
+          link: "/timesheets",
+          email: true,
+          metadata: { timesheetId: submittedEntry.id, weekStart: submittedEntry.weekStart, employeeId: submittedEntry.employeeId },
+        },
+        actor.id ? [actor.id] : [],
+      ),
+    );
+  }
+
+  response.status(existing ? 200 : 201).json({ timesheet: submittedEntry });
 });
 
 router.post("/timesheets/:id/submit", async (request, response) => {
@@ -1244,34 +1590,51 @@ router.post("/timesheets/:id/submit", async (request, response) => {
     return;
   }
 
-  const next = pushAuditEvent(
-    {
-      ...store,
-      timesheets: store.timesheets.map((entry) =>
-        entry.id === request.params.id
-          ? {
-              ...entry,
-              status: "submitted",
-              submittedAt: nowIso(),
-              reviewedAt: undefined,
-              reviewedBy: undefined,
-              reviewNotes: undefined,
-              updatedAt: nowIso(),
-            }
-          : entry,
+  const submittedEntry = await submitTimesheetFast({
+    id: request.params.id,
+    actorName: request.auth?.user.name ?? "System",
+    actorRole: request.auth?.user.role ?? "system",
+  });
+  if (request.auth?.user.role === "employee") {
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyUsersByIds(
+        actor.id ? [actor.id] : [],
+        actor,
+        {
+          type: "timesheet_submitted",
+          title: "Timesheet submitted",
+          body: `Your timesheet for the week of ${new Date(existing.weekStart).toLocaleDateString("en-IN", {
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+          })} is waiting for review.`,
+          link: "/employee/timesheet",
+          email: false,
+          metadata: { timesheetId: existing.id, weekStart: existing.weekStart },
+        },
       ),
-    },
-    {
-      ...recordActor(request),
-      action: "submitted",
-      entityType: "timesheet",
-      entityId: String(request.params.id),
-      summary: "Submitted a timesheet for review.",
-    },
-  );
-
-  await updateStore(() => next);
-  response.json({ timesheet: next.timesheets.find((entry) => entry.id === request.params.id) ?? existing });
+    );
+    await deliverNotification(
+      notifyAdmins(
+        actor,
+        {
+          type: "timesheet_submitted",
+          title: "New timesheet submitted",
+          body: `${existing.employeeNameSnapshot} submitted a timesheet for the week of ${new Date(existing.weekStart).toLocaleDateString("en-IN", {
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+          })}.`,
+          link: "/timesheets",
+          email: true,
+          metadata: { timesheetId: existing.id, weekStart: existing.weekStart, employeeId: existing.employeeId },
+        },
+        actor.id ? [actor.id] : [],
+      ),
+    );
+  }
+  response.json({ timesheet: submittedEntry ?? existing });
 });
 
 router.post("/timesheets/:id/approve", requireRole("admin"), async (request, response) => {
@@ -1289,67 +1652,53 @@ router.post("/timesheets/:id/approve", requireRole("admin"), async (request, res
   }
 
   const employee = await loadEmployeeProfile(existing.employeeId);
-  const now = nowIso();
-  const nextTimesheets = store.timesheets.map((entry) =>
-    entry.id === request.params.id
-      ? {
-          ...entry,
-          status: "approved" as const,
-          reviewedAt: now,
-          reviewedBy: request.auth?.user.name ?? "Admin",
-          reviewNotes: parsed.data.note?.trim() || undefined,
-          updatedAt: now,
-        }
-      : entry,
-  );
-
-  let nextSalaries = store.salaries;
-  if (employee && employee.payType === "hourly" && effectiveHourlyRate(employee) > 0) {
-    const hours = sumTimesheetHours(existing);
-    const rate = effectiveHourlyRate(employee);
-    const amount = Math.round(hours * rate);
-    const existingPayroll = store.salaries.find((salary) => salary.timesheetId === existing.id);
-    const payroll: SalaryRecord = {
-      id: existingPayroll?.id ?? createId("sal"),
-      employeeId: employee.id,
-      employeeNameSnapshot: employee.name,
-      amount,
-      date: now,
-      note: parsed.data.note?.trim() || `Timesheet payout for week of ${existing.weekStart}`,
-      status: existingPayroll?.status === "paid" ? "paid" : "pending",
-      source: "timesheet",
-      paidAt: existingPayroll?.status === "paid" ? existingPayroll.paidAt ?? existingPayroll.date : undefined,
-      weekStart: existing.weekStart,
-      hours,
-      rate,
-      timesheetId: existing.id,
-      createdAt: existingPayroll?.createdAt ?? now,
-      updatedAt: now,
-    };
-
-    nextSalaries = existingPayroll
-      ? store.salaries.map((salary) => (salary.id === existingPayroll.id ? payroll : salary))
-      : [payroll, ...store.salaries];
+  const reviewResult = await reviewTimesheetFast({
+    id: String(request.params.id),
+    status: "approved",
+    actorName: request.auth?.user.name ?? "Admin",
+    note: parsed.data.note?.trim() || undefined,
+    employee,
+  });
+  {
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyUsersByIds(
+        actor.id ? [actor.id] : [],
+        actor,
+        {
+          type: "timesheet_approved",
+          title: "Timesheet approved",
+          body: `Approved ${existing.employeeNameSnapshot}'s timesheet for the week of ${new Date(existing.weekStart).toLocaleDateString("en-IN", {
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+          })}.`,
+          link: "/timesheets",
+          email: false,
+          metadata: { timesheetId: existing.id, employeeId: existing.employeeId },
+        },
+      ),
+    );
+    await deliverNotification(
+      notifyEmployee(
+        existing.employeeId,
+        actor,
+        {
+          type: "timesheet_approved",
+          title: "Timesheet approved",
+          body: `Your timesheet for the week of ${new Date(existing.weekStart).toLocaleDateString("en-IN", {
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+          })} was approved${parsed.data.note?.trim() ? `: ${parsed.data.note.trim()}` : "."}`,
+          link: "/employee/timesheet",
+          email: true,
+          metadata: { timesheetId: existing.id, employeeId: existing.employeeId },
+        },
+      ),
+    );
   }
-
-  const next = pushAuditEvent(
-    {
-      ...store,
-      timesheets: nextTimesheets,
-      salaries: nextSalaries,
-    },
-    {
-      actorName: request.auth?.user.name ?? "Admin",
-      actorRole: "admin",
-      action: "approved",
-      entityType: "timesheet",
-      entityId: String(request.params.id),
-      summary: `Approved timesheet for ${existing.employeeNameSnapshot}.`,
-    },
-  );
-
-  await updateStore(() => next);
-  response.json({ timesheet: next.timesheets.find((entry) => entry.id === request.params.id) ?? existing });
+  response.json({ timesheet: reviewResult.timesheet });
 });
 
 router.post("/timesheets/:id/reject", requireRole("admin"), async (request, response) => {
@@ -1366,35 +1715,52 @@ router.post("/timesheets/:id/reject", requireRole("admin"), async (request, resp
     return;
   }
 
-  const now = nowIso();
-  const next = pushAuditEvent(
-    {
-      ...store,
-      timesheets: store.timesheets.map((entry) =>
-        entry.id === request.params.id
-          ? {
-              ...entry,
-              status: "rejected" as const,
-              reviewedAt: now,
-              reviewedBy: request.auth?.user.name ?? "Admin",
-              reviewNotes: parsed.data.note,
-              updatedAt: now,
-            }
-          : entry,
+  const reviewResult = await reviewTimesheetFast({
+    id: String(request.params.id),
+    status: "rejected",
+    actorName: request.auth?.user.name ?? "Admin",
+    note: parsed.data.note,
+  });
+  {
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyUsersByIds(
+        actor.id ? [actor.id] : [],
+        actor,
+        {
+          type: "timesheet_reverted",
+          title: "Timesheet returned",
+          body: `Returned ${existing.employeeNameSnapshot}'s timesheet for the week of ${new Date(existing.weekStart).toLocaleDateString("en-IN", {
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+          })}.`,
+          link: "/timesheets",
+          email: false,
+          metadata: { timesheetId: existing.id, employeeId: existing.employeeId },
+        },
       ),
-    },
-    {
-      actorName: request.auth?.user.name ?? "Admin",
-      actorRole: "admin",
-      action: "reverted",
-      entityType: "timesheet",
-      entityId: String(request.params.id),
-      summary: "Returned a timesheet for changes.",
-    },
-  );
-
-  await updateStore(() => next);
-  response.json({ timesheet: next.timesheets.find((entry) => entry.id === request.params.id) ?? existing });
+    );
+    await deliverNotification(
+      notifyEmployee(
+        existing.employeeId,
+        actor,
+        {
+          type: "timesheet_reverted",
+          title: "Timesheet returned for changes",
+          body: `Your timesheet for the week of ${new Date(existing.weekStart).toLocaleDateString("en-IN", {
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+          })} was returned${parsed.data.note ? `: ${parsed.data.note}` : "."}`,
+          link: "/employee/timesheet",
+          email: true,
+          metadata: { timesheetId: existing.id, employeeId: existing.employeeId, reviewNote: parsed.data.note },
+        },
+      ),
+    );
+  }
+  response.json({ timesheet: reviewResult.timesheet });
 });
 
 router.delete("/timesheets/:id", async (request, response) => {
@@ -1738,19 +2104,33 @@ router.post("/purchase-orders", requireRole("admin"), async (request, response) 
 
   const store = await readStore();
   const existing = parsed.data.id ? store.purchaseOrders.find((order) => order.id === parsed.data.id) : null;
-  const tasks = (parsed.data.tasks ?? existing?.tasks ?? []).filter((task) => task.taskName.trim() && Number(task.amount) > 0).map((task) => ({
-    id: task.id ?? createId("po_task"),
-    taskName: task.taskName.trim(),
-    description: task.description?.trim() || "",
-    amount: Math.abs(Number(task.amount)),
-    status: "pending" as const,
-  }));
+  const tasks = (parsed.data.tasks ?? existing?.tasks ?? [])
+    .map((task) => {
+      const hours = Math.max(0, Number(task.hours ?? 0));
+      const rate = Math.max(0, Number(task.rate ?? 0));
+      return {
+        id: task.id ?? createId("po_task"),
+        taskName: task.taskName.trim(),
+        description: task.description?.trim() || "",
+        hours,
+        rate,
+        amount: calculatePoTaskAmount(hours, rate),
+        status: "pending" as const,
+      };
+    })
+    .filter((task) => task.taskName.trim() && task.amount > 0);
+  const totalAmount = Math.abs(parsed.data.totalAmount);
+  const plannedAmount = sumPurchaseOrderTasks(tasks);
+  if (plannedAmount > totalAmount) {
+    response.status(400).json({ message: "Planned work rows cannot exceed the PO cap amount." });
+    return;
+  }
   const order: PurchaseOrder = {
     id: parsed.data.id ?? existing?.id ?? createId("po"),
     title: parsed.data.title.trim(),
-    totalAmount: Math.abs(parsed.data.totalAmount),
+    totalAmount,
     usedAmount: existing?.usedAmount ?? 0,
-    remainingAmount: existing ? Math.max(0, existing.totalAmount - existing.usedAmount) : Math.abs(parsed.data.totalAmount),
+    remainingAmount: existing ? Math.max(0, totalAmount - existing.usedAmount) : totalAmount,
     vendor: parsed.data.vendor?.trim() || existing?.vendor,
     date: normalizeDate(parsed.data.date),
     notes: parsed.data.notes?.trim() || existing?.notes,
@@ -1806,6 +2186,12 @@ router.route("/purchase-orders/:id").get(async (request, response) => {
     return;
   }
 
+  const plannedAmount = sumPurchaseOrderTasks(existing.tasks);
+  if (totalAmount < plannedAmount) {
+    response.status(400).json({ message: "PO cap cannot be less than the total of all work rows." });
+    return;
+  }
+
   const purchaseOrder: PurchaseOrder = {
     ...existing,
     title: parsed.data.title.trim(),
@@ -1841,6 +2227,11 @@ router.route("/purchase-orders/:id").get(async (request, response) => {
     return;
   }
 
+  if (existing.usedAmount > 0 || existing.tasks.some((task) => task.status === "paid")) {
+    response.status(400).json({ message: "Paid purchase orders cannot be deleted. Keep the sheet for record history." });
+    return;
+  }
+
   const next = pushAuditEvent(
     {
       ...store,
@@ -1873,13 +2264,28 @@ router.post("/purchase-orders/:id/tasks", requireRole("admin"), async (request, 
     return;
   }
 
+  const taskHours = Math.max(0, Number(parsed.data.hours ?? 0));
+  const taskRate = Math.max(0, Number(parsed.data.rate ?? 0));
   const task = {
     id: parsed.data.id ?? createId("po_task"),
     taskName: parsed.data.taskName.trim(),
     description: parsed.data.description?.trim() || "",
-    amount: Math.abs(parsed.data.amount),
+    hours: taskHours,
+    rate: taskRate,
+    amount: calculatePoTaskAmount(taskHours, taskRate),
     status: "pending" as const,
   };
+
+  if (task.amount <= 0) {
+    response.status(400).json({ message: "Task total must be greater than zero." });
+    return;
+  }
+
+  const plannedAmount = sumPurchaseOrderTasks(existing.tasks) + task.amount;
+  if (plannedAmount > existing.totalAmount) {
+    response.status(400).json({ message: "This row exceeds the remaining PO cap. Increase the cap or lower the row total." });
+    return;
+  }
 
   const next = pushAuditEvent(
     {
@@ -1963,6 +2369,37 @@ router.post("/purchase-orders/:id/tasks/:taskId/pay", requireRole("admin"), asyn
   );
 
   await updateStore(() => next);
+  {
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyUsersByIds(
+        actor.id ? [actor.id] : [],
+        actor,
+        {
+          type: "purchase_order_task_paid",
+          title: "PO task paid",
+          body: `${task.taskName} in ${order.title} was marked as paid for ${task.amount.toLocaleString("en-IN")} INR.`,
+          link: "/purchase-orders",
+          email: false,
+          metadata: { purchaseOrderId: order.id, purchaseOrderTaskId: task.id, amount: task.amount },
+        },
+      ),
+    );
+    await deliverNotification(
+      notifyAdmins(
+        actor,
+        {
+          type: "purchase_order_task_paid",
+          title: "PO task paid",
+          body: `${task.taskName} in ${order.title} was marked as paid for ${task.amount.toLocaleString("en-IN")} INR.`,
+          link: "/purchase-orders",
+          email: false,
+          metadata: { purchaseOrderId: order.id, purchaseOrderTaskId: task.id, amount: task.amount },
+        },
+        actor.id ? [actor.id] : [],
+      ),
+    );
+  }
   response.json({ purchaseOrder: next.purchaseOrders.find((item) => item.id === order.id) ?? order });
 });
 

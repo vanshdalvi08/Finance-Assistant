@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
-import { api } from "@/lib/api";
+import { api, type AdminOverview, type ChartPoint, type Fund, type Transaction } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { DashboardCard } from "@/components/dashboard-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,6 +23,61 @@ const fundSchema = z.object({
   date: z.string().min(1, "Date is required"),
   note: z.string().optional(),
 });
+
+function updateChartData(current: ChartPoint[] | undefined, fund: Fund) {
+  if (!current) {
+    return current;
+  }
+
+  const monthKey = fund.date.slice(0, 7);
+  const next = current.map((point) =>
+    point.month === monthKey ? { ...point, funds: point.funds + fund.amount } : point,
+  );
+
+  if (next.some((point) => point.month === monthKey)) {
+    return next;
+  }
+
+  return [...current, { month: monthKey, funds: fund.amount, expenses: 0, salary: 0 }].sort((left, right) =>
+    left.month.localeCompare(right.month),
+  );
+}
+
+function updateOverview(current: AdminOverview | undefined, fund: Fund) {
+  if (!current) {
+    return current;
+  }
+
+  const fundDate = new Date(fund.date);
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const currentYear = new Date().getFullYear();
+  const fundMonth = fund.date.slice(0, 7);
+
+  return {
+    ...current,
+    totalFunds: current.totalFunds + fund.amount,
+    currentBalance: current.currentBalance + fund.amount,
+    monthToDateFunds: current.monthToDateFunds + (fundMonth === currentMonth ? fund.amount : 0),
+    yearToDateFunds: current.yearToDateFunds + (fundDate.getFullYear() === currentYear ? fund.amount : 0),
+  };
+}
+
+function updateTransactions(current: Transaction[] | undefined, fund: Fund) {
+  if (!current) {
+    return current;
+  }
+
+  const nextTransaction: Transaction = {
+    id: `txn_${fund.id}`,
+    type: "fund",
+    amount: fund.amount,
+    date: fund.date,
+    description: fund.source,
+    category: fund.source,
+  };
+
+  return [nextTransaction, ...current.filter((transaction) => transaction.id !== nextTransaction.id)];
+}
 
 export default function Funds() {
   const { toast } = useToast();
@@ -56,11 +111,14 @@ export default function Funds() {
 
   const addMutation = useMutation({
     mutationFn: api.addFund,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["funds"] });
-      queryClient.invalidateQueries({ queryKey: ["transactions"] });
-      queryClient.invalidateQueries({ queryKey: ["chartData"] });
-      queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
+    onSuccess: (createdFund) => {
+      queryClient.setQueryData<Fund[]>(["funds"], (current = []) => [
+        createdFund,
+        ...current.filter((fund) => fund.id !== createdFund.id),
+      ]);
+      queryClient.setQueryData<ChartPoint[]>(["chartData"], (current) => updateChartData(current, createdFund));
+      queryClient.setQueryData<AdminOverview>(["adminOverview"], (current) => updateOverview(current, createdFund));
+      queryClient.setQueryData<Transaction[]>(["transactions"], (current) => updateTransactions(current, createdFund));
       toast({ title: "Funds added", description: "Inflow has been recorded successfully." });
       setIsDialogOpen(false);
       form.reset({

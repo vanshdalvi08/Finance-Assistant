@@ -7,7 +7,20 @@ import { useAuthStore } from "@/store/auth";
 import { listEmployeeAccounts } from "@/auth/auth-service";
 import { api } from "@/lib/api";
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      gcTime: 5 * 60_000,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: true,
+      retry: 1,
+    },
+    mutations: {
+      retry: 0,
+    },
+  },
+});
 
 function AuthBootstrap({ children }: { children: React.ReactNode }) {
   const hydrateFromStorage = useAuthStore((state) => state.hydrateFromStorage);

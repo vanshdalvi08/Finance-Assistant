@@ -1,9 +1,19 @@
 import { useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Plus, Pencil, Wallet, Coins, ArrowRight, CheckCircle2 } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { DashboardCard } from "@/components/dashboard-card";
-import { api, type PurchaseOrder, type PurchaseOrderTask } from "@/lib/api";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,7 +22,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Plus, Pencil, Wallet, Coins, ArrowRight, CheckCircle2 } from "lucide-react";
+import { api, type PurchaseOrder, type PurchaseOrderTask } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 
 type PurchaseOrderForm = {
@@ -24,16 +34,16 @@ type PurchaseOrderForm = {
 };
 
 type TaskDraft = {
+  id: string;
   taskName: string;
   description: string;
-  amount: string;
+  hours: string;
+  rate: string;
 };
 
 type EditingState =
   | { mode: "create" }
-  | { mode: "edit"; order: PurchaseOrder };
-
-const STORAGE_KEY = "finance-dashboard-store-v2";
+  | { mode: "edit"; orderId: string };
 
 function formatCurrency(value: number) {
   return value.toLocaleString("en-IN", {
@@ -43,43 +53,22 @@ function formatCurrency(value: number) {
   });
 }
 
-function createTaskDraft(): TaskDraft {
-  return { taskName: "", description: "", amount: "" };
-}
-
-function normalizeAmount(value: string) {
+function normalizeNumber(value: string) {
   return Math.max(0, Number(value || 0));
 }
 
-function updateLocalPurchaseOrders(
-  updater: (orders: PurchaseOrder[]) => PurchaseOrder[],
-): PurchaseOrder[] | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
+function computeTaskAmount(input: Pick<TaskDraft, "hours" | "rate">) {
+  return Math.round(normalizeNumber(input.hours) * normalizeNumber(input.rate));
+}
 
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) {
-      return null;
-    }
-
-    const store = JSON.parse(raw) as { purchaseOrders?: PurchaseOrder[] };
-    const currentOrders = Array.isArray(store.purchaseOrders) ? store.purchaseOrders : [];
-    const nextOrders = updater(currentOrders);
-
-    window.localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({
-        ...store,
-        purchaseOrders: nextOrders,
-      }),
-    );
-
-    return nextOrders;
-  } catch {
-    return null;
-  }
+function createTaskDraft(): TaskDraft {
+  return {
+    id: `draft_${Math.random().toString(36).slice(2, 10)}`,
+    taskName: "",
+    description: "",
+    hours: "",
+    rate: "",
+  };
 }
 
 function getOrderTotals(order: PurchaseOrder) {
@@ -89,11 +78,43 @@ function getOrderTotals(order: PurchaseOrder) {
   return { total, used, remaining };
 }
 
+function getPlannedAmount(order: Pick<PurchaseOrder, "tasks">) {
+  return order.tasks.reduce((sum, task) => sum + Math.max(0, Number(task.amount ?? 0)), 0);
+}
+
+function upsertPurchaseOrder(current: PurchaseOrder[] | undefined, nextOrder: PurchaseOrder) {
+  if (!current) {
+    return [nextOrder];
+  }
+
+  if (current.some((order) => order.id === nextOrder.id)) {
+    return current.map((order) => (order.id === nextOrder.id ? nextOrder : order));
+  }
+
+  return [nextOrder, ...current];
+}
+
+function appendPurchaseOrderTask(current: PurchaseOrder[] | undefined, poId: string, task: PurchaseOrderTask) {
+  if (!current) {
+    return current;
+  }
+
+  return current.map((order) =>
+    order.id === poId
+      ? {
+          ...order,
+          tasks: [...order.tasks, task],
+        }
+      : order,
+  );
+}
+
 export default function PurchaseOrdersPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [sheetDialogOpen, setSheetDialogOpen] = useState(false);
   const [editingState, setEditingState] = useState<EditingState>({ mode: "create" });
+  const [purchaseOrderToDelete, setPurchaseOrderToDelete] = useState<PurchaseOrder | null>(null);
   const [form, setForm] = useState<PurchaseOrderForm>({
     title: "",
     totalAmount: "",
@@ -108,6 +129,15 @@ export default function PurchaseOrdersPage() {
     queryKey: ["purchaseOrders"],
     queryFn: api.getPurchaseOrders,
   });
+
+  const activeEditingOrder =
+    editingState.mode === "edit"
+      ? purchaseOrders.find((order) => order.id === editingState.orderId) ?? null
+      : null;
+  const activeEditingPlannedAmount = activeEditingOrder ? getPlannedAmount(activeEditingOrder) : 0;
+  const activeEditingHeadroom = activeEditingOrder
+    ? Math.max(0, Number(activeEditingOrder.totalAmount ?? 0) - activeEditingPlannedAmount)
+    : 0;
 
   const totals = useMemo(() => {
     return purchaseOrders.reduce(
@@ -126,31 +156,30 @@ export default function PurchaseOrdersPage() {
   }, [purchaseOrders]);
 
   const createMutation = useMutation({
-    mutationFn: async () => {
-      return api.createPurchaseOrder({
+    mutationFn: async () =>
+      api.createPurchaseOrder({
         title: form.title.trim(),
-        totalAmount: normalizeAmount(form.totalAmount),
+        totalAmount: normalizeNumber(form.totalAmount),
         vendor: form.vendor.trim(),
         date: form.date,
         notes: form.notes.trim(),
         tasks: taskRows
-          .filter((task) => task.taskName.trim() && normalizeAmount(task.amount) > 0)
           .map((task) => ({
-            taskName: task.taskName,
-            description: task.description,
-            amount: normalizeAmount(task.amount),
-          })),
-      });
-    },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["purchaseOrders"] });
-      await queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
-      await queryClient.invalidateQueries({ queryKey: ["transactions"] });
+            taskName: task.taskName.trim(),
+            description: task.description.trim(),
+            hours: normalizeNumber(task.hours),
+            rate: normalizeNumber(task.rate),
+          }))
+          .filter((task) => task.taskName && Math.round(task.hours * task.rate) > 0),
+      }),
+    onSuccess: (createdOrder) => {
+      queryClient.setQueryData<PurchaseOrder[]>(["purchaseOrders"], (current) => upsertPurchaseOrder(current, createdOrder));
       toast({
-        title: "Purchase order created",
-        description: "The outsourced work budget sheet is ready.",
+        title: "PO created",
+        description: "The sheet cap is saved. Funds will move only when a task row is paid.",
       });
       resetEditor();
+      setSheetDialogOpen(false);
     },
     onError: (error) => {
       toast({
@@ -161,53 +190,56 @@ export default function PurchaseOrdersPage() {
     },
   });
 
-  const addTaskMutation = useMutation({
-    mutationFn: async ({ poId, task }: { poId: string; task: TaskDraft }) => {
-      const addPurchaseOrderTask = (api as any).addPurchaseOrderTask as
-        | undefined
-        | ((input: { poId: string; taskName: string; description?: string; amount: number }) => Promise<unknown>);
-
-      if (typeof addPurchaseOrderTask === "function") {
-        await addPurchaseOrderTask({
-          poId,
-          taskName: task.taskName.trim(),
-          description: task.description.trim(),
-          amount: normalizeAmount(task.amount),
-        });
-        return true;
+  const saveHeaderMutation = useMutation({
+    mutationFn: async () => {
+      if (!activeEditingOrder) {
+        throw new Error("Select a purchase order to edit.");
       }
 
-      const updated = updateLocalPurchaseOrders((orders) =>
-        orders.map((order) =>
-          order.id === poId
-            ? {
-                ...order,
-                tasks: [
-                  ...order.tasks,
-                  {
-                    id: `po_task_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-                    taskName: task.taskName.trim(),
-                    description: task.description.trim(),
-                    amount: normalizeAmount(task.amount),
-                    status: "pending",
-                  },
-                ],
-              }
-            : order,
-        ),
-      );
-
-      if (!updated) {
-        throw new Error("Unable to update the purchase order.");
-      }
-
-      return true;
+      return api.updatePurchaseOrder({
+        id: activeEditingOrder.id,
+        title: form.title.trim(),
+        totalAmount: normalizeNumber(form.totalAmount),
+        vendor: form.vendor.trim(),
+        date: form.date,
+        notes: form.notes.trim(),
+      });
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["purchaseOrders"] });
-      await queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
-      await queryClient.invalidateQueries({ queryKey: ["transactions"] });
-      toast({ title: "Task added", description: "A new outsourced work row was added." });
+    onSuccess: (updatedOrder) => {
+      queryClient.setQueryData<PurchaseOrder[]>(["purchaseOrders"], (current) => upsertPurchaseOrder(current, updatedOrder));
+      toast({
+        title: "PO updated",
+        description: "The sheet cap and header details were updated.",
+      });
+      setSheetDialogOpen(false);
+      resetEditor();
+    },
+    onError: (error) => {
+      toast({
+        title: "Could not save changes",
+        description: error instanceof Error ? error.message : "Please check the values again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const addTaskMutation = useMutation({
+    mutationFn: async ({ poId, task }: { poId: string; task: TaskDraft }) =>
+      api.addPurchaseOrderTask({
+        poId,
+        taskName: task.taskName.trim(),
+        description: task.description.trim(),
+        hours: normalizeNumber(task.hours),
+        rate: normalizeNumber(task.rate),
+      }),
+    onSuccess: (createdTask, variables) => {
+      queryClient.setQueryData<PurchaseOrder[]>(["purchaseOrders"], (current) =>
+        appendPurchaseOrderTask(current, variables.poId, createdTask),
+      );
+      toast({
+        title: "Task row added",
+        description: "The new work row is now part of this PO sheet.",
+      });
       setTaskForm(createTaskDraft());
     },
     onError: (error) => {
@@ -220,17 +252,17 @@ export default function PurchaseOrdersPage() {
   });
 
   const payTaskMutation = useMutation({
-    mutationFn: async ({ poId, taskId }: { poId: string; taskId: string }) => {
-      return api.payPurchaseOrderTask({ poId, taskId });
-    },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["purchaseOrders"] });
-      await queryClient.invalidateQueries({ queryKey: ["expenses"] });
-      await queryClient.invalidateQueries({ queryKey: ["transactions"] });
-      await queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
+    mutationFn: async ({ poId, taskId }: { poId: string; taskId: string }) => api.payPurchaseOrderTask({ poId, taskId }),
+    onSuccess: (updatedOrder) => {
+      queryClient.setQueryData<PurchaseOrder[]>(["purchaseOrders"], (current) => upsertPurchaseOrder(current, updatedOrder));
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["expenses"] }),
+        queryClient.invalidateQueries({ queryKey: ["transactions"] }),
+        queryClient.invalidateQueries({ queryKey: ["adminOverview"] }),
+      ]);
       toast({
         title: "Task paid",
-        description: "The amount has been deducted from the PO balance.",
+        description: "Only this paid row was deducted from the cap and available funds.",
       });
     },
     onError: (error) => {
@@ -242,69 +274,29 @@ export default function PurchaseOrdersPage() {
     },
   });
 
-  const saveHeaderMutation = useMutation({
-    mutationFn: async () => {
-      if (editingState.mode !== "edit") {
-        throw new Error("Select a purchase order to edit.");
-      }
-
-      const updatePurchaseOrder = (api as any).updatePurchaseOrder as
-        | undefined
-        | ((input: {
-            id: string;
-            title: string;
-            totalAmount: number;
-            vendor?: string;
-            date: string;
-            notes?: string;
-          }) => Promise<unknown>);
-
-      const payload = {
-        id: editingState.order.id,
-        title: form.title.trim(),
-        totalAmount: normalizeAmount(form.totalAmount),
-        vendor: form.vendor.trim(),
-        date: form.date,
-        notes: form.notes.trim(),
-      };
-
-      if (typeof updatePurchaseOrder === "function") {
-        await updatePurchaseOrder(payload);
-        return true;
-      }
-
-      const updated = updateLocalPurchaseOrders((orders) =>
-        orders.map((order) =>
-          order.id === payload.id
-            ? {
-                ...order,
-                title: payload.title,
-                totalAmount: payload.totalAmount,
-                vendor: payload.vendor || undefined,
-                date: payload.date,
-                notes: payload.notes || "",
-              }
-            : order,
-        ),
-      );
-
-      if (!updated) {
-        throw new Error("Unable to update the purchase order.");
-      }
-
-      return true;
+  const deleteMutation = useMutation({
+    mutationFn: async (purchaseOrderId: string) => {
+      await api.deletePurchaseOrder(purchaseOrderId);
+      return purchaseOrderId;
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["purchaseOrders"] });
-      await queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
-      toast({ title: "Purchase order updated", description: "The sheet header was saved successfully." });
-      setSheetDialogOpen(false);
-      resetEditor();
+    onSuccess: (deletedId) => {
+      queryClient.setQueryData<PurchaseOrder[]>(["purchaseOrders"], (current) =>
+        (current ?? []).filter((order) => order.id !== deletedId),
+      );
+      if (activeEditingOrder?.id === deletedId) {
+        setSheetDialogOpen(false);
+        resetEditor();
+      }
+      setPurchaseOrderToDelete(null);
+      toast({
+        title: "PO deleted",
+        description: "The purchase order sheet was removed.",
+      });
     },
     onError: (error) => {
       toast({
-        title: "Could not save changes",
-        description: error instanceof Error ? error.message : "Please check the values again.",
+        title: "Could not delete PO",
+        description: error instanceof Error ? error.message : "Please try again.",
         variant: "destructive",
       });
     },
@@ -329,7 +321,7 @@ export default function PurchaseOrdersPage() {
   }
 
   function openEditSheet(order: PurchaseOrder) {
-    setEditingState({ mode: "edit", order });
+    setEditingState({ mode: "edit", orderId: order.id });
     setForm({
       title: order.title,
       totalAmount: String(getOrderTotals(order).total),
@@ -342,21 +334,13 @@ export default function PurchaseOrdersPage() {
     setSheetDialogOpen(true);
   }
 
-  function updateTaskRow(index: number, field: keyof TaskDraft, value: string) {
-    setTaskRows((current) =>
-      current.map((task, taskIndex) => (taskIndex === index ? { ...task, [field]: value } : task)),
-    );
-  }
-
   function addDraftTaskRow() {
     setTaskRows((current) => [...current, createTaskDraft()]);
   }
 
-  function createOrderSheet() {
-    createMutation.mutate();
+  function updateTaskRow(index: number, field: keyof TaskDraft, value: string) {
+    setTaskRows((current) => current.map((row, rowIndex) => (rowIndex === index ? { ...row, [field]: value } : row)));
   }
-
-  const editingOrder = editingState.mode === "edit" ? editingState.order : null;
 
   return (
     <DashboardLayout>
@@ -365,7 +349,7 @@ export default function PurchaseOrdersPage() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Purchase Orders</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Outsourced work sheets for vendor tasks, payments, and remaining balances.
+              Work billing sheets with a fixed cap. Funds move only when an individual row is marked as paid.
             </p>
           </div>
           <Button onClick={openCreateSheet}>
@@ -375,15 +359,20 @@ export default function PurchaseOrdersPage() {
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-          <DashboardCard label="Total PO Fund" value={formatCurrency(totals.total)} icon={<Wallet className="h-5 w-5" />} />
-          <DashboardCard label="Used Amount" value={formatCurrency(totals.used)} icon={<Coins className="h-5 w-5" />} />
-          <DashboardCard label="Remaining Amount" value={formatCurrency(totals.remaining)} icon={<ArrowRight className="h-5 w-5" />} />
+          <DashboardCard label="Sheet Cap" value={formatCurrency(totals.total)} icon={<Wallet className="h-5 w-5" />} />
+          <DashboardCard label="Paid Rows" value={formatCurrency(totals.used)} icon={<Coins className="h-5 w-5" />} />
+          <DashboardCard label="Cap Remaining" value={formatCurrency(totals.remaining)} icon={<ArrowRight className="h-5 w-5" />} />
           <DashboardCard label="Active Sheets" value={String(totals.active)} icon={<CheckCircle2 className="h-5 w-5" />} />
         </div>
 
         <Card className="border-border/50">
           <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-base">Purchase Order Sheets</CardTitle>
+            <div className="space-y-1">
+              <CardTitle className="text-base">PO Work Sheets</CardTitle>
+              <p className="text-sm text-muted-foreground">
+                The sheet amount is only a limit. Paying a task row is what actually deducts funds.
+              </p>
+            </div>
             <Button variant="outline" size="sm" onClick={openCreateSheet}>
               <Plus className="mr-2 h-4 w-4" />
               New Sheet
@@ -391,13 +380,12 @@ export default function PurchaseOrdersPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             {purchaseOrders.length === 0 ? (
-              <div className="py-12 text-center text-sm text-muted-foreground">
-                No purchase orders created yet.
-              </div>
+              <div className="py-12 text-center text-sm text-muted-foreground">No purchase orders created yet.</div>
             ) : (
               purchaseOrders.map((order) => {
                 const { total, used, remaining } = getOrderTotals(order);
-
+                const planned = getPlannedAmount(order);
+                const planningHeadroom = Math.max(0, total - planned);
                 return (
                   <div key={order.id} className="rounded-xl border border-border/50 bg-secondary/10 p-4">
                     <div className="flex flex-col gap-4 border-b border-border/50 pb-4 md:flex-row md:items-start md:justify-between">
@@ -415,13 +403,17 @@ export default function PurchaseOrdersPage() {
                         {order.notes ? <p className="max-w-3xl text-sm text-muted-foreground">{order.notes}</p> : null}
                       </div>
 
-                      <div className="grid grid-cols-3 gap-3 text-right text-sm">
+                      <div className="grid grid-cols-4 gap-3 text-right text-sm">
                         <div>
-                          <p className="text-xs text-muted-foreground">Total</p>
+                          <p className="text-xs text-muted-foreground">Cap</p>
                           <p className="mt-1 font-medium">{formatCurrency(total)}</p>
                         </div>
                         <div>
-                          <p className="text-xs text-muted-foreground">Used</p>
+                          <p className="text-xs text-muted-foreground">Planned</p>
+                          <p className="mt-1 font-medium">{formatCurrency(planned)}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">Paid</p>
                           <p className="mt-1 font-medium">{formatCurrency(used)}</p>
                         </div>
                         <div>
@@ -432,22 +424,30 @@ export default function PurchaseOrdersPage() {
                     </div>
 
                     <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                      <div className="text-sm text-muted-foreground">
-                        Add more outsourced work rows after creation. Pay each row when the vendor work is completed.
+                      <p className="text-sm text-muted-foreground">
+                        Each row calculates its own total from hours and hourly rate. Unpaid rows remain only planned work.
+                        {` Planning headroom: ${formatCurrency(planningHeadroom)}.`}
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <Button variant="outline" size="sm" onClick={() => openEditSheet(order)}>
+                          <Pencil className="mr-2 h-4 w-4" />
+                          Edit Sheet
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={() => setPurchaseOrderToDelete(order)}>
+                          Delete PO
+                        </Button>
                       </div>
-                      <Button variant="outline" size="sm" onClick={() => openEditSheet(order)}>
-                        <Pencil className="mr-2 h-4 w-4" />
-                        Edit Sheet
-                      </Button>
                     </div>
 
                     <div className="mt-4 overflow-x-auto">
                       <Table>
                         <TableHeader>
                           <TableRow className="border-border/50">
-                            <TableHead>Task Name</TableHead>
+                            <TableHead>Work Row</TableHead>
                             <TableHead>Description</TableHead>
-                            <TableHead className="text-right">Amount</TableHead>
+                            <TableHead className="text-right">Hours</TableHead>
+                            <TableHead className="text-right">Rate / Hr</TableHead>
+                            <TableHead className="text-right">Total</TableHead>
                             <TableHead>Status</TableHead>
                             <TableHead className="text-right">Pay</TableHead>
                           </TableRow>
@@ -455,15 +455,17 @@ export default function PurchaseOrdersPage() {
                         <TableBody>
                           {order.tasks.length === 0 ? (
                             <TableRow className="border-border/50">
-                              <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
-                                No task rows inside this sheet yet.
+                              <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
+                                No work rows inside this sheet yet.
                               </TableCell>
                             </TableRow>
                           ) : (
-                            order.tasks.map((task: PurchaseOrderTask) => (
+                            order.tasks.map((task) => (
                               <TableRow key={task.id} className="border-border/50">
                                 <TableCell className="font-medium">{task.taskName}</TableCell>
                                 <TableCell className="text-muted-foreground">{task.description || "-"}</TableCell>
+                                <TableCell className="text-right tabular-nums">{task.hours.toFixed(1)}</TableCell>
+                                <TableCell className="text-right tabular-nums">{formatCurrency(task.rate)}</TableCell>
                                 <TableCell className="text-right tabular-nums">{formatCurrency(task.amount)}</TableCell>
                                 <TableCell>
                                   <Badge variant={task.status === "paid" ? "secondary" : "outline"} className="capitalize">
@@ -495,23 +497,27 @@ export default function PurchaseOrdersPage() {
       </div>
 
       <Dialog open={sheetDialogOpen} onOpenChange={setSheetDialogOpen}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-4xl">
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
           <DialogHeader>
             <DialogTitle>{editingState.mode === "create" ? "Create Purchase Order" : "Edit Purchase Order"}</DialogTitle>
           </DialogHeader>
 
-          <div className="space-y-4">
+          <div className="space-y-5">
+            <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 text-sm text-muted-foreground">
+              This PO amount acts only as a cap. Creating the sheet or adding rows does not deduct funds. Money moves only when a row is marked as paid.
+            </div>
+
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <Label>PO Title / Purpose</Label>
                 <Input
                   value={form.title}
                   onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))}
-                  placeholder="Office Materials March"
+                  placeholder="March outsourced drafting work"
                 />
               </div>
               <div className="space-y-2">
-                <Label>Total Fund Amount</Label>
+                <Label>PO Cap Amount</Label>
                 <Input
                   type="number"
                   value={form.totalAmount}
@@ -520,7 +526,9 @@ export default function PurchaseOrdersPage() {
                 />
               </div>
               <div className="space-y-2">
-                <Label>Vendor <span className="font-normal text-muted-foreground">(optional)</span></Label>
+                <Label>
+                  Vendor <span className="font-normal text-muted-foreground">(optional)</span>
+                </Label>
                 <Input
                   value={form.vendor}
                   onChange={(event) => setForm((current) => ({ ...current, vendor: event.target.value }))}
@@ -538,7 +546,9 @@ export default function PurchaseOrdersPage() {
             </div>
 
             <div className="space-y-2">
-              <Label>Notes <span className="font-normal text-muted-foreground">(optional)</span></Label>
+              <Label>
+                Notes <span className="font-normal text-muted-foreground">(optional)</span>
+              </Label>
               <Textarea
                 value={form.notes}
                 onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))}
@@ -547,13 +557,33 @@ export default function PurchaseOrdersPage() {
               />
             </div>
 
-            {editingState.mode === "edit" ? (
+            {editingState.mode === "edit" && activeEditingOrder ? (
               <div className="space-y-4">
+                <div className="grid gap-4 md:grid-cols-4">
+                  {[
+                    { label: "Cap", value: formatCurrency(getOrderTotals(activeEditingOrder).total) },
+                    { label: "Planned", value: formatCurrency(activeEditingPlannedAmount) },
+                    { label: "Paid", value: formatCurrency(getOrderTotals(activeEditingOrder).used) },
+                    { label: "Remaining", value: formatCurrency(getOrderTotals(activeEditingOrder).remaining) },
+                  ].map((item) => (
+                    <div key={item.label} className="rounded-xl border border-border/50 bg-secondary/10 p-4">
+                      <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">{item.label}</p>
+                      <p className="mt-2 text-lg font-semibold">{item.value}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="rounded-xl border border-border/50 bg-secondary/10 p-4 text-sm text-muted-foreground">
+                  Remaining planning headroom: <span className="font-medium text-foreground">{formatCurrency(activeEditingHeadroom)}</span>
+                </div>
+
                 <div className="rounded-xl border border-border/50 bg-secondary/10 p-4">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <h3 className="text-sm font-medium">Add Task Later</h3>
-                      <p className="text-xs text-muted-foreground">Append more outsourced work rows to this sheet whenever needed.</p>
+                      <h3 className="text-sm font-medium">Header and Cap</h3>
+                      <p className="text-xs text-muted-foreground">
+                        Update the sheet header or cap any time, as long as the cap stays above the already paid total.
+                      </p>
                     </div>
                     <Button
                       variant="outline"
@@ -565,12 +595,34 @@ export default function PurchaseOrdersPage() {
                       Save Changes
                     </Button>
                   </div>
+                  <div className="mt-3 flex justify-end">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      type="button"
+                      disabled={deleteMutation.isPending}
+                      onClick={() => setPurchaseOrderToDelete(activeEditingOrder)}
+                    >
+                      Delete PO
+                    </Button>
+                  </div>
+                </div>
 
-                  <div className="mt-4 grid gap-3 md:grid-cols-[1.2fr_1.5fr_0.7fr_auto]">
+                <div className="rounded-xl border border-border/50 bg-secondary/10 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-medium">Add Work Row</h3>
+                      <p className="text-xs text-muted-foreground">
+                        Add more rows later. Each row total is calculated from hours and rate.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 md:grid-cols-[1.1fr_1.4fr_0.6fr_0.7fr_0.8fr_auto]">
                     <Input
                       value={taskForm.taskName}
                       onChange={(event) => setTaskForm((current) => ({ ...current, taskName: event.target.value }))}
-                      placeholder="Task name"
+                      placeholder="Work row"
                     />
                     <Input
                       value={taskForm.description}
@@ -579,24 +631,30 @@ export default function PurchaseOrdersPage() {
                     />
                     <Input
                       type="number"
-                      value={taskForm.amount}
-                      onChange={(event) => setTaskForm((current) => ({ ...current, amount: event.target.value }))}
-                      placeholder="Amount"
+                      step="0.5"
+                      value={taskForm.hours}
+                      onChange={(event) => setTaskForm((current) => ({ ...current, hours: event.target.value }))}
+                      placeholder="Hours"
                     />
+                    <Input
+                      type="number"
+                      value={taskForm.rate}
+                      onChange={(event) => setTaskForm((current) => ({ ...current, rate: event.target.value }))}
+                      placeholder="Rate"
+                    />
+                    <div className="flex items-center rounded-md border border-border/50 bg-background px-3 text-sm font-medium">
+                      {formatCurrency(computeTaskAmount(taskForm))}
+                    </div>
                     <Button
                       type="button"
                       variant="outline"
-                      disabled={!taskForm.taskName.trim() || normalizeAmount(taskForm.amount) <= 0 || addTaskMutation.isPending}
-                      onClick={() => {
-                        if (!editingOrder) {
-                          return;
-                        }
-
-                        addTaskMutation.mutate({
-                          poId: editingOrder.id,
-                          task: taskForm,
-                        });
-                      }}
+                      disabled={
+                        !taskForm.taskName.trim() ||
+                        computeTaskAmount(taskForm) <= 0 ||
+                        computeTaskAmount(taskForm) > activeEditingHeadroom ||
+                        addTaskMutation.isPending
+                      }
+                      onClick={() => addTaskMutation.mutate({ poId: activeEditingOrder.id, task: taskForm })}
                     >
                       <Plus className="mr-2 h-4 w-4" />
                       Add
@@ -605,24 +663,28 @@ export default function PurchaseOrdersPage() {
                 </div>
 
                 <div className="rounded-xl border border-border/50 bg-secondary/10 p-4">
-                  <h3 className="text-sm font-medium">Current Task Rows</h3>
+                  <h3 className="text-sm font-medium">Current Work Rows</h3>
                   <div className="mt-4 overflow-x-auto">
                     <Table>
                       <TableHeader>
                         <TableRow className="border-border/50">
-                          <TableHead>Task Name</TableHead>
+                          <TableHead>Work Row</TableHead>
                           <TableHead>Description</TableHead>
-                          <TableHead className="text-right">Amount</TableHead>
+                          <TableHead className="text-right">Hours</TableHead>
+                          <TableHead className="text-right">Rate / Hr</TableHead>
+                          <TableHead className="text-right">Total</TableHead>
                           <TableHead>Status</TableHead>
                           <TableHead className="text-right">Pay</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {editingOrder?.tasks.length ? (
-                          editingOrder.tasks.map((task: PurchaseOrderTask) => (
+                        {activeEditingOrder.tasks.length ? (
+                          activeEditingOrder.tasks.map((task) => (
                             <TableRow key={task.id} className="border-border/50">
                               <TableCell className="font-medium">{task.taskName}</TableCell>
                               <TableCell className="text-muted-foreground">{task.description || "-"}</TableCell>
+                              <TableCell className="text-right tabular-nums">{task.hours.toFixed(1)}</TableCell>
+                              <TableCell className="text-right tabular-nums">{formatCurrency(task.rate)}</TableCell>
                               <TableCell className="text-right tabular-nums">{formatCurrency(task.amount)}</TableCell>
                               <TableCell>
                                 <Badge variant={task.status === "paid" ? "secondary" : "outline"} className="capitalize">
@@ -634,7 +696,7 @@ export default function PurchaseOrdersPage() {
                                   size="sm"
                                   variant={task.status === "paid" ? "outline" : "default"}
                                   disabled={task.status === "paid" || payTaskMutation.isPending}
-                                  onClick={() => payTaskMutation.mutate({ poId: editingOrder.id, taskId: task.id })}
+                                  onClick={() => payTaskMutation.mutate({ poId: activeEditingOrder.id, taskId: task.id })}
                                 >
                                   {task.status === "paid" ? "Paid" : "Pay"}
                                 </Button>
@@ -643,8 +705,8 @@ export default function PurchaseOrdersPage() {
                           ))
                         ) : (
                           <TableRow className="border-border/50">
-                            <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
-                              No task rows inside this sheet yet.
+                            <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
+                              No work rows inside this sheet yet.
                             </TableCell>
                           </TableRow>
                         )}
@@ -658,8 +720,10 @@ export default function PurchaseOrdersPage() {
                 <div className="rounded-xl border border-border/50 bg-secondary/10 p-4">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <h3 className="text-sm font-medium">Initial Task Rows</h3>
-                      <p className="text-xs text-muted-foreground">Add the outsourced work rows that belong to this PO.</p>
+                      <h3 className="text-sm font-medium">Initial Work Rows</h3>
+                      <p className="text-xs text-muted-foreground">
+                        Add any rows you already know. You can still append more later after the sheet is created.
+                      </p>
                     </div>
                     <Button type="button" variant="outline" size="sm" onClick={addDraftTaskRow}>
                       <Plus className="mr-2 h-4 w-4" />
@@ -669,11 +733,14 @@ export default function PurchaseOrdersPage() {
 
                   <div className="mt-4 space-y-3">
                     {taskRows.map((task, index) => (
-                      <div key={`${index}-${task.taskName}`} className="grid gap-3 rounded-lg border border-border/50 bg-background/80 p-3 md:grid-cols-[1.2fr_1.5fr_0.7fr]">
+                      <div
+                        key={task.id}
+                        className="grid gap-3 rounded-lg border border-border/50 bg-background/80 p-3 md:grid-cols-[1.1fr_1.4fr_0.6fr_0.7fr_0.8fr]"
+                      >
                         <Input
                           value={task.taskName}
                           onChange={(event) => updateTaskRow(index, "taskName", event.target.value)}
-                          placeholder="Task name"
+                          placeholder="Work row"
                         />
                         <Input
                           value={task.description}
@@ -682,10 +749,20 @@ export default function PurchaseOrdersPage() {
                         />
                         <Input
                           type="number"
-                          value={task.amount}
-                          onChange={(event) => updateTaskRow(index, "amount", event.target.value)}
-                          placeholder="Allocated amount"
+                          step="0.5"
+                          value={task.hours}
+                          onChange={(event) => updateTaskRow(index, "hours", event.target.value)}
+                          placeholder="Hours"
                         />
+                        <Input
+                          type="number"
+                          value={task.rate}
+                          onChange={(event) => updateTaskRow(index, "rate", event.target.value)}
+                          placeholder="Rate / Hr"
+                        />
+                        <div className="flex items-center rounded-md border border-border/50 bg-secondary/10 px-3 text-sm font-medium">
+                          {formatCurrency(computeTaskAmount(task))}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -695,7 +772,7 @@ export default function PurchaseOrdersPage() {
                   className="w-full"
                   type="button"
                   disabled={!form.title.trim() || !form.totalAmount || createMutation.isPending}
-                  onClick={createOrderSheet}
+                  onClick={() => createMutation.mutate()}
                 >
                   Create Purchase Order
                 </Button>
@@ -704,6 +781,44 @@ export default function PurchaseOrdersPage() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={Boolean(purchaseOrderToDelete)} onOpenChange={(open) => !open && setPurchaseOrderToDelete(null)}>
+        <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete purchase order?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {purchaseOrderToDelete?.tasks.some((task) => task.status === "paid")
+                  ? `This sheet already has paid rows, so it should be kept for record history and cannot be deleted.`
+                  : `This will permanently remove `}
+                {!purchaseOrderToDelete?.tasks.some((task) => task.status === "paid") ? (
+                  <span className="font-medium text-foreground">{purchaseOrderToDelete?.title}</span>
+                ) : null}
+                {!purchaseOrderToDelete?.tasks.some((task) => task.status === "paid")
+                  ? " and all of its planned work rows. This action cannot be undone."
+                  : ""}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={deleteMutation.isPending}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+              disabled={
+                deleteMutation.isPending ||
+                !purchaseOrderToDelete ||
+                purchaseOrderToDelete.tasks.some((task) => task.status === "paid")
+              }
+              onClick={(event) => {
+                event.preventDefault();
+                if (!purchaseOrderToDelete) {
+                  return;
+                }
+                deleteMutation.mutate(purchaseOrderToDelete.id);
+              }}
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete PO"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </DashboardLayout>
   );
 }

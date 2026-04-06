@@ -22,6 +22,27 @@
       "when": 1775331688883,
       "tag": "0002_round_the_enforcers",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1775335153680,
+      "tag": "0003_brainy_liz_osborn",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1775368942224,
+      "tag": "0004_strong_moira_mactaggert",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1775371093168,
+      "tag": "0005_cuddly_snowbird",
+      "breakpoints": true
     }
   ]
 }

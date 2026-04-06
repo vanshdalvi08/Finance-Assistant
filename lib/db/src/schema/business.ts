@@ -1,6 +1,6 @@
 import { createInsertSchema } from "drizzle-zod";
 import { relations, sql } from "drizzle-orm";
-import { boolean, index, integer, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, pgEnum, pgTable, real, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { usersTable } from "./users";
 
 export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
@@ -56,6 +56,8 @@ export interface PurchaseOrderTaskRecord {
   id: string;
   taskName: string;
   description: string;
+  hours?: number;
+  rate?: number;
   amount: number;
   status: PurchaseOrderTaskStatus;
   paidAt?: string;
@@ -185,7 +187,7 @@ export const salariesTable = pgTable(
     source: salarySourceEnum("source").notNull().default("manual"),
     paidAt: timestamp("paid_at", { withTimezone: true }),
     weekStart: timestamp("week_start", { withTimezone: true }),
-    hours: integer("hours"),
+    hours: real("hours"),
     rate: integer("rate"),
     timesheetId: text("timesheet_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -378,13 +380,13 @@ export const timesheetLinesTable = pgTable(
     projectTaskId: text("project_task_id").references(() => projectTasksTable.id, { onDelete: "set null" }),
     sortOrder: integer("sort_order").notNull().default(0),
     notes: text("notes").notNull().default(""),
-    mon: integer("mon").notNull().default(0),
-    tue: integer("tue").notNull().default(0),
-    wed: integer("wed").notNull().default(0),
-    thu: integer("thu").notNull().default(0),
-    fri: integer("fri").notNull().default(0),
-    sat: integer("sat").notNull().default(0),
-    sun: integer("sun").notNull().default(0),
+    mon: real("mon").notNull().default(0),
+    tue: real("tue").notNull().default(0),
+    wed: real("wed").notNull().default(0),
+    thu: real("thu").notNull().default(0),
+    fri: real("fri").notNull().default(0),
+    sat: real("sat").notNull().default(0),
+    sun: real("sun").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

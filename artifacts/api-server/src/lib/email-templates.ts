@@ -89,3 +89,83 @@ export function passwordResetEmailTemplate(input: {
     html,
   };
 }
+
+export function notificationPreviewEmailTemplate(input: {
+  name: string;
+  title: string;
+  message: string;
+  actionUrl?: string;
+  actionLabel?: string;
+}): { subject: string; text: string; html: string } {
+  const safeName = input.name.trim() || "there";
+  const safeTitle = input.title.trim() || "You have a new Yojak notification";
+  const safeMessage = input.message.trim() || "There is a new update in your Yojak workspace.";
+  const actionLabel = input.actionLabel?.trim() || "Open Yojak";
+
+  const text = [
+    `Hello ${safeName},`,
+    "",
+    safeTitle,
+    safeMessage,
+    input.actionUrl ? `Open Yojak: ${input.actionUrl}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const html = baseLayout(
+    safeTitle,
+    `
+      <p style="font-size:15px;line-height:1.75;color:#cbd5e1;margin:0 0 20px;">Hello ${escapeHtml(safeName)},</p>
+      <div style="background:#0b1220;border:1px solid #243244;border-radius:16px;padding:18px 20px;">
+        <p style="margin:0;color:#e2e8f0;font-size:15px;line-height:1.8;">${escapeHtml(safeMessage)}</p>
+      </div>
+      ${
+        input.actionUrl
+          ? `<a href="${escapeHtml(input.actionUrl)}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 18px;border-radius:12px;font-weight:600;margin-top:20px;">${escapeHtml(actionLabel)}</a>`
+          : ""
+      }
+    `,
+  );
+
+  return {
+    subject: safeTitle,
+    text,
+    html,
+  };
+}
+
+export function notificationEmailTemplate(input: {
+  recipientName: string;
+  title: string;
+  body: string;
+  link?: string | null;
+  appUrl: string;
+}): { subject: string; text: string; html: string } {
+  const link = input.link?.trim();
+  const resolvedLink = link ? (link.startsWith("http") ? link : `${input.appUrl.replace(/\/$/, "")}${link}`) : input.appUrl;
+  const text = [
+    `Hello ${input.recipientName},`,
+    "",
+    input.title,
+    input.body,
+    link ? `Open it here: ${resolvedLink}` : `Open your portal: ${resolvedLink}`,
+    "",
+    "This is an automated notification from Yojak.",
+  ].join("\n");
+
+  const html = baseLayout(
+    escapeHtml(input.title),
+    `
+      <p style="font-size:15px;line-height:1.75;color:#cbd5e1;margin:0 0 18px;">Hello ${escapeHtml(input.recipientName)},</p>
+      <p style="font-size:15px;line-height:1.8;color:#e2e8f0;margin:0 0 12px;">${escapeHtml(input.body)}</p>
+      <a href="${escapeHtml(resolvedLink)}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 18px;border-radius:12px;font-weight:600;">Open Notification</a>
+      <p style="font-size:13px;line-height:1.7;color:#94a3b8;margin:20px 0 0;">This is an automated notification from Yojak.</p>
+    `,
+  );
+
+  return {
+    subject: input.title,
+    text,
+    html,
+  };
+}

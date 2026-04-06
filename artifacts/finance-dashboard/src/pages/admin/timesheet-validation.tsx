@@ -81,11 +81,6 @@ export default function AdminTimesheetValidationPage() {
     queryFn: api.getEmployees,
   });
 
-  const { data: summary } = useQuery({
-    queryKey: ["timesheet-summary"],
-    queryFn: () => api.getTimesheetSummary(),
-  });
-
   useEffect(() => {
     if (!calendarEmployeeId && employees.length > 0) {
       setCalendarEmployeeId(employees[0].id);
@@ -135,6 +130,16 @@ export default function AdminTimesheetValidationPage() {
 
   const selectedHasRejectedNote = selected?.status === "rejected" && Boolean(selected.reviewNotes?.trim());
 
+  const summary = useMemo(
+    () => ({
+      pending: timesheets.filter((entry) => entry.status === "submitted").length,
+      approved: timesheets.filter((entry) => entry.status === "approved").length,
+      rejected: timesheets.filter((entry) => entry.status === "rejected").length,
+      totalHours: timesheets.reduce((sum, entry) => sum + totalHours(entry), 0),
+    }),
+    [timesheets],
+  );
+
   const { data: monthCalendar } = useQuery({
     queryKey: ["employee-month-calendar", calendarEmployeeId, calendarMonth],
     queryFn: () => api.getEmployeeMonthCalendar({ employeeId: calendarEmployeeId, month: calendarMonth }),
@@ -150,20 +155,33 @@ export default function AdminTimesheetValidationPage() {
   const reviewMutation = useMutation({
     mutationFn: async ({ id, status }: { id: string; status: "approved" | "rejected" }) => {
       if (status === "approved") {
-        await api.approveTimesheet(id, "Admin", reviewNote.trim() || "Approved");
-        return;
+        return api.approveTimesheet(id, "Admin", reviewNote.trim() || "Approved");
       }
 
-      await api.rejectTimesheet(id, "Admin", reviewNote.trim() || "Please revise and resubmit.");
+      return api.rejectTimesheet(id, "Admin", reviewNote.trim() || "Please revise and resubmit.");
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["admin-timesheets"] });
-      await queryClient.invalidateQueries({ queryKey: ["timesheet-summary"] });
-      await queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
-      await queryClient.invalidateQueries({ queryKey: ["salaries"] });
-      await queryClient.invalidateQueries({ queryKey: ["employee-salaries"] });
-      await queryClient.invalidateQueries({ queryKey: ["transactions"] });
-      await queryClient.invalidateQueries({ queryKey: ["chartData"] });
+    onSuccess: (updatedEntry, variables) => {
+      queryClient.setQueryData<TimesheetEntry[]>(["admin-timesheets"], (current = []) =>
+        current
+          .map((entry) => (entry.id === updatedEntry.id ? updatedEntry : entry))
+          .sort((left, right) => new Date(right.weekStart).getTime() - new Date(left.weekStart).getTime()),
+      );
+
+      const shouldRefreshSalary =
+        variables.status === "approved" &&
+        String(selectedEmployee?.payType ?? "").toLowerCase() === "hourly" &&
+        Number(selectedEmployee?.hourlyRate ?? 0) > 0;
+
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["adminOverview"] }),
+        queryClient.invalidateQueries({ queryKey: ["notifications"] }),
+        ...(shouldRefreshSalary
+          ? [
+              queryClient.invalidateQueries({ queryKey: ["salaries"] }),
+              queryClient.invalidateQueries({ queryKey: ["employee-salaries"] }),
+            ]
+          : []),
+      ]);
       setReviewNote("");
     },
   });

@@ -115,10 +115,12 @@ export default function EmployeeExpensesPage() {
         reimbursable: group === "office",
         status: "submitted",
       }),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["employee-expenses", employee?.id] });
-      await queryClient.invalidateQueries({ queryKey: ["expenses"] });
-      await queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
+    onSuccess: () => {
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["employee-expenses", employee?.id] }),
+        queryClient.invalidateQueries({ queryKey: ["expenses"] }),
+        queryClient.invalidateQueries({ queryKey: ["adminOverview"] }),
+      ]);
       setForm({
         category: "",
         project: "",
