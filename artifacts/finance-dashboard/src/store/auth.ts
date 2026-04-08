@@ -3,6 +3,44 @@ import { bootstrapSession, signIn, signOut } from "@/auth/auth-service";
 import { clearAccessToken, setAccessToken } from "@/auth/session";
 import type { AuthSession, LoginCredentials, UserRole } from "@/auth/types";
 
+const TAB_SESSION_USER_KEY = "yojak.auth.tab.user";
+
+function getTabSessionUserId() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    return window.sessionStorage.getItem(TAB_SESSION_USER_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function setTabSessionUserId(userId: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.sessionStorage.setItem(TAB_SESSION_USER_KEY, userId);
+  } catch {
+    // Best effort only.
+  }
+}
+
+function clearTabSessionUserId() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.sessionStorage.removeItem(TAB_SESSION_USER_KEY);
+  } catch {
+    // Best effort only.
+  }
+}
+
 interface AuthState {
   status: "idle" | "loading" | "authenticated" | "anonymous";
   hydrated: boolean;
@@ -18,8 +56,15 @@ interface AuthState {
   logout: () => Promise<void>;
 }
 
-function clearSessionState(set: (partial: Partial<AuthState>) => void, hydrated = true) {
+function clearSessionState(
+  set: (partial: Partial<AuthState>) => void,
+  hydrated = true,
+  options?: { keepTabSessionUser?: boolean },
+) {
   clearAccessToken();
+  if (!options?.keepTabSessionUser) {
+    clearTabSessionUserId();
+  }
   set({
     status: "anonymous",
     hydrated,
@@ -33,6 +78,7 @@ function clearSessionState(set: (partial: Partial<AuthState>) => void, hydrated 
 
 function applySession(set: (partial: Partial<AuthState>) => void, session: AuthSession) {
   setAccessToken(session.accessToken);
+  setTabSessionUserId(session.user.id);
   set({
     status: "authenticated",
     hydrated: true,
@@ -54,10 +100,18 @@ export const useAuthStore = create<AuthState>((set) => ({
   isAuthenticated: false,
   hydrateFromStorage: async () => {
     set({ status: "loading" });
+    const tabSessionUser = getTabSessionUserId();
     const session = await bootstrapSession();
 
     if (!session) {
       clearSessionState(set, true);
+      return;
+    }
+
+    if (tabSessionUser && tabSessionUser !== session.user.id) {
+      // Prevent silent identity/role switching in this tab.
+      clearAccessToken();
+      clearSessionState(set, true, { keepTabSessionUser: true });
       return;
     }
 

@@ -3,6 +3,7 @@ import { clearAccessToken, getAccessToken, setAccessToken } from "./session";
 import type { AuthSession } from "./types";
 
 const DEFAULT_API_BASE_URL = "http://localhost:3001/api";
+const TAB_SESSION_USER_KEY = "yojak.auth.tab.user";
 
 function getApiBaseUrl() {
   return (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? DEFAULT_API_BASE_URL;
@@ -21,6 +22,18 @@ function toErrorMessage(error: unknown, fallback: string) {
   }
 
   return fallback;
+}
+
+function getTabSessionUserId() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    return window.sessionStorage.getItem(TAB_SESSION_USER_KEY);
+  } catch {
+    return null;
+  }
 }
 
 type RetriableRequestConfig = InternalAxiosRequestConfig & {
@@ -55,6 +68,11 @@ async function performRefresh(): Promise<AuthSession> {
     refreshPromise = authlessAxios
       .post<AuthSession>("/auth/refresh")
       .then((response) => {
+        const tabSessionUserId = getTabSessionUserId();
+        if (tabSessionUserId && tabSessionUserId !== response.data.user.id) {
+          clearAccessToken();
+          throw new Error("Session changed in another tab. Please sign in again.");
+        }
         setAccessToken(response.data.accessToken);
         return response.data;
       })
