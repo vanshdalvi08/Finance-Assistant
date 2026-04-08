@@ -17,6 +17,8 @@ import {
   ScrollText,
   UserRound,
   FolderKanban,
+  CalendarDays,
+  CalendarRange,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useUIStore } from "@/store/ui";
@@ -35,6 +37,7 @@ const adminNavItems = [
   { href: "/purchase-orders", label: "PO", icon: BriefcaseBusiness },
   { href: "/expenses", label: "Expenses", icon: Receipt },
   { href: "/timesheets", label: "Timesheets", icon: Clock3 },
+  { href: "/leave-management", label: "Leave Management", icon: CalendarRange },
   { href: "/reports", label: "Reports", icon: FileBarChart2 },
   { href: "/audit-trail", label: "Audit Trail", icon: ScrollText },
   { href: "/settings", label: "Settings", icon: Settings },
@@ -42,6 +45,7 @@ const adminNavItems = [
 
 const employeeNavItems = [
   { href: "/employee/timesheet", label: "My Timesheet", icon: Clock3 },
+  { href: "/employee/leaves", label: "My Leaves", icon: CalendarDays },
   { href: "/employee/expenses", label: "My Expenses", icon: Receipt },
   { href: "/employee/salary-slips", label: "Salary Slips", icon: CreditCard },
   { href: "/employee/profile", label: "Profile", icon: UserRound },
@@ -76,12 +80,19 @@ export function Sidebar() {
     enabled: isAdmin,
   });
 
+  const { data: pendingLeaveRequests = [] } = useQuery({
+    queryKey: ["leave-requests", "pending"],
+    queryFn: () => api.getLeaveRequests({ status: "pending" }),
+    enabled: isAdmin,
+  });
+
   const adminActivityCounts = isAdmin
     ? {
-        "/salary": salaries.filter((salary) => salary.status === "pending").length,
-        "/expenses": adminOverview?.pendingExpenses ?? 0,
-        "/timesheets": adminOverview?.pendingTimesheets ?? 0,
-      }
+      "/salary": salaries.filter((salary) => salary.status === "pending").length,
+      "/expenses": adminOverview?.pendingExpenses ?? 0,
+      "/timesheets": adminOverview?.pendingTimesheets ?? 0,
+      "/leave-management": pendingLeaveRequests.length,
+    }
     : {};
 
   const initials = userEmail ? getInitials(userEmail) : "??";

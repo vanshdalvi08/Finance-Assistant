@@ -9,6 +9,9 @@ import type { AuthUser } from "@/auth/types";
 
 export type ApprovalStatus = "draft" | "submitted" | "approved" | "rejected";
 export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+type TimeOffKind = "leave" | "holiday";
+
+const DAY_KEYS: DayKey[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 
 export interface Employee {
   id: string;
@@ -108,6 +111,36 @@ export interface TimesheetEntry {
   lines: TimesheetTaskLine[];
 }
 
+export interface Holiday {
+  id: string;
+  date: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LeaveRequest {
+  id: string;
+  employeeId: string;
+  employeeNameSnapshot: string;
+  startDate: string;
+  endDate: string;
+  reason?: string;
+  kind?: TimeOffKind;
+  status: "pending" | "approved" | "rejected";
+  reviewedAt?: string;
+  reviewedBy?: string;
+  reviewNote?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LeavePolicy {
+  annualLimit: number;
+  updatedAt: string;
+  updatedBy?: string;
+}
+
 export interface AuditTrailEntry {
   id: string;
   actorName: string;
@@ -122,7 +155,9 @@ export interface AuditTrailEntry {
     | "category"
     | "project-budget"
     | "purchase-order"
-    | "purchase-order-task";
+    | "purchase-order-task"
+    | "holiday"
+    | "leave-request";
   entityId: string;
   summary: string;
   createdAt: string;
@@ -301,23 +336,38 @@ export interface ChartPoint {
   salary: number;
 }
 
-interface MonthCalendarDay {
+export interface MonthCalendarDay {
   date: string;
   day: number;
   isWeekend: boolean;
   worked: boolean;
   leave: boolean;
+  leaveStatus?: "pending" | "approved" | "rejected";
+  holiday: boolean;
+  holidayName?: string;
+  leaveReason?: string;
+  timeOffKind?: TimeOffKind;
+  timeOffSource?: "admin" | "employee";
+  timeOffRequestId?: string;
+  pendingLeave?: boolean;
+  pendingHoliday?: boolean;
+  holidaySource?: "company" | "requested";
   hours: number;
   expenseCount: number;
 }
 
-interface MonthCalendar {
+export interface MonthCalendar {
   month: string;
   monthLabel: string;
   summary: {
     daysWorked: number;
     hoursLogged: number;
     leaveDays: number;
+    holidayDays: number;
+    companyHolidayDays?: number;
+    requestedHolidayDays?: number;
+    pendingLeaveDays: number;
+    pendingHolidayDays?: number;
     expenseSubmissions: number;
   };
   days: MonthCalendarDay[];
@@ -413,6 +463,357 @@ function normalizeProjectBudget(project: ProjectBudget): ProjectBudget {
   };
 }
 
+const TIME_OFF_STORAGE_KEY = "finance.assistant.time-off";
+
+interface LocalTimeOffStore {
+  holidays: Holiday[];
+  leaveRequests: LeaveRequest[];
+  leavePolicy?: LeavePolicy;
+}
+
+function canUseLocalStorage() {
+  return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+}
+
+function readLocalTimeOffStore(): LocalTimeOffStore {
+  if (!canUseLocalStorage()) {
+    return { holidays: [], leaveRequests: [] };
+  }
+
+  try {
+    const raw = window.localStorage.getItem(TIME_OFF_STORAGE_KEY);
+    if (!raw) {
+      return { holidays: [], leaveRequests: [] };
+    }
+
+    const parsed = JSON.parse(raw) as Partial<LocalTimeOffStore>;
+  return {
+    holidays: Array.isArray(parsed.holidays) ? parsed.holidays : [],
+    leaveRequests: Array.isArray(parsed.leaveRequests) ? parsed.leaveRequests : [],
+    leavePolicy: parsed.leavePolicy
+      ? {
+          annualLimit: Math.max(0, Math.round(Number(parsed.leavePolicy.annualLimit ?? 10))),
+          updatedAt: String(parsed.leavePolicy.updatedAt ?? new Date().toISOString()),
+          updatedBy: typeof parsed.leavePolicy.updatedBy === "string" ? parsed.leavePolicy.updatedBy : undefined,
+        }
+      : undefined,
+  };
+  } catch {
+    return { holidays: [], leaveRequests: [] };
+  }
+}
+
+function writeLocalTimeOffStore(store: LocalTimeOffStore) {
+  if (!canUseLocalStorage()) {
+    return;
+  }
+
+  window.localStorage.setItem(TIME_OFF_STORAGE_KEY, JSON.stringify(store));
+}
+
+function normalizeIsoDate(value: string) {
+  return new Date(value).toISOString().slice(0, 10);
+}
+
+function createLocalHoliday(input: { date: string; name: string }): Holiday {
+  const now = new Date().toISOString();
+  return {
+    id: createId("hol"),
+    date: new Date(input.date).toISOString(),
+    name: input.name.trim(),
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function createLocalLeaveRequest(input: {
+  employeeId?: string;
+  employeeNameSnapshot?: string;
+  startDate: string;
+  endDate: string;
+  reason?: string;
+  kind?: TimeOffKind;
+}): LeaveRequest {
+  const now = new Date().toISOString();
+  return {
+    id: createId("lr"),
+    employeeId: input.employeeId?.trim() || "unknown",
+    employeeNameSnapshot: input.employeeNameSnapshot?.trim() || "Employee",
+    startDate: new Date(input.startDate).toISOString(),
+    endDate: new Date(input.endDate).toISOString(),
+    reason: input.reason?.trim() || undefined,
+    kind: input.kind ?? "leave",
+    status: "pending",
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function updateLocalTimeOffStore(mutator: (store: LocalTimeOffStore) => LocalTimeOffStore) {
+  const current = readLocalTimeOffStore();
+  const next = mutator({
+    holidays: [...current.holidays],
+    leaveRequests: [...current.leaveRequests],
+  });
+  writeLocalTimeOffStore(next);
+  return next;
+}
+
+function dayRange(startDate: string, endDate: string) {
+  const start = new Date(normalizeIsoDate(startDate));
+  const end = new Date(normalizeIsoDate(endDate));
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end.getTime() < start.getTime()) {
+    return [] as string[];
+  }
+
+  const days: string[] = [];
+  const cursor = new Date(start);
+  while (cursor.getTime() <= end.getTime()) {
+    days.push(cursor.toISOString().slice(0, 10));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return days;
+}
+
+function isMissingRoute(error: unknown) {
+  return Boolean(error && typeof error === "object" && "status" in error && (error as { status?: number }).status === 404);
+}
+
+async function withFallback<T>(primary: () => Promise<T>, fallback: () => Promise<T>) {
+  try {
+    return await primary();
+  } catch (error) {
+    if (isMissingRoute(error)) {
+      return fallback();
+    }
+
+    throw error;
+  }
+}
+
+async function fallbackGetHolidays(scope?: { month?: string }) {
+  const store = readLocalTimeOffStore();
+  const holidays = scope?.month ? store.holidays.filter((holiday) => holiday.date.slice(0, 7) === scope.month) : store.holidays;
+  return holidays.sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime());
+}
+
+async function fallbackAddHoliday(input: { date: string; name: string }) {
+  const holiday = createLocalHoliday(input);
+  updateLocalTimeOffStore((store) => ({
+    ...store,
+    holidays: [holiday, ...store.holidays.filter((item) => normalizeIsoDate(item.date) !== normalizeIsoDate(holiday.date))],
+  }));
+  return holiday;
+}
+
+async function fallbackDeleteHoliday(id: string) {
+  updateLocalTimeOffStore((store) => ({
+    ...store,
+    holidays: store.holidays.filter((holiday) => holiday.id !== id),
+  }));
+}
+
+async function fallbackGetLeaveRequests(scope?: { employeeId?: string; month?: string; status?: LeaveRequest["status"] | "all" }) {
+  const store = readLocalTimeOffStore();
+  const requests = store.leaveRequests.filter((leaveRequest) => {
+    if (scope?.employeeId && leaveRequest.employeeId !== scope.employeeId) {
+      return false;
+    }
+
+    if (scope?.month && !(leaveRequest.startDate.slice(0, 7) <= scope.month && leaveRequest.endDate.slice(0, 7) >= scope.month)) {
+      return false;
+    }
+
+    if (scope?.status && scope.status !== "all" && leaveRequest.status !== scope.status) {
+      return false;
+    }
+
+    return true;
+  });
+
+  return requests.sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
+}
+
+async function fallbackCreateLeaveRequest(input: { employeeId?: string; startDate: string; endDate: string; reason?: string; kind?: TimeOffKind }) {
+  const currentUser = await getCurrentAuthUser().catch(() => null);
+  const request = createLocalLeaveRequest({
+    ...input,
+    employeeId: input.employeeId ?? currentUser?.id,
+    employeeNameSnapshot: currentUser?.name ?? currentUser?.email?.split("@")[0] ?? "Employee",
+  });
+  updateLocalTimeOffStore((store) => ({
+    ...store,
+    leaveRequests: [request, ...store.leaveRequests.filter((item) => item.id !== request.id)],
+  }));
+  return request;
+}
+
+async function fallbackUpdateLeaveRequestStatus(id: string, input: { status: "approved" | "rejected"; reviewNote?: string }) {
+  let updated: LeaveRequest | null = null;
+  updateLocalTimeOffStore((store) => {
+    const nextLeaveRequests = store.leaveRequests.map((leaveRequest) => {
+      if (leaveRequest.id !== id) {
+        return leaveRequest;
+      }
+
+      updated = {
+        ...leaveRequest,
+        status: input.status,
+        reviewNote: input.reviewNote?.trim() || undefined,
+        reviewedAt: new Date().toISOString(),
+        reviewedBy: "admin",
+        updatedAt: new Date().toISOString(),
+      };
+      return updated;
+    });
+
+    return {
+      ...store,
+      leaveRequests: nextLeaveRequests,
+    };
+  });
+
+  if (!updated) {
+    throw new Error("Leave request not found");
+  }
+
+  return updated;
+}
+
+async function fallbackDeleteLeaveRequest(id: string) {
+  updateLocalTimeOffStore((store) => ({
+    ...store,
+    leaveRequests: store.leaveRequests.filter((request) => request.id !== id),
+  }));
+}
+
+async function fallbackGetEmployeeMonthCalendar({ employeeId, month }: { employeeId: string; month: string }) {
+  const [timesheets, expenses, holidays, leaveRequests] = await Promise.all([
+    api.getTimesheets({ employeeId }).catch(() => [] as TimesheetEntry[]),
+    api.getExpenses({ employeeId }).catch(() => [] as Expense[]),
+    fallbackGetHolidays({ month }),
+    fallbackGetLeaveRequests({ employeeId, month, status: "all" }),
+  ]);
+
+  const [yearString, monthString] = month.split("-");
+  const year = Number(yearString);
+  const monthIndex = Number(monthString) - 1;
+  const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+
+  const daily = new Map<string, { hours: number; expenseCount: number }>();
+  for (const entry of timesheets.filter((item) => item.employeeId === employeeId && item.weekStart.slice(0, 7) <= month)) {
+    const weekStart = new Date(entry.weekStart);
+    entry.lines.forEach((line) => {
+      DAY_KEYS.forEach((dayKey, offset) => {
+        const amount = Number(line.hours[dayKey] ?? 0);
+        const dayDate = new Date(weekStart);
+        dayDate.setDate(weekStart.getDate() + offset);
+        const iso = dayDate.toISOString().slice(0, 10);
+        if (dayDate.getFullYear() !== year || dayDate.getMonth() !== monthIndex) {
+          return;
+        }
+
+        const bucket = daily.get(iso) ?? { hours: 0, expenseCount: 0 };
+        bucket.hours += amount;
+        daily.set(iso, bucket);
+      });
+    });
+  }
+
+  for (const expense of expenses.filter((item) => item.employeeId === employeeId && item.date.slice(0, 7) === month)) {
+    const iso = normalizeIsoDate(expense.date);
+    const bucket = daily.get(iso) ?? { hours: 0, expenseCount: 0 };
+    bucket.expenseCount += 1;
+    daily.set(iso, bucket);
+  }
+
+  const days = Array.from({ length: daysInMonth }, (_, index) => {
+    const dayNumber = index + 1;
+    const date = new Date(year, monthIndex, dayNumber, 12, 0, 0, 0);
+    const iso = date.toISOString().slice(0, 10);
+    const bucket = daily.get(iso) ?? { hours: 0, expenseCount: 0 };
+    const holiday = holidays.find((item) => normalizeIsoDate(item.date) === iso);
+    const leaveRequest = leaveRequests.find((item) => dayRange(item.startDate, item.endDate).includes(iso));
+    const isWeekend = date.getDay() === 0 || date.getDay() === 6;
+    const worked = bucket.hours > 0;
+    const isHoliday = Boolean(holiday || (leaveRequest?.kind === "holiday" && leaveRequest.status !== "rejected"));
+    const isLeave = Boolean(leaveRequest && leaveRequest.kind !== "holiday" && leaveRequest.status === "approved");
+    const isPending = Boolean(leaveRequest && leaveRequest.status === "pending");
+
+    return {
+      date: `${iso}T12:00:00.000Z`,
+      day: dayNumber,
+      isWeekend,
+      worked,
+      leave: isLeave,
+      leaveStatus: leaveRequest?.status,
+      holiday: isHoliday,
+      holidayName: holiday?.name ?? (leaveRequest?.kind === "holiday" ? leaveRequest.reason || "Holiday" : undefined),
+      leaveReason: leaveRequest?.reason,
+      timeOffKind: leaveRequest?.kind,
+      timeOffSource: holiday ? "admin" : leaveRequest ? "employee" : undefined,
+      timeOffRequestId: leaveRequest?.id,
+      pendingLeave: isPending && !isHoliday,
+      hours: Number(bucket.hours.toFixed(1)),
+      expenseCount: bucket.expenseCount,
+    } satisfies MonthCalendarDay;
+  });
+
+  const summary = days.reduce(
+    (acc, day) => {
+      if (day.worked) acc.daysWorked += 1;
+      if (day.leave) acc.leaveDays += 1;
+      if (day.holiday) acc.holidayDays += 1;
+      if (day.pendingLeave) acc.pendingLeaveDays += 1;
+      acc.hoursLogged += day.hours;
+      acc.expenseSubmissions += day.expenseCount;
+      return acc;
+    },
+    {
+      daysWorked: 0,
+      leaveDays: 0,
+      holidayDays: 0,
+      pendingLeaveDays: 0,
+      hoursLogged: 0,
+      expenseSubmissions: 0,
+    },
+  );
+
+  return {
+    month,
+    monthLabel: new Date(`${month}-01T00:00:00`).toLocaleString("en-US", { month: "long", year: "numeric" }),
+    summary: {
+      ...summary,
+      hoursLogged: Number(summary.hoursLogged.toFixed(1)),
+    },
+    days,
+  } satisfies MonthCalendar;
+}
+
+async function fallbackGetLeavePolicy() {
+  const store = readLocalTimeOffStore();
+  return store.leavePolicy ?? {
+    annualLimit: 10,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+async function fallbackUpdateLeavePolicy(input: { annualLimit: number; updatedBy?: string }) {
+  const policy: LeavePolicy = {
+    annualLimit: Math.max(0, Math.round(Number(input.annualLimit ?? 0))),
+    updatedAt: new Date().toISOString(),
+    updatedBy: input.updatedBy?.trim() || undefined,
+  };
+
+  updateLocalTimeOffStore((store) => ({
+    ...store,
+    leavePolicy: policy,
+  }));
+
+  return policy;
+}
+
 async function getCurrentAuthUser() {
   const response = await requestJson<{ user: AuthUser | null }>("/auth/me");
   return response.user;
@@ -438,82 +839,6 @@ async function uploadBinary<T>(path: string, file: File) {
       "x-file-name": encodeURIComponent(file.name),
     },
   });
-}
-
-function buildMonthCalendar(month: string, employeeId: string, timesheets: TimesheetEntry[], expenses: Expense[]): MonthCalendar {
-  const [yearString, monthString] = month.split("-");
-  const year = Number(yearString);
-  const monthIndex = Number(monthString) - 1;
-  const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
-  const daily = new Map<string, { hours: number; expenseCount: number }>();
-
-  for (const entry of timesheets.filter((item) => item.employeeId === employeeId && monthKey(item.weekStart) <= month)) {
-    const weekStart = new Date(entry.weekStart);
-    entry.lines.forEach((line) => {
-      const keys: DayKey[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-      keys.forEach((key, offset) => {
-        const amount = Number(line.hours[key] ?? 0);
-        const dayDate = new Date(weekStart);
-        dayDate.setDate(weekStart.getDate() + offset);
-        const iso = dayDate.toISOString().slice(0, 10);
-        if (dayDate.getFullYear() !== year || dayDate.getMonth() !== monthIndex) {
-          return;
-        }
-
-        const bucket = daily.get(iso) ?? { hours: 0, expenseCount: 0 };
-        bucket.hours += amount;
-        daily.set(iso, bucket);
-      });
-    });
-  }
-
-  for (const expense of expenses.filter((item) => item.employeeId === employeeId && monthKey(item.date) === month)) {
-    const iso = expense.date.slice(0, 10);
-    const bucket = daily.get(iso) ?? { hours: 0, expenseCount: 0 };
-    bucket.expenseCount += 1;
-    daily.set(iso, bucket);
-  }
-
-  const days: MonthCalendarDay[] = [];
-  let daysWorked = 0;
-  let leaveDays = 0;
-  let hoursLogged = 0;
-  let expenseSubmissions = 0;
-
-  for (let day = 1; day <= daysInMonth; day += 1) {
-    const date = new Date(year, monthIndex, day, 12, 0, 0, 0);
-    const iso = date.toISOString().slice(0, 10);
-    const bucket = daily.get(iso) ?? { hours: 0, expenseCount: 0 };
-    const isWeekend = date.getDay() === 0 || date.getDay() === 6;
-    const worked = bucket.hours > 0;
-    const leave = !worked && !isWeekend && bucket.expenseCount === 0;
-    if (worked) daysWorked += 1;
-    if (leave) leaveDays += 1;
-    hoursLogged += bucket.hours;
-    expenseSubmissions += bucket.expenseCount;
-
-    days.push({
-      date: `${iso}T12:00:00.000Z`,
-      day,
-      isWeekend,
-      worked,
-      leave,
-      hours: Number(bucket.hours.toFixed(1)),
-      expenseCount: bucket.expenseCount,
-    });
-  }
-
-  return {
-    month,
-    monthLabel: new Date(`${month}-01T00:00:00`).toLocaleString("en-US", { month: "long", year: "numeric" }),
-    summary: {
-      daysWorked,
-      hoursLogged: Number(hoursLogged.toFixed(1)),
-      leaveDays,
-      expenseSubmissions,
-    },
-    days,
-  };
 }
 
 export const api = {
@@ -782,13 +1107,79 @@ export const api = {
     }>(path);
   },
 
-  getEmployeeMonthCalendar: async ({ employeeId, month }: { employeeId: string; month: string }) => {
-    const [timesheets, expenses] = await Promise.all([
-      api.getTimesheets({ employeeId }),
-      api.getExpenses({ employeeId }),
-    ]);
-    return buildMonthCalendar(month, employeeId, timesheets, expenses);
+  getHolidays: async (scope?: { month?: string }) =>
+    withFallback(
+      async () => (await businessGet<{ holidays: Holiday[] }>(withQuery("/holidays", { month: scope?.month }))).holidays,
+      () => fallbackGetHolidays(scope),
+    ),
+
+  addHoliday: async (input: { date: string; name: string }) =>
+    withFallback(
+      async () => (await businessPost<{ holiday: Holiday }>("/holidays", input)).holiday,
+      () => fallbackAddHoliday(input),
+    ),
+
+  deleteHoliday: async (id: string) => {
+    await withFallback(
+      async () => {
+        await businessPost<void>(`/holidays/${id}`, undefined, "DELETE");
+        return undefined;
+      },
+      () => fallbackDeleteHoliday(id),
+    );
   },
+
+  getLeaveRequests: async (scope?: { employeeId?: string; month?: string; status?: LeaveRequest["status"] | "all" }) => {
+    const path = withQuery("/leave-requests", {
+      employeeId: scope?.employeeId,
+      month: scope?.month,
+      status: scope?.status && scope.status !== "all" ? scope.status : undefined,
+    });
+
+    return withFallback(
+      async () => (await businessGet<{ leaveRequests: LeaveRequest[] }>(path)).leaveRequests,
+      () => fallbackGetLeaveRequests(scope),
+    );
+  },
+
+  createLeaveRequest: async (input: { employeeId?: string; startDate: string; endDate: string; reason?: string; kind?: TimeOffKind }) =>
+    withFallback(
+      async () => (await businessPost<{ leaveRequest: LeaveRequest }>("/leave-requests", input)).leaveRequest,
+      () => fallbackCreateLeaveRequest(input),
+    ),
+
+  updateLeaveRequestStatus: async (id: string, input: { status: "approved" | "rejected"; reviewNote?: string }) =>
+    withFallback(
+      async () => (await businessPost<{ leaveRequest: LeaveRequest }>(`/leave-requests/${id}/status`, input, "PATCH")).leaveRequest,
+      () => fallbackUpdateLeaveRequestStatus(id, input),
+    ),
+
+  deleteLeaveRequest: async (id: string) => {
+    await withFallback(
+      async () => {
+        await businessPost<void>(`/leave-requests/${id}`, undefined, "DELETE");
+      },
+      () => fallbackDeleteLeaveRequest(id),
+    );
+  },
+
+  getLeavePolicy: async () =>
+    withFallback(
+      async () => (await businessGet<{ leavePolicy: LeavePolicy }>("/leave-settings")).leavePolicy,
+      () => fallbackGetLeavePolicy(),
+    ),
+
+  updateLeavePolicy: async (input: { annualLimit: number; updatedBy?: string }) =>
+    withFallback(
+      async () => (await businessPost<{ leavePolicy: LeavePolicy }>("/leave-settings", input, "PATCH")).leavePolicy,
+      () => fallbackUpdateLeavePolicy(input),
+    ),
+
+  getEmployeeMonthCalendar: async ({ employeeId, month }: { employeeId: string; month: string }) =>
+    withFallback(
+      async () => (await businessGet<{ monthCalendar: MonthCalendar }>(withQuery("/month-calendar", { employeeId, month }))).monthCalendar,
+      () => fallbackGetEmployeeMonthCalendar({ employeeId, month }),
+    ),
 
   getProjectBudgets: async () => (await businessGet<{ projects: ProjectBudget[] }>("/projects")).projects.map(normalizeProjectBudget),
 

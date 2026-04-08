@@ -20,9 +20,11 @@ import PurchaseOrdersPage from "@/pages/purchase-orders";
 import AdminExpensesPage from "@/pages/admin/expenses";
 import AdminTransactionsPage from "@/pages/admin/transactions";
 import AdminTimesheetValidationPage from "@/pages/admin/timesheet-validation";
+import AdminLeaveManagementPage from "@/pages/admin/leave-management";
 import AdminReportsPage from "@/pages/admin/reports";
 import AdminAuditTrailPage from "@/pages/admin/audit-trail";
 import EmployeeTimesheetPage from "@/pages/employee/timesheet";
+import EmployeeLeavesPage from "@/pages/employee/leaves";
 import EmployeeExpensesPage from "@/pages/employee/expenses";
 import EmployeeSalarySlipsPage from "@/pages/employee/salary-slips";
 import EmployeeProfilePage from "@/pages/employee/profile";
@@ -59,6 +61,7 @@ function AdminRoutes() {
       <Route path={routes.adminExpenses}><AdminExpensesPage /></Route>
       <Route path={routes.adminTransactions}><AdminTransactionsPage /></Route>
       <Route path={routes.adminTimesheetValidation}><AdminTimesheetValidationPage /></Route>
+      <Route path={routes.adminLeaveManagement}><AdminLeaveManagementPage /></Route>
       <Route path={routes.adminReports}><AdminReportsPage /></Route>
       <Route path={routes.adminAuditTrail}><AdminAuditTrailPage /></Route>
       <Route><Redirect to={routes.adminDashboard} /></Route>
@@ -70,6 +73,7 @@ function EmployeeRoutes() {
   return (
     <Switch>
       <Route path={routes.employeeTimesheet}><EmployeeTimesheetPage /></Route>
+      <Route path={routes.employeeLeaves}><EmployeeLeavesPage /></Route>
       <Route path={routes.employeeExpenses}><EmployeeExpensesPage /></Route>
       <Route path={routes.employeeSalarySlips}><EmployeeSalarySlipsPage /></Route>
       <Route path={routes.employeeProfile}><EmployeeProfilePage /></Route>

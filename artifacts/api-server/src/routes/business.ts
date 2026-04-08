@@ -6,9 +6,14 @@ import {
   type ApprovalStatus,
   type BusinessStore,
   type DayKey,
+  type HolidayRecord,
   type ExpenseCategoryRecord,
   type ExpenseRecord,
   type FundRecord,
+  type LeaveRequestRecord,
+  type LeaveRequestKind,
+  type LeaveRequestStatus,
+  type LeavePolicyRecord,
   type ProjectBudget,
   type PurchaseOrder,
   type SalaryRecord,
@@ -45,6 +50,7 @@ const employeeScopeSchema = z.object({
 });
 
 const businessIdSchema = z.string().trim().min(1);
+const monthSchema = z.string().regex(/^\d{4}-\d{2}$/);
 
 const fundSchema = z.object({
   id: businessIdSchema.optional(),
@@ -124,6 +130,28 @@ const timesheetSchema = z.object({
   reviewedBy: z.string().trim().optional(),
   reviewNotes: z.string().trim().optional(),
   lines: z.array(timesheetLineSchema).min(1),
+});
+
+const holidaySchema = z.object({
+  id: businessIdSchema.optional(),
+  date: dateSchema,
+  name: z.string().trim().min(2),
+});
+
+const leaveRequestSchema = z.object({
+  id: businessIdSchema.optional(),
+  startDate: dateSchema,
+  endDate: dateSchema,
+  reason: z.string().trim().max(500).optional(),
+});
+
+const leaveDecisionSchema = z.object({
+  status: z.enum(["approved", "rejected"]),
+  reviewNote: z.string().trim().optional(),
+});
+
+const leaveSettingsSchema = z.object({
+  annualLimit: z.coerce.number().min(0).max(365),
 });
 
 const projectTaskSchema = z.object({
@@ -230,11 +258,229 @@ function notificationActor(request: Request) {
   } as const;
 }
 
+function monthKeyFromDate(date: string) {
+  return normalizeDate(date).slice(0, 7);
+}
+
+function isSameIsoDate(left: string, right: string) {
+  return normalizeDate(left).slice(0, 10) === normalizeDate(right).slice(0, 10);
+}
+
+function isDateWithinRange(date: string, start: string, end: string) {
+  const target = new Date(normalizeDate(date)).getTime();
+  const startTime = new Date(normalizeDate(start)).getTime();
+  const endTime = new Date(normalizeDate(end)).getTime();
+  return target >= startTime && target <= endTime;
+}
+
+function leaveKindLabel(kind: LeaveRequestKind) {
+  return kind === "holiday" ? "holiday" : "leave";
+}
+
+function countLeaveDaysInYear(store: BusinessStore, employeeId: string, year: number) {
+  return store.leaveRequests.reduce((sum, request) => {
+    if (request.employeeId !== employeeId || request.kind !== "leave" || request.status === "rejected") {
+      return sum;
+    }
+
+    return (
+      sum +
+      enumerateDays(request.startDate, request.endDate).filter((day) => new Date(`${day}T00:00:00.000Z`).getUTCFullYear() === year)
+        .length
+    );
+  }, 0);
+}
+
+interface MonthCalendarDay {
+  date: string;
+  day: number;
+  isWeekend: boolean;
+  worked: boolean;
+  leave: boolean;
+  holiday: boolean;
+  holidayName?: string;
+  timeOffKind?: LeaveRequestKind;
+  timeOffSource?: "admin" | "employee";
+  timeOffRequestId?: string;
+  holidaySource?: "company" | "requested";
+  leaveStatus?: LeaveRequestStatus;
+  leaveReason?: string;
+  pendingLeave: boolean;
+  pendingHoliday: boolean;
+  hours: number;
+  expenseCount: number;
+}
+
+interface MonthCalendar {
+  month: string;
+  monthLabel: string;
+  summary: {
+    daysWorked: number;
+    hoursLogged: number;
+    leaveDays: number;
+    holidayDays: number;
+    companyHolidayDays: number;
+    requestedHolidayDays: number;
+    pendingLeaveDays: number;
+    pendingHolidayDays: number;
+    expenseSubmissions: number;
+  };
+  days: MonthCalendarDay[];
+}
+
+function buildMonthCalendar(store: BusinessStore, employeeId: string, month: string) {
+  const [yearString, monthString] = month.split("-");
+  const year = Number(yearString);
+  const monthIndex = Number(monthString) - 1;
+  const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+  const daily = new Map<string, { hours: number; expenseCount: number }>();
+  const holidaysByDate = new Map<string, HolidayRecord>();
+  const leaveRequestsByDate = new Map<string, LeaveRequestRecord>();
+
+  for (const holiday of store.holidays.filter((item) => monthKeyFromDate(item.date) === month)) {
+    holidaysByDate.set(normalizeDate(holiday.date).slice(0, 10), holiday);
+  }
+
+  for (const request of store.leaveRequests.filter((item) => item.employeeId === employeeId && item.status !== "rejected")) {
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      const date = new Date(year, monthIndex, day, 12, 0, 0, 0);
+      const iso = date.toISOString().slice(0, 10);
+      if (!isDateWithinRange(iso, request.startDate, request.endDate)) {
+        continue;
+      }
+
+      const existing = leaveRequestsByDate.get(iso);
+      if (!existing || existing.status !== "approved") {
+        leaveRequestsByDate.set(iso, request);
+      }
+    }
+  }
+
+  for (const entry of store.timesheets.filter((item) => item.employeeId === employeeId && monthKeyFromDate(item.weekStart) <= month)) {
+    const weekStart = new Date(entry.weekStart);
+    entry.lines.forEach((line) => {
+      DAY_KEYS.forEach((key, offset) => {
+        const amount = Number(line.hours[key] ?? 0);
+        const dayDate = new Date(weekStart);
+        dayDate.setDate(weekStart.getDate() + offset);
+        const iso = dayDate.toISOString().slice(0, 10);
+        if (dayDate.getFullYear() !== year || dayDate.getMonth() !== monthIndex) {
+          return;
+        }
+
+        const bucket = daily.get(iso) ?? { hours: 0, expenseCount: 0 };
+        bucket.hours += amount;
+        daily.set(iso, bucket);
+      });
+    });
+  }
+
+  for (const expense of store.expenses.filter((item) => item.employeeId === employeeId && monthKeyFromDate(item.date) === month)) {
+    const iso = normalizeDate(expense.date).slice(0, 10);
+    const bucket = daily.get(iso) ?? { hours: 0, expenseCount: 0 };
+    bucket.expenseCount += 1;
+    daily.set(iso, bucket);
+  }
+
+  const days: MonthCalendarDay[] = [];
+  let daysWorked = 0;
+  let leaveDays = 0;
+  let holidayDays = 0;
+  let companyHolidayDays = 0;
+  let requestedHolidayDays = 0;
+  let pendingLeaveDays = 0;
+  let pendingHolidayDays = 0;
+  let hoursLogged = 0;
+  let expenseSubmissions = 0;
+
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const date = new Date(year, monthIndex, day, 12, 0, 0, 0);
+    const iso = date.toISOString().slice(0, 10);
+    const bucket = daily.get(iso) ?? { hours: 0, expenseCount: 0 };
+    const holiday = holidaysByDate.get(iso);
+    const leaveRequest = leaveRequestsByDate.get(iso);
+    const isWeekend = date.getDay() === 0 || date.getDay() === 6;
+    const worked = bucket.hours > 0;
+    const approvedHolidayRequest = Boolean(leaveRequest && leaveRequest.status === "approved" && leaveRequest.kind === "holiday");
+    const pendingHolidayRequest = Boolean(leaveRequest && leaveRequest.status === "pending" && leaveRequest.kind === "holiday");
+    const approvedLeaveRequest = Boolean(leaveRequest && leaveRequest.status === "approved" && leaveRequest.kind === "leave");
+    const pendingLeaveRequest = Boolean(leaveRequest && leaveRequest.status === "pending" && leaveRequest.kind === "leave");
+    const isHoliday = Boolean(holiday || approvedHolidayRequest);
+    const leave = Boolean(approvedLeaveRequest && !holiday);
+    const pendingLeave = Boolean(pendingLeaveRequest && !isHoliday);
+    if (worked) daysWorked += 1;
+    if (leave) leaveDays += 1;
+    if (pendingLeave && !isWeekend && !isHoliday) pendingLeaveDays += 1;
+    if (pendingHolidayRequest && !isWeekend && !isHoliday) pendingHolidayDays += 1;
+    if (holiday) companyHolidayDays += 1;
+    if (approvedHolidayRequest) requestedHolidayDays += 1;
+    if (isHoliday) holidayDays += 1;
+    hoursLogged += bucket.hours;
+    expenseSubmissions += bucket.expenseCount;
+
+    days.push({
+      date: `${iso}T12:00:00.000Z`,
+      day,
+      isWeekend,
+      worked,
+      leave,
+      holiday: isHoliday,
+      holidayName: holiday?.name ?? (approvedHolidayRequest ? "Requested Holiday" : undefined),
+      timeOffKind: leaveRequest?.kind ?? undefined,
+      timeOffSource: holiday ? "admin" : leaveRequest ? "employee" : undefined,
+      timeOffRequestId: leaveRequest?.id,
+      leaveStatus: leaveRequest?.status ?? undefined,
+      leaveReason: leaveRequest?.reason ?? undefined,
+      pendingLeave,
+      pendingHoliday: pendingHolidayRequest,
+      hours: Number(bucket.hours.toFixed(1)),
+      expenseCount: bucket.expenseCount,
+    });
+  }
+
+  return {
+    month,
+    monthLabel: new Date(`${month}-01T00:00:00`).toLocaleString("en-US", { month: "long", year: "numeric" }),
+    summary: {
+      daysWorked,
+      hoursLogged: Number(hoursLogged.toFixed(1)),
+      leaveDays,
+      holidayDays,
+      companyHolidayDays,
+      requestedHolidayDays,
+      pendingLeaveDays,
+      pendingHolidayDays,
+      expenseSubmissions,
+    },
+    days,
+  };
+}
+
 function deliverNotification(work: Promise<unknown>) {
   void work.catch((error) => {
     console.error("Failed to deliver notification", error);
   });
   return Promise.resolve();
+}
+
+function isoDay(value: string) {
+  return normalizeDate(value).slice(0, 10);
+}
+
+function enumerateDays(startDate: string, endDate: string) {
+  const start = new Date(`${isoDay(startDate)}T12:00:00.000Z`);
+  const end = new Date(`${isoDay(endDate)}T12:00:00.000Z`);
+  if (end.getTime() < start.getTime()) {
+    return [] as string[];
+  }
+
+  const days: string[] = [];
+  const cursor = new Date(start);
+  while (cursor.getTime() <= end.getTime()) {
+    days.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return days;
 }
 
 async function serializeExpense(expense: ExpenseRecord) {
@@ -358,6 +604,264 @@ router.get("/transactions", requireRole("admin"), async (_request, response) => 
 router.get("/audit-trail", requireRole("admin"), async (_request, response) => {
   const store = await readStore();
   response.json({ auditTrail: [...store.auditTrail].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()) });
+});
+
+router.get("/holidays", async (request, response) => {
+  const store = await readStore();
+  const month = request.query.month?.toString().trim();
+  const holidays = month
+    ? store.holidays.filter((holiday) => holiday.date.slice(0, 7) === month)
+    : store.holidays;
+  response.json({ holidays: [...holidays].sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime()) });
+});
+
+router.post("/holidays", requireRole("admin"), async (request, response) => {
+  const parsed = holidaySchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid holiday payload" });
+    return;
+  }
+
+  const store = await readStore();
+  const now = nowIso();
+  const existing = parsed.data.id ? store.holidays.find((holiday) => holiday.id === parsed.data.id) : null;
+  const holiday: HolidayRecord = {
+    id: parsed.data.id ?? existing?.id ?? createId("hol"),
+    date: normalizeDate(parsed.data.date),
+    name: parsed.data.name.trim(),
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+
+  await updateStore((current) => ({
+    ...current,
+    holidays: existing ? current.holidays.map((item) => (item.id === holiday.id ? holiday : item)) : [holiday, ...current.holidays],
+  }));
+
+  response.status(existing ? 200 : 201).json({ holiday });
+});
+
+router.delete("/holidays/:id", requireRole("admin"), async (request, response) => {
+  const store = await readStore();
+  const existing = store.holidays.find((holiday) => holiday.id === request.params.id);
+  if (!existing) {
+    respondNotFound(response, "Holiday not found");
+    return;
+  }
+
+  await updateStore((current) => ({
+    ...current,
+    holidays: current.holidays.filter((holiday) => holiday.id !== request.params.id),
+  }));
+
+  response.status(204).end();
+});
+
+router.get("/leave-settings", async (_request, response) => {
+  const store = await readStore();
+  response.json({ leavePolicy: store.leavePolicy });
+});
+
+router.patch("/leave-settings", requireRole("admin"), async (request, response) => {
+  const parsed = leaveSettingsSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid leave policy payload" });
+    return;
+  }
+
+  const leavePolicy: LeavePolicyRecord = {
+    annualLimit: Math.max(0, Math.round(parsed.data.annualLimit)),
+    updatedAt: nowIso(),
+    updatedBy: request.auth?.user.name ?? "Admin",
+  };
+
+  const store = await updateStore((current) => ({
+    ...current,
+    leavePolicy,
+  }));
+
+  response.json({ leavePolicy: store.leavePolicy });
+});
+
+router.get("/leave-requests", async (request, response) => {
+  const store = await readStore();
+  const employeeId = request.auth?.user.role === "employee" ? request.auth.user.id : request.query.employeeId?.toString().trim();
+  const month = request.query.month?.toString().trim();
+  const status = request.query.status?.toString().trim();
+  const leaveRequests = employeeId
+    ? store.leaveRequests.filter((leaveRequest) => leaveRequest.employeeId === employeeId)
+    : request.auth?.user.role === "admin"
+      ? store.leaveRequests
+      : [];
+
+  const filtered = leaveRequests.filter((leaveRequest) => {
+    if (month && !(leaveRequest.startDate.slice(0, 7) <= month && leaveRequest.endDate.slice(0, 7) >= month)) {
+      return false;
+    }
+    if (status && status !== "all" && leaveRequest.status !== status) {
+      return false;
+    }
+    return true;
+  });
+
+  response.json({
+    leaveRequests: [...filtered].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()),
+  });
+});
+
+router.post("/leave-requests", async (request, response) => {
+  if (request.auth?.user.role !== "employee") {
+    response.status(403).json({ message: "Only employees can create leave requests." });
+    return;
+  }
+
+  const parsed = leaveRequestSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid leave request payload" });
+    return;
+  }
+
+  const employeeId = request.auth.user.id;
+  const employeeProfile = await loadEmployeeProfile(employeeId);
+  const employeeNameSnapshot = employeeProfile?.name ?? request.auth.user.name ?? "Employee";
+  const startDate = normalizeDate(parsed.data.startDate);
+  const endDate = normalizeDate(parsed.data.endDate);
+  const store = await readStore();
+  const kind: LeaveRequestKind = "leave";
+
+  if (new Date(startDate).getTime() > new Date(endDate).getTime()) {
+    response.status(400).json({ message: "Leave start date cannot be after the end date." });
+    return;
+  }
+
+  const requestYear = new Date(startDate).getUTCFullYear();
+  if (requestYear !== new Date(endDate).getUTCFullYear()) {
+    response.status(400).json({ message: "Leave request must stay within a single calendar year." });
+    return;
+  }
+
+  const overlapping = store.leaveRequests.find(
+    (requestItem) =>
+      requestItem.employeeId === employeeId &&
+      requestItem.status !== "rejected" &&
+      !(new Date(requestItem.endDate).getTime() < new Date(startDate).getTime() ||
+        new Date(requestItem.startDate).getTime() > new Date(endDate).getTime()),
+  );
+
+  if (overlapping) {
+    response.status(409).json({
+      message: `A ${leaveKindLabel(overlapping.kind)} request already exists for the selected date range.`,
+    });
+    return;
+  }
+
+  const requestedDays = enumerateDays(startDate, endDate).length;
+  const alreadyUsedDays = countLeaveDaysInYear(store, employeeId, requestYear);
+  const nextUsedDays = alreadyUsedDays + requestedDays;
+  if (nextUsedDays > store.leavePolicy.annualLimit) {
+    response.status(400).json({
+      message: `This request exceeds the annual leave limit of ${store.leavePolicy.annualLimit} day(s).`,
+    });
+    return;
+  }
+
+  const leaveRequest: LeaveRequestRecord = {
+    id: parsed.data.id ?? createId("leave"),
+    employeeId,
+    employeeNameSnapshot,
+    startDate,
+    endDate,
+    kind,
+    reason: parsed.data.reason?.trim() || undefined,
+    status: "pending",
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  };
+
+  await updateStore((current) => ({
+    ...current,
+    leaveRequests: [leaveRequest, ...current.leaveRequests],
+  }));
+
+  response.status(201).json({ leaveRequest });
+});
+
+router.delete("/leave-requests/:id", async (request, response) => {
+  const store = await readStore();
+  const existing = store.leaveRequests.find((leaveRequest) => leaveRequest.id === request.params.id);
+  if (!existing) {
+    respondNotFound(response, "Leave request not found");
+    return;
+  }
+
+  const isAdminRequest = request.auth?.user.role === "admin";
+  const isOwnEmployeeRequest = request.auth?.user.role === "employee" && existing.employeeId === request.auth.user.id;
+
+  if (!isAdminRequest && !isOwnEmployeeRequest) {
+    response.status(403).json({ message: "You cannot modify this leave request." });
+    return;
+  }
+
+  if (!isAdminRequest && existing.status === "approved") {
+    response.status(409).json({ message: "Approved time off cannot be removed by the employee." });
+    return;
+  }
+
+  await updateStore((current) => ({
+    ...current,
+    leaveRequests: current.leaveRequests.filter((leaveRequest) => leaveRequest.id !== existing.id),
+  }));
+
+  response.status(204).end();
+});
+
+router.patch("/leave-requests/:id/status", requireRole("admin"), async (request, response) => {
+  const parsed = leaveDecisionSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid leave decision payload" });
+    return;
+  }
+
+  const store = await readStore();
+  const existing = store.leaveRequests.find((leaveRequest) => leaveRequest.id === request.params.id);
+  if (!existing) {
+    respondNotFound(response, "Leave request not found");
+    return;
+  }
+
+  const updatedRequest: LeaveRequestRecord = {
+    ...existing,
+    status: parsed.data.status,
+    reviewNote: parsed.data.reviewNote?.trim() || undefined,
+    reviewedAt: nowIso(),
+    reviewedBy: request.auth?.user.name ?? "Admin",
+    updatedAt: nowIso(),
+  };
+
+  await updateStore((current) => ({
+    ...current,
+    leaveRequests: current.leaveRequests.map((leaveRequest) => (leaveRequest.id === updatedRequest.id ? updatedRequest : leaveRequest)),
+  }));
+
+  response.json({ leaveRequest: updatedRequest });
+});
+
+router.get("/month-calendar", async (request, response) => {
+  const month = request.query.month?.toString().trim();
+  if (!month) {
+    response.status(400).json({ message: "Month is required" });
+    return;
+  }
+
+  const requestedEmployeeId = request.query.employeeId?.toString().trim();
+  const employeeId = scopedEmployeeId(request, requestedEmployeeId ?? undefined);
+  if (!employeeId) {
+    response.status(400).json({ message: "Employee ID is required" });
+    return;
+  }
+
+  const store = await readStore();
+  response.json({ monthCalendar: buildMonthCalendar(store, employeeId, month) });
 });
 
 router.route("/funds").get(requireRole("admin"), async (_request, response) => {
@@ -1186,7 +1690,14 @@ router.post("/salaries/:id/pay", requireRole("admin"), async (request, response)
   }
 
   if (existing.status !== "paid") {
-    ensureFunds(store, existing.amount, "this salary payment");
+    try {
+      ensureFunds(store, existing.amount, "this salary payment");
+    } catch (error) {
+      response.status(400).json({
+        message: error instanceof Error ? error.message : "Insufficient total funds for this salary payment.",
+      });
+      return;
+    }
   }
 
   const salary: SalaryRecord = {

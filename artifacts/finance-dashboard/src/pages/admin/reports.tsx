@@ -1,13 +1,14 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { format } from "date-fns";
-import { BarChart3, Download, Receipt, Wallet, WalletCards, Clock3 } from "lucide-react";
+import { addDays, format, startOfWeek } from "date-fns";
+import { BarChart3, Download, Receipt, Wallet, WalletCards, Clock3, CalendarDays } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { DashboardCard } from "@/components/dashboard-card";
-import { api } from "@/lib/api";
+import { api, type MonthCalendarDay } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 function formatCurrency(value: number) {
@@ -22,8 +23,53 @@ function isInMonth(date: string, month: string) {
   return date.slice(0, 7) === month;
 }
 
+function totalHours(days: MonthCalendarDay[] | undefined) {
+  return (days ?? []).reduce((sum, day) => sum + Number(day.hours ?? 0), 0);
+}
+
+function groupWeeks(days: MonthCalendarDay[] | undefined) {
+  const weeks = new Map<
+    string,
+    {
+      start: Date;
+      end: Date;
+      label: string;
+      hours: number;
+      leaveDays: number;
+      holidayDays: number;
+      workedDays: number;
+    }
+  >();
+
+  for (const day of days ?? []) {
+    const date = new Date(day.date);
+    const weekStart = startOfWeek(date, { weekStartsOn: 1 });
+    const key = weekStart.toISOString().slice(0, 10);
+    const current =
+      weeks.get(key) ??
+      {
+        start: weekStart,
+        end: addDays(weekStart, 6),
+        label: `${format(weekStart, "dd MMM")} - ${format(addDays(weekStart, 6), "dd MMM")}`,
+        hours: 0,
+        leaveDays: 0,
+        holidayDays: 0,
+        workedDays: 0,
+      };
+
+    current.hours += Number(day.hours ?? 0);
+    current.leaveDays += day.leave ? 1 : 0;
+    current.holidayDays += day.holiday ? 1 : 0;
+    current.workedDays += day.worked ? 1 : 0;
+    weeks.set(key, current);
+  }
+
+  return [...weeks.values()].sort((left, right) => left.start.getTime() - right.start.getTime());
+}
+
 export default function AdminReportsPage() {
   const [selectedMonth, setSelectedMonth] = useState(() => format(new Date(), "yyyy-MM"));
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState("");
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
   const { data: timesheets = [] } = useQuery({ queryKey: ["timesheets"], queryFn: () => api.getTimesheets() });
@@ -35,13 +81,19 @@ export default function AdminReportsPage() {
     queryFn: api.getProjectBudgetSummary,
   });
 
+  useEffect(() => {
+    if (!selectedEmployeeId && employees.length > 0) {
+      setSelectedEmployeeId(employees[0].id);
+    }
+  }, [employees, selectedEmployeeId]);
+
   const report = useMemo(() => {
     const monthTimesheets = timesheets.filter((entry) => isInMonth(entry.weekStart, selectedMonth));
     const monthSalaries = salaries.filter((salary) => isInMonth(salary.date, selectedMonth));
     const monthExpenses = expenses.filter((expense) => isInMonth(expense.date, selectedMonth));
     const monthFunds = funds.filter((fund) => isInMonth(fund.date, selectedMonth));
 
-    const totalHours = monthTimesheets.reduce(
+    const totalHoursLogged = monthTimesheets.reduce(
       (sum, entry) =>
         sum +
         entry.lines.reduce(
@@ -88,7 +140,7 @@ export default function AdminReportsPage() {
       .sort((left, right) => right.hours - left.hours);
 
     return {
-      totalHours,
+      totalHoursLogged,
       salariesPayable,
       approvedExpenses,
       pendingExpenses,
@@ -98,17 +150,27 @@ export default function AdminReportsPage() {
     };
   }, [employees, expenses, funds, projectSummary, salaries, selectedMonth, timesheets]);
 
+  const { data: employeeMonthCalendar } = useQuery({
+    queryKey: ["employee-month-calendar-report", selectedEmployeeId, selectedMonth],
+    queryFn: () => api.getEmployeeMonthCalendar({ employeeId: selectedEmployeeId, month: selectedMonth }),
+    enabled: Boolean(selectedEmployeeId),
+  });
+
+  const selectedEmployee = employees.find((employee) => employee.id === selectedEmployeeId) ?? null;
+  const weeklyBreakdown = useMemo(() => groupWeeks(employeeMonthCalendar?.days), [employeeMonthCalendar?.days]);
+  const monthLabel = employeeMonthCalendar?.monthLabel ?? format(new Date(`${selectedMonth}-01T00:00:00`), "MMMM yyyy");
+
   function exportPdf() {
     const popup = window.open("", "_blank", "width=1120,height=820");
     if (!popup) {
       return;
     }
 
-    const monthLabel = format(new Date(`${selectedMonth}-01T00:00:00`), "MMMM yyyy");
+    const reportMonthLabel = format(new Date(`${selectedMonth}-01T00:00:00`), "MMMM yyyy");
     popup.document.write(`
       <html>
         <head>
-          <title>Monthly Summary - ${monthLabel}</title>
+          <title>Monthly Summary - ${reportMonthLabel}</title>
           <style>
             body { font-family: Arial, sans-serif; padding: 32px; color: #0f172a; }
             h1 { margin-bottom: 4px; }
@@ -124,9 +186,9 @@ export default function AdminReportsPage() {
         </head>
         <body>
           <h1>Monthly Summary Report</h1>
-          <p>${monthLabel}</p>
+          <p>${reportMonthLabel}</p>
           <div class="grid">
-            <div class="card"><div class="label">Total Hours</div><div class="value">${report.totalHours.toFixed(1)}h</div></div>
+            <div class="card"><div class="label">Total Hours</div><div class="value">${report.totalHoursLogged.toFixed(1)}h</div></div>
             <div class="card"><div class="label">Salaries Payable</div><div class="value">${formatCurrency(report.salariesPayable)}</div></div>
             <div class="card"><div class="label">Approved Expenses</div><div class="value">${formatCurrency(report.approvedExpenses)}</div></div>
             <div class="card"><div class="label">Pending Expenses</div><div class="value">${formatCurrency(report.pendingExpenses)}</div></div>
@@ -153,10 +215,10 @@ export default function AdminReportsPage() {
           <div className="space-y-1">
             <h1 className="text-2xl font-semibold tracking-tight">Reports</h1>
             <p className="text-sm text-muted-foreground">
-              Month-wise summary of hours, salary liability, expenses, and project budget usage.
+              Month-wise summary of hours, leave, holidays, salary liability, expenses, and project budget usage.
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <Input
               type="month"
               value={selectedMonth}
@@ -171,7 +233,7 @@ export default function AdminReportsPage() {
         </div>
 
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-          <DashboardCard label="Total Hours Logged" value={`${report.totalHours.toFixed(1)}h`} icon={<Clock3 className="h-5 w-5" />} />
+          <DashboardCard label="Total Hours Logged" value={`${report.totalHoursLogged.toFixed(1)}h`} icon={<Clock3 className="h-5 w-5" />} />
           <DashboardCard label="Salaries Payable" value={formatCurrency(report.salariesPayable)} icon={<WalletCards className="h-5 w-5" />} />
           <DashboardCard label="Approved Expenses" value={formatCurrency(report.approvedExpenses)} icon={<Receipt className="h-5 w-5" />} />
           <DashboardCard label="Pending Expenses" value={formatCurrency(report.pendingExpenses)} icon={<BarChart3 className="h-5 w-5" />} />
@@ -192,7 +254,7 @@ export default function AdminReportsPage() {
               ) : (
                 <div className="space-y-3">
                   {report.employeeRows.map((row) => {
-                    const width = report.totalHours > 0 ? (row.hours / report.totalHours) * 100 : 0;
+                    const width = report.totalHoursLogged > 0 ? (row.hours / report.totalHoursLogged) * 100 : 0;
                     return (
                       <div key={row.id} className="space-y-2 rounded-xl border border-border/60 bg-secondary/10 px-4 py-3">
                         <div className="flex items-center justify-between gap-3">
@@ -252,6 +314,122 @@ export default function AdminReportsPage() {
             </CardContent>
           </Card>
         </div>
+
+        <Card className="border-border/60 bg-card/80 shadow-sm">
+          <CardHeader className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <CardTitle className="text-base font-medium">Employee Monthly Detail</CardTitle>
+              <CardDescription>Hours, leave, holidays, and weekly breakdown for one employee.</CardDescription>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Select value={selectedEmployeeId} onValueChange={setSelectedEmployeeId}>
+                <SelectTrigger className="w-[240px]">
+                  <SelectValue placeholder="Select employee" />
+                </SelectTrigger>
+                <SelectContent>
+                  {employees.map((employee) => (
+                    <SelectItem key={employee.id} value={employee.id}>
+                      {employee.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className="flex items-center gap-2 rounded-xl border border-border/60 bg-secondary/10 px-3 py-2 text-sm text-muted-foreground">
+                <CalendarDays className="h-4 w-4" />
+                {monthLabel}
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            {!selectedEmployee || !employeeMonthCalendar ? (
+              <div className="rounded-xl border border-dashed border-border/60 px-4 py-10 text-center text-sm text-muted-foreground">
+                Select an employee to see the monthly view.
+              </div>
+            ) : (
+              <>
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-xl border border-border/60 bg-secondary/10 px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Hours Logged</p>
+                    <p className="mt-2 text-2xl font-semibold">{employeeMonthCalendar.summary.hoursLogged.toFixed(1)}h</p>
+                  </div>
+                  <div className="rounded-xl border border-border/60 bg-secondary/10 px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Working Days</p>
+                    <p className="mt-2 text-2xl font-semibold">{employeeMonthCalendar.summary.daysWorked}</p>
+                  </div>
+                  <div className="rounded-xl border border-border/60 bg-secondary/10 px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Leave Days</p>
+                    <p className="mt-2 text-2xl font-semibold">{employeeMonthCalendar.summary.leaveDays}</p>
+                  </div>
+                  <div className="rounded-xl border border-border/60 bg-secondary/10 px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Holiday Days</p>
+                    <p className="mt-2 text-2xl font-semibold">{employeeMonthCalendar.summary.holidayDays}</p>
+                  </div>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  {weeklyBreakdown.map((week) => (
+                    <div key={week.label} className="rounded-xl border border-border/60 bg-secondary/10 px-4 py-4">
+                      <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Week</p>
+                      <p className="mt-1 text-sm font-medium text-foreground">{week.label}</p>
+                      <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                        <div>
+                          <p className="text-xs text-muted-foreground">Hours</p>
+                          <p className="mt-1 font-medium">{week.hours.toFixed(1)}h</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">Worked</p>
+                          <p className="mt-1 font-medium">{week.workedDays} days</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">Leave</p>
+                          <p className="mt-1 font-medium">{week.leaveDays} days</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">Holiday</p>
+                          <p className="mt-1 font-medium">{week.holidayDays} days</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="overflow-hidden rounded-xl border border-border/60">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Month View</TableHead>
+                        <TableHead className="text-right">Hours</TableHead>
+                        <TableHead className="text-right">Leave</TableHead>
+                        <TableHead className="text-right">Holiday</TableHead>
+                        <TableHead className="text-right">Status</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {employeeMonthCalendar.days.map((day) => (
+                        <TableRow key={day.date}>
+                          <TableCell>
+                            <div className="space-y-1">
+                              <p className="font-medium">{format(new Date(day.date), "dd MMM")}</p>
+                              <p className="text-xs text-muted-foreground">{format(new Date(day.date), "EEEE")}</p>
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-right">{day.hours > 0 ? `${day.hours}h` : "—"}</TableCell>
+                          <TableCell className="text-right">
+                            {day.leave ? "Approved" : day.leaveStatus === "pending" ? "Pending" : "—"}
+                          </TableCell>
+                          <TableCell className="text-right">{day.holiday ? day.holidayName ?? "Holiday" : "—"}</TableCell>
+                          <TableCell className="text-right">
+                            {day.worked ? "Worked" : day.holiday ? "Holiday" : day.leave ? "Leave" : "No activity"}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
       </div>
     </DashboardLayout>
   );

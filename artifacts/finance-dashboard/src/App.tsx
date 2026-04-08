@@ -13,9 +13,11 @@ import ProjectBudgetsPage from "@/pages/project-budgets";
 import ExpensesPage from "@/pages/expenses";
 import SettingsPage from "@/pages/settings";
 import AdminTimesheetValidationPage from "@/pages/admin/timesheet-validation";
+import AdminLeaveManagementPage from "@/pages/admin/leave-management";
 import AdminReportsPage from "@/pages/admin/reports";
 import AdminAuditTrailPage from "@/pages/admin/audit-trail";
 import EmployeeTimesheetPage from "@/pages/employee/timesheet";
+import EmployeeLeavesPage from "@/pages/employee/leaves";
 import EmployeeExpensesPage from "@/pages/employee/expenses";
 import EmployeeSalarySlipsPage from "@/pages/employee/salary-slips";
 import EmployeeProfilePage from "@/pages/employee/profile";
@@ -102,6 +104,9 @@ function LegacyRouter() {
         <Route path="/timesheets">
           {renderAdminRoute(isAuthenticated, role, <AdminTimesheetValidationPage />)}
         </Route>
+        <Route path="/leave-management">
+          {renderAdminRoute(isAuthenticated, role, <AdminLeaveManagementPage />)}
+        </Route>
         <Route path="/reports">
           {renderAdminRoute(isAuthenticated, role, <AdminReportsPage />)}
         </Route>
@@ -118,6 +123,7 @@ function LegacyRouter() {
         <Route path="/admin/expenses">{renderAdminRoute(isAuthenticated, role, <Redirect to="/expenses" />)}</Route>
         <Route path="/admin/settings">{renderAdminRoute(isAuthenticated, role, <Redirect to="/settings" />)}</Route>
         <Route path="/admin/timesheets">{renderAdminRoute(isAuthenticated, role, <Redirect to="/timesheets" />)}</Route>
+        <Route path="/admin/leave-management">{renderAdminRoute(isAuthenticated, role, <Redirect to="/leave-management" />)}</Route>
         <Route path="/admin/reports">{renderAdminRoute(isAuthenticated, role, <Redirect to="/reports" />)}</Route>
         <Route path="/admin/audit-trail">{renderAdminRoute(isAuthenticated, role, <Redirect to="/audit-trail" />)}</Route>
         <Route path="/employee/dashboard">
@@ -125,6 +131,9 @@ function LegacyRouter() {
         </Route>
         <Route path="/employee/timesheet">
           {renderEmployeeRoute(isAuthenticated, role, <EmployeeTimesheetPage />)}
+        </Route>
+        <Route path="/employee/leaves">
+          {renderEmployeeRoute(isAuthenticated, role, <EmployeeLeavesPage />)}
         </Route>
         <Route path="/employee/expenses">
           {renderEmployeeRoute(isAuthenticated, role, <EmployeeExpensesPage />)}

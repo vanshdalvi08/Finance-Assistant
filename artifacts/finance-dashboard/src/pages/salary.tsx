@@ -130,6 +130,7 @@ export default function Salary() {
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
   const { data: salaryData = [] } = useQuery({ queryKey: ["salaries"], queryFn: api.getSalaries });
+  const { data: adminOverview } = useQuery({ queryKey: ["adminOverview"], queryFn: api.getAdminOverview });
   const salaries = salaryData as SalaryRecord[];
 
   const pendingPayroll = salaries.filter((record) => getPayrollStatus(record) === "pending");
@@ -142,19 +143,12 @@ export default function Salary() {
 
   const paySalaryRecord = (api as any).paySalaryRecord as
     | undefined
-    | ((payload: string | { id: string }) => Promise<unknown>);
+    | ((id: string) => Promise<SalaryRecord>);
 
   const payMutation = useMutation({
     mutationFn: async (record: SalaryRecord): Promise<{ persisted: boolean; record: SalaryRecord }> => {
       if (typeof paySalaryRecord === "function") {
-        let updatedRecord: SalaryRecord | null = null;
-
-        try {
-          updatedRecord = (await paySalaryRecord(record.id)) as SalaryRecord;
-        } catch {
-          updatedRecord = (await paySalaryRecord({ id: record.id })) as SalaryRecord;
-        }
-
+        const updatedRecord = await paySalaryRecord(record.id);
         return { persisted: true, record: updatedRecord ?? record };
       }
 
@@ -198,6 +192,13 @@ export default function Salary() {
       toast({
         title: "Salary paid",
         description: "The payroll record has been moved to paid history.",
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "Could not pay salary",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
       });
     },
   });
@@ -267,6 +268,7 @@ export default function Salary() {
                         const employee = employees.find((item) => item.id === record.employeeId);
                         const employeeName = record.employeeNameSnapshot ?? employee?.name ?? "Unknown";
                         const amount = getPayrollAmount(record);
+                        const insufficientFunds = typeof adminOverview?.currentBalance === "number" && amount > adminOverview.currentBalance;
 
                         return (
                           <TableRow key={record.id} className="border-border/50">
@@ -292,9 +294,10 @@ export default function Salary() {
                               <Button
                                 size="sm"
                                 onClick={() => payMutation.mutate(record)}
-                                disabled={payMutation.isPending}
+                                disabled={payMutation.isPending || insufficientFunds}
+                                title={insufficientFunds ? "Not enough available funds to pay this salary yet." : undefined}
                               >
-                                Pay Salary
+                                {insufficientFunds ? "Insufficient Funds" : "Pay Salary"}
                               </Button>
                             </TableCell>
                           </TableRow>

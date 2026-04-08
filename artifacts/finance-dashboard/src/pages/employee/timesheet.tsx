@@ -4,22 +4,18 @@ import { addDays, format } from "date-fns";
 import {
   AlertTriangle,
   CalendarDays,
-  CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  CircleDashed,
   Copy,
-  Clock3,
   ClipboardCheck,
   FilePenLine,
-  Layers3,
   Plus,
   Save,
   X,
 } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { useAuthStore } from "@/store/auth";
-import { api, type DayKey, type TimesheetEntry, type TimesheetTaskLine } from "@/lib/api";
+import { api, type DayKey, type MonthCalendarDay, type TimesheetEntry, type TimesheetTaskLine } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -200,6 +196,14 @@ export default function EmployeeTimesheetPage() {
     queryFn: api.getProjectBudgetSummary,
   });
 
+  const selectedMonth = selectedWeek.slice(0, 7);
+
+  const { data: monthCalendar } = useQuery({
+    queryKey: ["employee-month-calendar", employee?.id, selectedMonth],
+    queryFn: () => api.getEmployeeMonthCalendar({ employeeId: employee?.id ?? "", month: selectedMonth }),
+    enabled: Boolean(employee?.id),
+  });
+
   const [projectSelections, setProjectSelections] = useState<Record<string, string>>({});
   const [taskSelections, setTaskSelections] = useState<Record<string, string>>({});
 
@@ -273,25 +277,6 @@ export default function EmployeeTimesheetPage() {
   const isHourly = String(payrollProfile.payType ?? "").toLowerCase() === "hourly";
   const draftHours = entryTotal(draft);
 
-  const summary = useMemo(() => {
-    const pending = timesheets.filter((entry) => entry.status === "submitted").length;
-    const approved = timesheets.filter((entry) => entry.status === "approved").length;
-    const activeTasks = draft?.lines.filter(
-      (line) =>
-        line.project.trim() ||
-        line.task.trim() ||
-        DAYS.some((day) => Number(line.hours[day.key] ?? 0) > 0),
-    ).length ?? 0;
-
-    return { pending, approved, activeTasks };
-  }, [draft, timesheets]);
-  const stats = [
-    { label: "Weekly Hours", value: formatHourValue(draftHours), icon: Clock3 },
-    { label: "Active Tasks", value: String(summary.activeTasks), icon: Layers3 },
-    { label: "Pending Review", value: String(summary.pending), icon: CircleDashed },
-    { label: "Approved Sheets", value: String(summary.approved), icon: CheckCircle2 },
-  ];
-
   const weekDates = useMemo(
     () => DAYS.map((day, index) => ({ ...day, date: addDays(new Date(selectedWeek), index) })),
     [selectedWeek],
@@ -308,6 +293,40 @@ export default function EmployeeTimesheetPage() {
 
   const weekRangeLabel = `${format(new Date(selectedWeek), "dd MMM")} - ${format(addDays(new Date(selectedWeek), 6), "dd MMM yyyy")}`;
   const isCurrentWeek = sameWeek(selectedWeek, weekStartIso());
+  const weekCalendarLookup = useMemo(
+    () =>
+      new Map(
+        (monthCalendar?.days ?? []).map((day) => [day.date.slice(0, 10), day]),
+      ),
+    [monthCalendar?.days],
+  );
+  const weekStatuses = useMemo(
+    () =>
+      weekDates.map((day) => ({
+        ...day,
+        calendar: weekCalendarLookup.get(day.date.toISOString().slice(0, 10)),
+      })),
+    [weekCalendarLookup, weekDates],
+  );
+
+  const summary = useMemo(() => {
+    const pending = timesheets.filter((entry) => entry.status === "submitted").length;
+    const approved = timesheets.filter((entry) => entry.status === "approved").length;
+    const activeTasks = draft?.lines.filter(
+      (line) =>
+        line.project.trim() ||
+        line.task.trim() ||
+        DAYS.some((day) => Number(line.hours[day.key] ?? 0) > 0),
+    ).length ?? 0;
+
+    return {
+      pending,
+      approved,
+      activeTasks,
+      holidayDays: weekStatuses.filter((day) => day.calendar?.holiday).length,
+      leaveDays: weekStatuses.filter((day) => day.calendar?.leave).length,
+    };
+  }, [draft, timesheets, weekStatuses]);
 
   function getProjectTaskOptions(projectName: string) {
     const record = projectLookup.get(normalizeLookup(projectName));
@@ -561,6 +580,46 @@ export default function EmployeeTimesheetPage() {
               </Button>
             </div>
           </div>
+
+          {weekStatuses.some((day) => day.calendar?.holiday || day.calendar?.leave || day.calendar?.pendingLeave) ? (
+            <div className="mt-4 border-t border-border/50 pt-4">
+              <div className="rounded-2xl border border-border/60 bg-background/55 px-4 py-3">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-foreground">Time off this week</p>
+                    <p className="text-sm text-muted-foreground">
+                      Leave and holidays are managed from <span className="font-medium text-foreground">My Leaves</span> and reflected here automatically.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {weekStatuses.map((day) => {
+                      const calendarDay = day.calendar;
+                      if (!calendarDay?.holiday && !calendarDay?.leave && !calendarDay?.pendingLeave) {
+                        return null;
+                      }
+
+                      return (
+                        <div
+                          key={day.key}
+                          className={cn(
+                            "rounded-full border px-3 py-1.5 text-xs font-medium",
+                            calendarDay.holiday
+                              ? "border-emerald-500/20 bg-emerald-500/8 text-emerald-300"
+                              : calendarDay.pendingLeave
+                                ? "border-sky-500/20 bg-sky-500/8 text-sky-300"
+                                : "border-amber-500/20 bg-amber-500/8 text-amber-300",
+                          )}
+                        >
+                          {day.label} {format(day.date, "dd MMM")} ·{" "}
+                          {calendarDay.holiday ? calendarDay.holidayName ?? "Holiday" : calendarDay.pendingLeave ? "Leave pending" : "Leave approved"}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </section>
 
         {isRejected && draft?.reviewNotes ? (
@@ -613,20 +672,39 @@ export default function EmployeeTimesheetPage() {
                       <th className="sticky left-[160px] z-30 w-[220px] min-w-[220px] border-b border-r border-border/50 bg-card px-4 py-3 font-medium text-foreground">
                         Task
                       </th>
-                      {weekDates.map((day) => (
-                        <th
-                          key={day.key}
-                          className={cn(
-                            "w-[78px] min-w-[78px] border-b border-r border-border/50 px-2 py-3 text-center font-medium last:border-r-0",
-                            hoveredDay === day.key && "bg-secondary/35 text-foreground",
-                          )}
-                        >
-                          <div className="space-y-1">
-                            <p>{day.label}</p>
-                            <p className="text-[11px] font-normal text-muted-foreground">{format(day.date, "dd MMM")}</p>
-                          </div>
-                        </th>
-                      ))}
+                      {weekDates.map((day) => {
+                        const calendarDay = weekCalendarLookup.get(day.date.toISOString().slice(0, 10));
+                        const isHoliday = Boolean(calendarDay?.holiday);
+                        const isLeave = Boolean(calendarDay?.leave);
+                        const isPending = calendarDay?.leaveStatus === "pending";
+
+                        return (
+                          <th
+                            key={day.key}
+                              className={cn(
+                                "w-[78px] min-w-[78px] border-b border-r border-border/50 px-2 py-3 text-center font-medium last:border-r-0",
+                                hoveredDay === day.key && "bg-secondary/35 text-foreground",
+                                isHoliday && "bg-emerald-500/5",
+                                isLeave && "bg-amber-500/5",
+                                isPending && "bg-sky-500/5",
+                              )}
+                          >
+                            <div className="space-y-1">
+                              <p>{day.label}</p>
+                              <p className="text-[11px] font-normal text-muted-foreground">{format(day.date, "dd MMM")}</p>
+                              {isHoliday ? (
+                                <p className="text-[10px] font-medium text-emerald-300">{calendarDay?.holidayName ?? "Holiday"}</p>
+                              ) : isPending ? (
+                                <p className="text-[10px] font-medium text-sky-300">Pending</p>
+                              ) : isLeave ? (
+                                <p className="text-[10px] font-medium text-amber-300">Leave</p>
+                              ) : (
+                                <p className="text-[10px] font-medium text-muted-foreground">Work</p>
+                              )}
+                            </div>
+                          </th>
+                        );
+                      })}
                       <th className="w-[92px] min-w-[92px] border-b border-r border-border/50 px-2 py-3 text-center font-medium text-foreground">
                         Total
                       </th>
@@ -745,12 +823,24 @@ export default function EmployeeTimesheetPage() {
                             </div>
                           </td>
                           {weekDates.map((day) => (
+                        (() => {
+                          const calendarDay = weekCalendarLookup.get(day.date.toISOString().slice(0, 10));
+                          const isOffDay = Boolean(calendarDay?.holiday || calendarDay?.leave || calendarDay?.leaveStatus === "pending");
+                          const placeholder = calendarDay?.holiday
+                            ? calendarDay.holidayName ?? "Holiday"
+                            : calendarDay?.leaveStatus === "pending"
+                              ? "Pending"
+                              : calendarDay?.leave
+                                ? "Leave"
+                                : "0";
+                          return (
                             <td
                               key={day.key}
                               className={cn(
                                 "border-b border-r border-border/50 px-3 py-3 align-top transition-colors",
                                 hoveredDay === day.key && "bg-secondary/15",
                                 day.key === "sat" || day.key === "sun" ? "bg-secondary/5" : "",
+                                isOffDay && "bg-secondary/10",
                               )}
                               onMouseEnter={() => setHoveredDay(day.key)}
                               onMouseLeave={() => setHoveredDay((currentDay) => (currentDay === day.key ? null : currentDay))}
@@ -760,13 +850,15 @@ export default function EmployeeTimesheetPage() {
                                 min={0}
                                 max={24}
                                 step={0.5}
-                                disabled={readOnly}
+                                disabled={readOnly || isOffDay}
                                 className="h-9 rounded-xl border-border/55 bg-background/80 px-2 text-center text-sm shadow-none"
-                                placeholder="0"
+                                placeholder={placeholder}
                                 value={hourInputValue(line.hours[day.key])}
                                 onChange={(event) => changeHour(line.id, day.key, event.target.value)}
                               />
                             </td>
+                              );
+                            })()
                           ))}
                           <td className="border-b border-r border-border/50 px-3 py-3 text-center align-middle font-medium text-foreground">
                             {formatHourValue(lineTotal(line))}
@@ -879,7 +971,7 @@ export default function EmployeeTimesheetPage() {
           </Button>
         </div>
 
-        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_280px]">
+        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_260px]">
           <Card className="border-border/60 bg-card/80 shadow-sm">
             <CardHeader>
               <CardTitle className="text-base font-medium">Recent Weeks</CardTitle>
@@ -921,26 +1013,37 @@ export default function EmployeeTimesheetPage() {
             </CardContent>
           </Card>
 
-          <aside className="space-y-3 self-start">
-            <div className="space-y-1 px-1">
-              <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Week Snapshot</p>
-              <p className="text-sm text-muted-foreground">A compact summary tucked beside your recent entries.</p>
-            </div>
-
-            {stats.map((stat) => (
-              <Card key={stat.label} className="border-border/60 bg-card/80 shadow-sm">
-                <CardContent className="flex items-center gap-3 p-4">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border/60 bg-secondary/30 text-muted-foreground">
-                    <stat.icon className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0 space-y-1">
-                    <p className="text-xl font-semibold tracking-tight text-foreground">{stat.value}</p>
-                    <p className="text-sm text-muted-foreground">{stat.label}</p>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </aside>
+          <Card className="border-border/60 bg-card/80 shadow-sm self-start">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base font-medium">Week Snapshot</CardTitle>
+              <CardDescription>Keep the weekly totals visible without distracting from the grid.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex items-center justify-between rounded-xl border border-border/60 bg-secondary/10 px-3 py-2.5">
+                <span className="text-sm text-muted-foreground">Weekly Hours</span>
+                <span className="text-sm font-semibold text-foreground">{formatHourValue(draftHours)}</span>
+              </div>
+              <div className="flex items-center justify-between rounded-xl border border-border/60 bg-secondary/10 px-3 py-2.5">
+                <span className="text-sm text-muted-foreground">Active Tasks</span>
+                <span className="text-sm font-semibold text-foreground">{summary.activeTasks}</span>
+              </div>
+              <div className="flex items-center justify-between rounded-xl border border-border/60 bg-secondary/10 px-3 py-2.5">
+                <span className="text-sm text-muted-foreground">Pending Review</span>
+                <span className="text-sm font-semibold text-foreground">{summary.pending}</span>
+              </div>
+              <div className="flex items-center justify-between rounded-xl border border-border/60 bg-secondary/10 px-3 py-2.5">
+                <span className="text-sm text-muted-foreground">Approved Sheets</span>
+                <span className="text-sm font-semibold text-foreground">{summary.approved}</span>
+              </div>
+              {summary.leaveDays > 0 || summary.holidayDays > 0 ? (
+                <div className="rounded-xl border border-border/60 bg-background/55 px-3 py-3 text-sm text-muted-foreground">
+                  {summary.leaveDays > 0 ? `${summary.leaveDays} leave day${summary.leaveDays > 1 ? "s" : ""}` : null}
+                  {summary.leaveDays > 0 && summary.holidayDays > 0 ? " · " : null}
+                  {summary.holidayDays > 0 ? `${summary.holidayDays} holiday${summary.holidayDays > 1 ? "s" : ""}` : null} in this week.
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
         </div>
       </div>
     </DashboardLayout>

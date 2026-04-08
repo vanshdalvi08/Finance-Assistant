@@ -30,6 +30,8 @@ import {
 export type ApprovalStatus = "draft" | "submitted" | "approved" | "rejected";
 export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type ActorRole = "admin" | "employee" | "system";
+export type LeaveRequestStatus = "pending" | "approved" | "rejected";
+export type LeaveRequestKind = "leave" | "holiday";
 
 export interface FundRecord {
   id: string;
@@ -156,6 +158,36 @@ export interface PurchaseOrder {
   tasks: PurchaseOrderTask[];
 }
 
+export interface HolidayRecord {
+  id: string;
+  date: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LeaveRequestRecord {
+  id: string;
+  employeeId: string;
+  employeeNameSnapshot: string;
+  startDate: string;
+  endDate: string;
+  kind: LeaveRequestKind;
+  reason?: string;
+  status: LeaveRequestStatus;
+  reviewedAt?: string;
+  reviewedBy?: string;
+  reviewNote?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LeavePolicyRecord {
+  annualLimit: number;
+  updatedAt: string;
+  updatedBy?: string;
+}
+
 export interface AuditTrailEntry {
   id: string;
   actorName: string;
@@ -184,6 +216,9 @@ export interface BusinessStore {
   timesheets: TimesheetEntry[];
   projectBudgets: ProjectBudget[];
   purchaseOrders: PurchaseOrder[];
+  holidays: HolidayRecord[];
+  leaveRequests: LeaveRequestRecord[];
+  leavePolicy: LeavePolicyRecord;
   auditTrail: AuditTrailEntry[];
 }
 
@@ -914,6 +949,12 @@ export function createDefaultStore(): BusinessStore {
     timesheets: [],
     projectBudgets: [],
     purchaseOrders: [],
+    holidays: [],
+    leaveRequests: [],
+    leavePolicy: {
+      annualLimit: 10,
+      updatedAt: "1970-01-01T00:00:00.000Z",
+    },
     auditTrail: [],
   };
 }
@@ -1039,6 +1080,33 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
         paidAt: task.paidAt ? normalizeDate(String(task.paidAt)) : undefined,
       })) : [],
     })) : [],
+    holidays: Array.isArray(input.holidays) ? input.holidays.map((holiday) => ({
+      id: holiday.id ?? createId("hol"),
+      date: normalizeDate(String(holiday.date ?? nowIso())),
+      name: String(holiday.name ?? "").trim() || "Holiday",
+      createdAt: normalizeDate(String(holiday.createdAt ?? nowIso())),
+      updatedAt: normalizeDate(String(holiday.updatedAt ?? holiday.createdAt ?? nowIso())),
+    })) : [],
+    leaveRequests: Array.isArray(input.leaveRequests) ? input.leaveRequests.map((request) => ({
+      id: request.id ?? createId("leave"),
+      employeeId: String(request.employeeId ?? "").trim(),
+      employeeNameSnapshot: String(request.employeeNameSnapshot ?? "").trim(),
+      startDate: normalizeDate(String(request.startDate ?? nowIso())),
+      endDate: normalizeDate(String(request.endDate ?? request.startDate ?? nowIso())),
+      kind: request.kind === "holiday" ? "holiday" : "leave",
+      reason: request.reason?.trim() || undefined,
+      status: request.status === "approved" || request.status === "rejected" ? request.status : "pending",
+      reviewedAt: request.reviewedAt ? normalizeDate(String(request.reviewedAt)) : undefined,
+      reviewedBy: request.reviewedBy?.trim() || undefined,
+      reviewNote: request.reviewNote?.trim() || undefined,
+      createdAt: normalizeDate(String(request.createdAt ?? nowIso())),
+      updatedAt: normalizeDate(String(request.updatedAt ?? request.createdAt ?? nowIso())),
+    })) : [],
+    leavePolicy: {
+      annualLimit: Math.max(0, Math.round(Number(input.leavePolicy?.annualLimit ?? defaults.leavePolicy.annualLimit))),
+      updatedAt: normalizeDate(String(input.leavePolicy?.updatedAt ?? defaults.leavePolicy.updatedAt ?? nowIso())),
+      updatedBy: input.leavePolicy?.updatedBy?.trim() || undefined,
+    },
     auditTrail: Array.isArray(input.auditTrail) ? input.auditTrail.map((entry) => ({
       id: entry.id ?? createId("audit"),
       actorName: String(entry.actorName ?? "System").trim(),
@@ -1226,6 +1294,8 @@ async function loadStoreFromDatabase(): Promise<BusinessStore> {
     projectBudgets: normalizedProjects,
     timesheets: normalizedTimesheets,
     purchaseOrders: purchaseOrderRows.map(purchaseOrderFromRow),
+    holidays: legacyStore.holidays,
+    leaveRequests: legacyStore.leaveRequests,
     auditTrail: auditRows.map(auditEntryFromRow),
   });
 

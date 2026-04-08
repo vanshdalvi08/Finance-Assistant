@@ -119,7 +119,12 @@ export async function requestJson<T>(
     });
     return response.data;
   } catch (error) {
-    throw new Error(toErrorMessage(error, "Request failed."));
+    const wrapped = new Error(toErrorMessage(error, "Request failed.")) as Error & { status?: number };
+    if (axios.isAxiosError(error)) {
+      wrapped.status = error.response?.status;
+    }
+
+    throw wrapped;
   }
 }
 
@@ -140,7 +145,12 @@ export async function requestFormData<T>(
     });
     return response.data;
   } catch (error) {
-    throw new Error(toErrorMessage(error, "Upload failed."));
+    const wrapped = new Error(toErrorMessage(error, "Upload failed.")) as Error & { status?: number };
+    if (axios.isAxiosError(error)) {
+      wrapped.status = error.response?.status;
+    }
+
+    throw wrapped;
   }
 }
 

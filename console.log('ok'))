@@ -1,0 +1,2 @@
+
+C:\Users\vansh\Desktop\Finance-Assistant>  "C:\Program Files\nodejs\\node.exe"  "C:\Program Files\nodejs\\node_modules\corepack\dist\corepack.js" pnpm --filter @workspace/db exec node -e import('pg').then(()=
