@@ -52,6 +52,7 @@ export default function AdminLeaveManagementPage() {
   const [holidayDate, setHolidayDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [holidayName, setHolidayName] = useState("");
   const [annualLimitInput, setAnnualLimitInput] = useState("10");
+  const [showPreviousApprovedLeaves, setShowPreviousApprovedLeaves] = useState(false);
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
   const { data: leaveRequests = [] } = useQuery({
@@ -87,6 +88,7 @@ export default function AdminLeaveManagementPage() {
 
   const pendingRequests = leaveRequests.filter((request) => request.status === "pending");
   const approvedRequests = leaveRequests.filter((request) => request.status === "approved");
+  const activeRequests = leaveRequests.filter((request) => request.status !== "approved");
   const selectedEmployee = employees.find((employee) => employee.id === selectedEmployeeId) ?? null;
 
   const stats = useMemo(
@@ -249,8 +251,12 @@ export default function AdminLeaveManagementPage() {
                 <div className="rounded-xl border border-dashed border-border/60 px-4 py-10 text-center text-sm text-muted-foreground">
                   No leave requests found for this month.
                 </div>
+              ) : activeRequests.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-border/60 px-4 py-10 text-center text-sm text-muted-foreground">
+                  No active leave requests right now.
+                </div>
               ) : (
-                leaveRequests.map((request) => (
+                activeRequests.map((request) => (
                   <div key={request.id} className="rounded-xl border border-border/60 bg-secondary/10 px-4 py-4">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div className="space-y-1">
@@ -300,6 +306,60 @@ export default function AdminLeaveManagementPage() {
                   </div>
                 ))
               )}
+
+              {approvedRequests.length > 0 ? (
+                <div className="pt-2">
+                  <div className="flex justify-end">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="rounded-full px-4 text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+                      onClick={() => setShowPreviousApprovedLeaves((current) => !current)}
+                    >
+                      {showPreviousApprovedLeaves
+                        ? "Hide Approved Leaves"
+                        : `Previous Approved Leaves (${approvedRequests.length})`}
+                    </Button>
+                  </div>
+
+                  {showPreviousApprovedLeaves ? (
+                    <Card className="mt-3 border-border/60 bg-background/70 shadow-none">
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-sm font-medium">Previous Approved Leaves</CardTitle>
+                        <CardDescription>
+                          Approved leave requests that are already reflected in the employee calendar.
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        {approvedRequests.map((request) => (
+                          <div
+                            key={request.id}
+                            className="flex flex-col gap-3 rounded-xl border border-border/60 bg-secondary/10 px-4 py-4 md:flex-row md:items-center md:justify-between"
+                          >
+                            <div className="space-y-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="font-medium text-foreground">{request.employeeNameSnapshot}</p>
+                                <Badge className={cn("rounded-full border px-2.5 py-1 text-[11px] font-medium shadow-none", statusClass(request.status))}>
+                                  Approved
+                                </Badge>
+                              </div>
+                              <p className="text-sm text-muted-foreground">
+                                {formatDate(request.startDate)} - {formatDate(request.endDate)} · {leaveDays(request)} day{leaveDays(request) > 1 ? "s" : ""}
+                              </p>
+                              {request.reason ? <p className="text-sm text-muted-foreground">{request.reason}</p> : null}
+                              {request.reviewNote ? (
+                                <p className="rounded-lg border border-border/60 bg-background/70 px-3 py-2 text-sm text-muted-foreground">
+                                  {request.reviewNote}
+                                </p>
+                              ) : null}
+                            </div>
+                          </div>
+                        ))}
+                      </CardContent>
+                    </Card>
+                  ) : null}
+                </div>
+              ) : null}
             </CardContent>
           </Card>
 

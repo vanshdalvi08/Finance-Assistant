@@ -1,6 +1,15 @@
 import { Router, type IRouter } from "express";
 import { z } from "zod";
-import { createEmployeeAccount, deactivateEmployeeAccount, listEmployees, updateEmployeeAccount } from "../lib/auth-service";
+import {
+  createClientAccount,
+  createEmployeeAccount,
+  deactivateClientAccount,
+  deactivateEmployeeAccount,
+  listClients,
+  listEmployees,
+  updateClientAccount,
+  updateEmployeeAccount,
+} from "../lib/auth-service";
 import { requireAuth, requireRole } from "../middlewares/auth";
 import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../lib/notifications";
 
@@ -20,6 +29,21 @@ const createEmployeeSchema = z.object({
 });
 
 const updateEmployeeSchema = createEmployeeSchema.extend({
+  id: z.string().trim().uuid(),
+});
+
+const createClientSchema = z.object({
+  name: z.string().trim().min(2),
+  email: z.string().trim().email(),
+  phone: z.string().trim().min(7),
+  company: z.string().trim().min(2).optional(),
+  address: z.string().trim().optional(),
+  website: z.string().trim().optional(),
+  billingEmail: z.string().trim().email().optional(),
+  status: z.enum(["active", "inactive"]).optional(),
+});
+
+const updateClientSchema = createClientSchema.extend({
   id: z.string().trim().uuid(),
 });
 
@@ -43,6 +67,11 @@ router.use(requireAuth, requireRole("admin"));
 router.get("/employees", async (_request, response) => {
   const employees = await listEmployees();
   response.json({ employees });
+});
+
+router.get("/clients", async (_request, response) => {
+  const clients = await listClients();
+  response.json({ clients });
 });
 
 router.post("/employees", async (request, response) => {
@@ -116,6 +145,43 @@ router.post("/employees", async (request, response) => {
   }
 });
 
+router.post("/clients", async (request, response) => {
+  const parsed = createClientSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid client payload" });
+    return;
+  }
+
+  try {
+    const result = await createClientAccount(parsed.data);
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyUsersByIds(
+        actor.id ? [actor.id] : [],
+        actor,
+        {
+          type: "employee_onboarded",
+          title: "Client account created",
+          body: `${result.user.name} was added as a client contact.`,
+          link: "/clients",
+          email: false,
+          metadata: {
+            userId: result.user.id,
+            entityType: "client",
+          },
+        },
+      ),
+    );
+    response.status(201).json({
+      user: result.user,
+      onboardingEmailSent: result.onboardingEmailSent,
+      ...(process.env.NODE_ENV !== "production" ? { temporaryPassword: result.temporaryPassword } : {}),
+    });
+  } catch (error) {
+    response.status(409).json({ message: error instanceof Error ? error.message : "Failed to create client" });
+  }
+});
+
 router.patch("/employees/:id", async (request, response) => {
   const parsed = updateEmployeeSchema.safeParse({
     ...request.body,
@@ -171,6 +237,25 @@ router.patch("/employees/:id", async (request, response) => {
   }
 });
 
+router.patch("/clients/:id", async (request, response) => {
+  const parsed = updateClientSchema.safeParse({
+    ...request.body,
+    id: request.params.id,
+  });
+
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid client payload" });
+    return;
+  }
+
+  try {
+    const result = await updateClientAccount(parsed.data);
+    response.json({ user: result.user });
+  } catch (error) {
+    response.status(409).json({ message: error instanceof Error ? error.message : "Failed to update client" });
+  }
+});
+
 router.delete("/employees/:id", async (request, response) => {
   const parsed = z.string().trim().uuid().safeParse(request.params.id);
 
@@ -221,6 +306,25 @@ router.delete("/employees/:id", async (request, response) => {
     });
   } catch (error) {
     response.status(404).json({ message: error instanceof Error ? error.message : "Failed to deactivate employee" });
+  }
+});
+
+router.delete("/clients/:id", async (request, response) => {
+  const parsed = z.string().trim().uuid().safeParse(request.params.id);
+
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid client id" });
+    return;
+  }
+
+  try {
+    const result = await deactivateClientAccount(parsed.data);
+    response.json({
+      user: result.user,
+      message: "Client removed",
+    });
+  } catch (error) {
+    response.status(404).json({ message: error instanceof Error ? error.message : "Failed to remove client" });
   }
 });
 

@@ -1,4 +1,4 @@
-export type UserRole = "admin" | "employee";
+export type UserRole = "admin" | "employee" | "client";
 
 export interface AuthUser {
   id: string;
@@ -13,6 +13,13 @@ export interface AuthUser {
   payType?: "monthly" | "hourly";
   hourlyRate?: number;
   profilePhotoUrl?: string | null;
+  clientInfo?: {
+    companyName?: string;
+    address?: string;
+    phone?: string;
+    email?: string;
+    website?: string;
+  };
   status?: "active" | "inactive";
   createdAt?: string;
   updatedAt?: string;
@@ -74,6 +81,21 @@ export interface UpdateEmployeeAccountPayload {
   status?: "active" | "inactive";
 }
 
+export interface CreateClientAccountPayload {
+  name: string;
+  email: string;
+  phone: string;
+  company?: string;
+  address?: string;
+  website?: string;
+  billingEmail?: string;
+  status?: "active" | "inactive";
+}
+
+export interface UpdateClientAccountPayload extends CreateClientAccountPayload {
+  id: string;
+}
+
 export interface UpdateCurrentUserProfilePayload {
   name: string;
   email: string;
@@ -96,4 +118,8 @@ export interface EmployeeAccountUpdateResult {
 
 export interface EmployeeAccountsListResult {
   employees: AuthUser[];
+}
+
+export interface ClientAccountsListResult {
+  clients: AuthUser[];
 }

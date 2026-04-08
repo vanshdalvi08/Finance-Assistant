@@ -2,6 +2,8 @@ import { clearAccessToken, setAccessToken } from "./session";
 import { rawAuthRequest, refreshAccessToken, requestJson } from "./http-client";
 import type {
   AuthSession,
+  ClientAccountsListResult,
+  CreateClientAccountPayload,
   CreateEmployeeAccountPayload,
   EmployeeAccountsListResult,
   EmployeeAccountProvisionResult,
@@ -10,6 +12,7 @@ import type {
   PasswordResetPayload,
   PasswordResetRequest,
   UpdateCurrentUserProfilePayload,
+  UpdateClientAccountPayload,
   UpdateEmployeeAccountPayload,
 } from "./types";
 
@@ -82,6 +85,22 @@ export async function createEmployeeAccount(payload: CreateEmployeeAccountPayloa
   });
 }
 
+export async function createClientAccount(payload: CreateClientAccountPayload) {
+  return requestJson<EmployeeAccountProvisionResult>("/admin/clients", {
+    method: "POST",
+    data: {
+      name: payload.name.trim(),
+      email: payload.email.trim().toLowerCase(),
+      phone: payload.phone.trim(),
+      company: payload.company?.trim() || undefined,
+      address: payload.address?.trim() || undefined,
+      website: payload.website?.trim() || undefined,
+      billingEmail: payload.billingEmail?.trim() || undefined,
+      status: payload.status ?? "active",
+    },
+  });
+}
+
 export async function updateEmployeeAccount(payload: UpdateEmployeeAccountPayload) {
   return requestJson<EmployeeAccountUpdateResult>(`/admin/employees/${payload.id}`, {
     method: "PATCH",
@@ -100,14 +119,40 @@ export async function updateEmployeeAccount(payload: UpdateEmployeeAccountPayloa
   });
 }
 
+export async function updateClientAccount(payload: UpdateClientAccountPayload) {
+  return requestJson<EmployeeAccountUpdateResult>(`/admin/clients/${payload.id}`, {
+    method: "PATCH",
+    data: {
+      name: payload.name.trim(),
+      email: payload.email.trim().toLowerCase(),
+      phone: payload.phone.trim(),
+      company: payload.company?.trim() || undefined,
+      address: payload.address?.trim() || undefined,
+      website: payload.website?.trim() || undefined,
+      billingEmail: payload.billingEmail?.trim() || undefined,
+      status: payload.status ?? "active",
+    },
+  });
+}
+
 export async function deactivateEmployeeAccount(id: string) {
   return requestJson<EmployeeAccountUpdateResult>(`/admin/employees/${id}`, {
     method: "DELETE",
   });
 }
 
+export async function deactivateClientAccount(id: string) {
+  return requestJson<EmployeeAccountUpdateResult>(`/admin/clients/${id}`, {
+    method: "DELETE",
+  });
+}
+
 export async function listEmployeeAccounts() {
   return requestJson<EmployeeAccountsListResult>("/admin/employees");
+}
+
+export async function listClientAccounts() {
+  return requestJson<ClientAccountsListResult>("/admin/clients");
 }
 
 export async function updateCurrentUserProfile(payload: UpdateCurrentUserProfilePayload) {

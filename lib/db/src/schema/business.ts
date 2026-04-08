@@ -7,10 +7,11 @@ export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type ApprovalStatus = "draft" | "submitted" | "approved" | "rejected";
 export type SalaryStatus = "pending" | "paid";
 export type ExpenseGroup = "personal" | "office";
-export type ActorRole = "admin" | "employee" | "system";
+export type ActorRole = "admin" | "employee" | "client" | "system";
 export type ProjectStatus = "active" | "archived";
 export type ProjectTaskStatus = "active" | "archived";
 export type PurchaseOrderTaskStatus = "pending" | "paid";
+export type PreApprovalStatus = "draft" | "submitted" | "changes_requested" | "approved";
 export type AuditEntityType =
   | "employee"
   | "expense"
@@ -23,7 +24,9 @@ export type AuditEntityType =
   | "project-task"
   | "project-budget"
   | "purchase-order"
-  | "purchase-order-task";
+  | "purchase-order-task"
+  | "pre-approval"
+  | "pre-approval-comment";
 
 export interface TimesheetHours {
   mon: number;
@@ -63,14 +66,53 @@ export interface PurchaseOrderTaskRecord {
   paidAt?: string;
 }
 
+export interface PreApprovalTaskRecord {
+  id: string;
+  taskName: string;
+  description: string;
+  hours: number;
+  rate: number;
+  amount: number;
+}
+
+export interface PreApprovalCommentRecord {
+  id: string;
+  authorId?: string;
+  authorName: string;
+  authorRole: "admin" | "client";
+  message: string;
+  createdAt: string;
+}
+
+export interface PreApprovalPartyInfoRecord {
+  companyName?: string;
+  address?: string;
+  phone?: string;
+  email?: string;
+  website?: string;
+}
+
+export interface PreApprovalProjectInfoRecord {
+  workDescription?: string;
+  projectStartDate?: string;
+  projectCompletionDate?: string;
+  totalContractValue?: number;
+  retainagePercent?: number;
+  retainageAmount?: number;
+  previouslyBilledAmount?: number;
+}
+
+export interface CompanySettingsRecord extends PreApprovalPartyInfoRecord {}
+
 export const approvalStatusEnum = pgEnum("approval_status", ["draft", "submitted", "approved", "rejected"]);
 export const salaryStatusEnum = pgEnum("salary_status", ["pending", "paid"]);
 export const salarySourceEnum = pgEnum("salary_source", ["manual", "timesheet"]);
 export const expenseGroupEnum = pgEnum("expense_group", ["personal", "office"]);
-export const actorRoleEnum = pgEnum("audit_actor_role", ["admin", "employee", "system"]);
+export const actorRoleEnum = pgEnum("audit_actor_role", ["admin", "employee", "client", "system"]);
 export const projectStatusEnum = pgEnum("project_status", ["active", "archived"]);
 export const projectTaskStatusEnum = pgEnum("project_task_status", ["active", "archived"]);
 export const purchaseOrderTaskStatusEnum = pgEnum("purchase_order_task_status", ["pending", "paid"]);
+export const preApprovalStatusEnum = pgEnum("pre_approval_status", ["draft", "submitted", "changes_requested", "approved"]);
 export const auditEntityTypeEnum = pgEnum("audit_entity_type", [
   "employee",
   "expense",
@@ -84,11 +126,20 @@ export const auditEntityTypeEnum = pgEnum("audit_entity_type", [
   "project-budget",
   "purchase-order",
   "purchase-order-task",
+  "pre-approval",
+  "pre-approval-comment",
 ]);
 
 export const businessStateTable = pgTable("business_state", {
   id: text("id").primaryKey(),
   data: jsonb("data").$type<Record<string, unknown>>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const companySettingsTable = pgTable("company_settings", {
+  id: text("id").primaryKey().default("company"),
+  data: jsonb("data").$type<CompanySettingsRecord>().notNull().default({}),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -292,6 +343,45 @@ export const insertPurchaseOrderSchema = createInsertSchema(purchaseOrdersTable)
   updatedAt: true,
 });
 
+export const preApprovalsTable = pgTable(
+  "pre_approvals",
+  {
+    id: text("id").primaryKey(),
+    title: text("title").notNull(),
+    project: text("project").notNull(),
+    clientId: uuid("client_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
+    clientNameSnapshot: text("client_name_snapshot").notNull(),
+    date: timestamp("date", { withTimezone: true }).notNull(),
+    notes: text("notes").notNull().default(""),
+    companyInfo: jsonb("company_info").$type<PreApprovalPartyInfoRecord>().notNull().default({}),
+    clientInfo: jsonb("client_info").$type<PreApprovalPartyInfoRecord>().notNull().default({}),
+    projectInfo: jsonb("project_info").$type<PreApprovalProjectInfoRecord>().notNull().default({}),
+    status: preApprovalStatusEnum("status").notNull().default("draft"),
+    createdById: uuid("created_by_id").references(() => usersTable.id, { onDelete: "set null" }),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    receivedAt: timestamp("received_at", { withTimezone: true }),
+    receivedFundId: text("received_fund_id").references(() => fundsTable.id, { onDelete: "set null" }),
+    tasks: jsonb("tasks").$type<PreApprovalTaskRecord[]>().notNull().default(sql`'[]'::jsonb`),
+    comments: jsonb("comments").$type<PreApprovalCommentRecord[]>().notNull().default(sql`'[]'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    clientIndex: index("pre_approvals_client_index").on(table.clientId),
+    statusIndex: index("pre_approvals_status_index").on(table.status),
+    projectIndex: index("pre_approvals_project_index").on(table.project),
+    createdByIndex: index("pre_approvals_created_by_index").on(table.createdById),
+    updatedIndex: index("pre_approvals_updated_index").on(table.updatedAt),
+  }),
+);
+
+export const insertPreApprovalSchema = createInsertSchema(preApprovalsTable).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
 export const auditTrailTable = pgTable(
   "audit_trail",
   {
@@ -473,5 +563,7 @@ export type TimesheetLine = typeof timesheetLinesTable.$inferSelect;
 export type InsertTimesheetLine = typeof timesheetLinesTable.$inferInsert;
 export type PurchaseOrder = typeof purchaseOrdersTable.$inferSelect;
 export type InsertPurchaseOrder = typeof purchaseOrdersTable.$inferInsert;
+export type PreApproval = typeof preApprovalsTable.$inferSelect;
+export type InsertPreApproval = typeof preApprovalsTable.$inferInsert;
 export type AuditTrailEntry = typeof auditTrailTable.$inferSelect;
 export type InsertAuditTrailEntry = typeof auditTrailTable.$inferInsert;

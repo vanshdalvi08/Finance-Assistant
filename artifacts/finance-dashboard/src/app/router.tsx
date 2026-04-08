@@ -15,8 +15,10 @@ import AdminDashboardPage from "@/pages/admin/dashboard";
 import AdminEmployeesPage from "@/pages/admin/employees";
 import AdminSalaryPage from "@/pages/admin/salary";
 import AdminFundsPage from "@/pages/admin/funds";
+import ClientsPage from "@/pages/clients";
 import ProjectBudgetsPage from "@/pages/project-budgets";
 import PurchaseOrdersPage from "@/pages/purchase-orders";
+import PreApprovalsPage from "@/pages/pre-approvals";
 import AdminExpensesPage from "@/pages/admin/expenses";
 import AdminTransactionsPage from "@/pages/admin/transactions";
 import AdminTimesheetValidationPage from "@/pages/admin/timesheet-validation";
@@ -28,6 +30,7 @@ import EmployeeLeavesPage from "@/pages/employee/leaves";
 import EmployeeExpensesPage from "@/pages/employee/expenses";
 import EmployeeSalarySlipsPage from "@/pages/employee/salary-slips";
 import EmployeeProfilePage from "@/pages/employee/profile";
+import ClientPreApprovalsPage from "@/pages/client/pre-approvals";
 
 function RootRedirect() {
   const hydrated = useAuthStore((state) => state.hydrated);
@@ -46,7 +49,15 @@ function RootRedirect() {
     return <Redirect to={routes.login} />;
   }
 
-  return <Redirect to={role === "admin" ? routes.adminDashboard : routes.employeeTimesheet} />;
+  if (role === "admin") {
+    return <Redirect to={routes.adminDashboard} />;
+  }
+
+  if (role === "client") {
+    return <Redirect to={routes.clientPreApprovals} />;
+  }
+
+  return <Redirect to={routes.employeeTimesheet} />;
 }
 
 function AdminRoutes() {
@@ -56,8 +67,10 @@ function AdminRoutes() {
       <Route path={routes.adminEmployees}><AdminEmployeesPage /></Route>
       <Route path={routes.adminSalary}><AdminSalaryPage /></Route>
       <Route path={routes.adminFunds}><AdminFundsPage /></Route>
+      <Route path={routes.adminClients}><ClientsPage /></Route>
       <Route path={routes.adminProjectBudgets}><ProjectBudgetsPage /></Route>
       <Route path={routes.adminPurchaseOrders}><PurchaseOrdersPage /></Route>
+      <Route path={routes.adminPreApprovals}><PreApprovalsPage /></Route>
       <Route path={routes.adminExpenses}><AdminExpensesPage /></Route>
       <Route path={routes.adminTransactions}><AdminTransactionsPage /></Route>
       <Route path={routes.adminTimesheetValidation}><AdminTimesheetValidationPage /></Route>
@@ -78,6 +91,15 @@ function EmployeeRoutes() {
       <Route path={routes.employeeSalarySlips}><EmployeeSalarySlipsPage /></Route>
       <Route path={routes.employeeProfile}><EmployeeProfilePage /></Route>
       <Route><Redirect to={routes.employeeTimesheet} /></Route>
+    </Switch>
+  );
+}
+
+function ClientRoutes() {
+  return (
+    <Switch>
+      <Route path={routes.clientPreApprovals}><ClientPreApprovalsPage /></Route>
+      <Route><Redirect to={routes.clientPreApprovals} /></Route>
     </Switch>
   );
 }
@@ -115,6 +137,13 @@ export function AppRouter() {
               <EmployeeShell>
                 <EmployeeRoutes />
               </EmployeeShell>
+            </RoleGuard>
+          </AuthGuard>
+        </Route>
+        <Route path="/client/:rest*">
+          <AuthGuard>
+            <RoleGuard allow={["client"]}>
+              <ClientRoutes />
             </RoleGuard>
           </AuthGuard>
         </Route>

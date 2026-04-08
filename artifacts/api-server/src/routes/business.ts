@@ -1,5 +1,8 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { z } from "zod";
+import { and, desc, eq } from "drizzle-orm";
+import { db } from "@workspace/db";
+import { auditTrailTable, companySettingsTable, fundsTable, preApprovalsTable, usersTable, type PreApproval as DbPreApproval } from "@workspace/db/schema";
 import { requireAuth, requireRole } from "../middlewares/auth";
 import {
   DAY_KEYS,
@@ -36,11 +39,16 @@ import {
   saveTimesheetFast,
   submitTimesheetEntryFast,
   submitTimesheetFast,
+  invalidateBusinessStoreCache,
 } from "../lib/business-store";
 import { resolveExpenseAttachmentUrl } from "../lib/storage";
 import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../lib/notifications";
 
 const router: IRouter = Router();
+
+function routeParam(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] ?? "" : value ?? "";
+}
 
 const dateSchema = z.string().min(1);
 const dayKeySchema = z.enum(DAY_KEYS as [DayKey, ...DayKey[]]);
@@ -188,6 +196,41 @@ const poSchema = z.object({
   tasks: z.array(poTaskSchema).optional(),
 });
 
+const preApprovalCommentSchema = z.object({
+  message: z.string().trim().min(2).max(1000),
+});
+
+const partyInfoSchema = z.object({
+  companyName: z.string().trim().optional(),
+  address: z.string().trim().optional(),
+  phone: z.string().trim().optional(),
+  email: z.string().trim().optional(),
+  website: z.string().trim().optional(),
+});
+
+const projectInfoSchema = z.object({
+  workDescription: z.string().trim().optional(),
+  projectStartDate: z.string().trim().optional(),
+  projectCompletionDate: z.string().trim().optional(),
+  totalContractValue: z.coerce.number().min(0).optional(),
+  retainagePercent: z.coerce.number().min(0).max(100).optional(),
+  retainageAmount: z.coerce.number().min(0).optional(),
+  previouslyBilledAmount: z.coerce.number().min(0).optional(),
+});
+
+const preApprovalSchema = z.object({
+  id: businessIdSchema.optional(),
+  title: z.string().trim().min(2),
+  project: z.string().trim().min(2),
+  clientId: z.string().uuid(),
+  date: dateSchema,
+  notes: z.string().trim().optional(),
+  companyInfo: partyInfoSchema.optional(),
+  clientInfo: partyInfoSchema.optional(),
+  projectInfo: projectInfoSchema.optional(),
+  tasks: z.array(poTaskSchema).optional(),
+});
+
 function isAdmin(request: Request) {
   return request.auth?.user.role === "admin";
 }
@@ -233,6 +276,87 @@ function calculatePoTaskAmount(hours: number, rate: number) {
 
 function sumPurchaseOrderTasks(tasks: Array<{ amount: number }>) {
   return tasks.reduce((sum, task) => sum + Math.abs(Number(task.amount ?? 0)), 0);
+}
+
+function normalizeApprovalTask(task: z.infer<typeof poTaskSchema>) {
+  const hours = Math.max(0, Number(task.hours ?? 0));
+  const rate = Math.max(0, Number(task.rate ?? 0));
+  return {
+    id: task.id ?? createId("pa_task"),
+    taskName: task.taskName.trim(),
+    description: task.description?.trim() || "",
+    hours,
+    rate,
+    amount: calculatePoTaskAmount(hours, rate),
+  };
+}
+
+function serializePreApproval(row: DbPreApproval) {
+  const tasks = Array.isArray(row.tasks) ? row.tasks : [];
+
+  return {
+    id: row.id,
+    title: row.title,
+    project: row.project,
+    clientId: row.clientId,
+    clientNameSnapshot: row.clientNameSnapshot,
+    date: row.date.toISOString(),
+    notes: row.notes || undefined,
+    companyInfo: row.companyInfo ?? {},
+    clientInfo: row.clientInfo ?? {},
+    projectInfo: row.projectInfo ?? {},
+    status: row.status,
+    submittedAt: row.submittedAt?.toISOString(),
+    approvedAt: row.approvedAt?.toISOString(),
+    receivedAt: row.receivedAt?.toISOString(),
+    receivedFundId: row.receivedFundId ?? undefined,
+    createdById: row.createdById ?? undefined,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    tasks,
+    comments: Array.isArray(row.comments) ? row.comments : [],
+    totalHours: tasks.reduce((sum, task) => sum + Math.max(0, Number(task.hours ?? 0)), 0),
+    totalAmount: tasks.reduce((sum, task) => sum + Math.max(0, Number(task.amount ?? 0)), 0),
+  };
+}
+
+async function insertBusinessAudit(input: {
+  actorName: string;
+  actorRole: "admin" | "employee" | "client" | "system";
+  action: string;
+  entityType: "pre-approval" | "pre-approval-comment";
+  entityId: string;
+  summary: string;
+}) {
+  await db.insert(auditTrailTable).values({
+    id: createId("audit"),
+    actorName: input.actorName,
+    actorRole: input.actorRole,
+    action: input.action,
+    entityType: input.entityType,
+    entityId: input.entityId,
+    summary: input.summary,
+    createdAt: new Date(),
+  });
+}
+
+async function loadClientUser(clientId: string) {
+  const rows = await db
+    .select()
+    .from(usersTable)
+    .where(and(eq(usersTable.id, clientId), eq(usersTable.role, "client"), eq(usersTable.status, "active")))
+    .limit(1);
+
+  return rows[0] ?? null;
+}
+
+function assertClientCanAccess(request: Request, preApproval: DbPreApproval, response: Response) {
+  if (request.auth?.user.role === "client" && preApproval.clientId !== request.auth.user.id) {
+    response.status(403).json({ message: "Forbidden" });
+    return false;
+  }
+
+  return true;
 }
 
 function timesheetHasContent(entry: TimesheetEntry) {
@@ -681,6 +805,39 @@ router.patch("/leave-settings", requireRole("admin"), async (request, response) 
   }));
 
   response.json({ leavePolicy: store.leavePolicy });
+});
+
+router.get("/company-settings", requireRole("admin"), async (_request, response) => {
+  const rows = await db.select().from(companySettingsTable).where(eq(companySettingsTable.id, "company")).limit(1);
+  response.json({ companyInfo: rows[0]?.data ?? {} });
+});
+
+router.patch("/company-settings", requireRole("admin"), async (request, response) => {
+  const parsed = partyInfoSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid company information." });
+    return;
+  }
+
+  const now = new Date();
+  const rows = await db
+    .insert(companySettingsTable)
+    .values({
+      id: "company",
+      data: parsed.data,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: companySettingsTable.id,
+      set: {
+        data: parsed.data,
+        updatedAt: now,
+      },
+    })
+    .returning();
+
+  response.json({ companyInfo: rows[0]?.data ?? parsed.data });
 });
 
 router.get("/leave-requests", async (request, response) => {
@@ -2912,6 +3069,444 @@ router.post("/purchase-orders/:id/tasks/:taskId/pay", requireRole("admin"), asyn
     );
   }
   response.json({ purchaseOrder: next.purchaseOrders.find((item) => item.id === order.id) ?? order });
+});
+
+router.get("/pre-approvals", requireRole("admin", "client"), async (request, response) => {
+  const rows = await db
+    .select()
+    .from(preApprovalsTable)
+    .where(request.auth?.user.role === "client" ? eq(preApprovalsTable.clientId, request.auth.user.id) : undefined)
+    .orderBy(desc(preApprovalsTable.updatedAt));
+
+  response.json({ preApprovals: rows.map(serializePreApproval) });
+});
+
+router.post("/pre-approvals", requireRole("admin"), async (request, response) => {
+  const parsed = preApprovalSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid pre-approval payload" });
+    return;
+  }
+
+  const client = await loadClientUser(parsed.data.clientId);
+  if (!client) {
+    response.status(400).json({ message: "Select a valid active client." });
+    return;
+  }
+
+  const now = new Date();
+  const tasks = (parsed.data.tasks ?? [])
+    .map(normalizeApprovalTask)
+    .filter((task) => task.taskName && task.amount > 0);
+
+  const rows = await db
+    .insert(preApprovalsTable)
+    .values({
+      id: createId("pa"),
+      title: parsed.data.title.trim(),
+      project: parsed.data.project.trim(),
+      clientId: client.id,
+      clientNameSnapshot: client.name,
+      date: new Date(normalizeDate(parsed.data.date)),
+      notes: parsed.data.notes?.trim() || "",
+      companyInfo: parsed.data.companyInfo ?? {},
+      clientInfo: parsed.data.clientInfo ?? {},
+      projectInfo: parsed.data.projectInfo ?? {},
+      status: "draft",
+      createdById: request.auth?.user.id ?? null,
+      tasks,
+      comments: [],
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning();
+
+  await insertBusinessAudit({
+    ...recordActor(request),
+    action: "created",
+    entityType: "pre-approval",
+    entityId: rows[0]!.id,
+    summary: `Created pre-approval ${rows[0]!.title} for ${client.name}.`,
+  });
+
+  response.status(201).json({ preApproval: serializePreApproval(rows[0]!) });
+});
+
+router.route("/pre-approvals/:id").get(requireRole("admin", "client"), async (request, response) => {
+  const preApprovalId = routeParam(request.params.id);
+  const rows = await db.select().from(preApprovalsTable).where(eq(preApprovalsTable.id, preApprovalId)).limit(1);
+  const preApproval = rows[0];
+  if (!preApproval) {
+    respondNotFound(response, "Pre-approval not found");
+    return;
+  }
+
+  if (!assertClientCanAccess(request, preApproval, response)) {
+    return;
+  }
+
+  response.json({ preApproval: serializePreApproval(preApproval) });
+}).patch(requireRole("admin"), async (request, response) => {
+  const preApprovalId = routeParam(request.params.id);
+  const parsed = preApprovalSchema.safeParse({ ...request.body, id: preApprovalId });
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid pre-approval payload" });
+    return;
+  }
+
+  const existingRows = await db.select().from(preApprovalsTable).where(eq(preApprovalsTable.id, preApprovalId)).limit(1);
+  const existing = existingRows[0];
+  if (!existing) {
+    respondNotFound(response, "Pre-approval not found");
+    return;
+  }
+
+  if (existing.status === "approved") {
+    response.status(400).json({ message: "Approved pre-approvals cannot be edited." });
+    return;
+  }
+
+  const client = await loadClientUser(parsed.data.clientId);
+  if (!client) {
+    response.status(400).json({ message: "Select a valid active client." });
+    return;
+  }
+
+  const tasks = (parsed.data.tasks ?? [])
+    .map(normalizeApprovalTask)
+    .filter((task) => task.taskName && task.amount > 0);
+
+  const rows = await db
+    .update(preApprovalsTable)
+    .set({
+      title: parsed.data.title.trim(),
+      project: parsed.data.project.trim(),
+      clientId: client.id,
+      clientNameSnapshot: client.name,
+      date: new Date(normalizeDate(parsed.data.date)),
+      notes: parsed.data.notes?.trim() || "",
+      companyInfo: parsed.data.companyInfo ?? {},
+      clientInfo: parsed.data.clientInfo ?? {},
+      projectInfo: parsed.data.projectInfo ?? {},
+      tasks,
+      status: existing.status === "changes_requested" ? "draft" : existing.status,
+      updatedAt: new Date(),
+    })
+    .where(eq(preApprovalsTable.id, existing.id))
+    .returning();
+
+  await insertBusinessAudit({
+    ...recordActor(request),
+    action: "updated",
+    entityType: "pre-approval",
+    entityId: existing.id,
+    summary: `Updated pre-approval ${parsed.data.title.trim()}.`,
+  });
+
+  response.json({ preApproval: serializePreApproval(rows[0]!) });
+}).delete(requireRole("admin"), async (request, response) => {
+  const preApprovalId = routeParam(request.params.id);
+  const existingRows = await db.select().from(preApprovalsTable).where(eq(preApprovalsTable.id, preApprovalId)).limit(1);
+  const existing = existingRows[0];
+  if (!existing) {
+    respondNotFound(response, "Pre-approval not found");
+    return;
+  }
+
+  if (existing.status === "approved") {
+    response.status(400).json({ message: "Approved pre-approvals cannot be deleted." });
+    return;
+  }
+
+  await db.delete(preApprovalsTable).where(eq(preApprovalsTable.id, existing.id));
+  await insertBusinessAudit({
+    ...recordActor(request),
+    action: "deleted",
+    entityType: "pre-approval",
+    entityId: existing.id,
+    summary: `Deleted pre-approval ${existing.title}.`,
+  });
+
+  response.status(204).send();
+});
+
+router.post("/pre-approvals/:id/submit", requireRole("admin"), async (request, response) => {
+  const preApprovalId = routeParam(request.params.id);
+  const rows = await db.select().from(preApprovalsTable).where(eq(preApprovalsTable.id, preApprovalId)).limit(1);
+  const existing = rows[0];
+  if (!existing) {
+    respondNotFound(response, "Pre-approval not found");
+    return;
+  }
+
+  if (existing.tasks.length === 0) {
+    response.status(400).json({ message: "Add at least one work row before sending for client approval." });
+    return;
+  }
+
+  if (existing.status === "approved") {
+    response.status(400).json({ message: "Approved pre-approvals cannot be resubmitted." });
+    return;
+  }
+
+  const updatedRows = await db
+    .update(preApprovalsTable)
+    .set({
+      status: "submitted",
+      submittedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(preApprovalsTable.id, existing.id))
+    .returning();
+
+  await insertBusinessAudit({
+    ...recordActor(request),
+    action: "submitted",
+    entityType: "pre-approval",
+    entityId: existing.id,
+    summary: `Sent pre-approval ${existing.title} to ${existing.clientNameSnapshot}.`,
+  });
+
+  await deliverNotification(
+    notifyUsersByIds([existing.clientId], notificationActor(request), {
+      type: "pre_approval_submitted",
+      title: "Pre-approval ready for review",
+      body: `${existing.title} is waiting for your approval.`,
+      link: "/client/pre-approvals",
+      metadata: { entityType: "pre-approval", entityId: existing.id },
+    }),
+  );
+
+  response.json({ preApproval: serializePreApproval(updatedRows[0]!) });
+});
+
+router.post("/pre-approvals/:id/comments", requireRole("admin", "client"), async (request, response) => {
+  const parsed = preApprovalCommentSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ message: "Comment is required." });
+    return;
+  }
+
+  const preApprovalId = routeParam(request.params.id);
+  const rows = await db.select().from(preApprovalsTable).where(eq(preApprovalsTable.id, preApprovalId)).limit(1);
+  const existing = rows[0];
+  if (!existing) {
+    respondNotFound(response, "Pre-approval not found");
+    return;
+  }
+
+  if (!assertClientCanAccess(request, existing, response)) {
+    return;
+  }
+
+  const role = request.auth?.user.role;
+  if (role !== "admin" && role !== "client") {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
+  const comment = {
+    id: createId("pa_comment"),
+    authorId: request.auth?.user.id,
+    authorName: request.auth?.user.name ?? "User",
+    authorRole: role,
+    message: parsed.data.message,
+    createdAt: nowIso(),
+  };
+
+  const updatedRows = await db
+    .update(preApprovalsTable)
+    .set({
+      comments: [...existing.comments, comment],
+      updatedAt: new Date(),
+    })
+    .where(eq(preApprovalsTable.id, existing.id))
+    .returning();
+
+  await insertBusinessAudit({
+    ...recordActor(request),
+    action: "commented",
+    entityType: "pre-approval-comment",
+    entityId: comment.id,
+    summary: `${comment.authorName} commented on ${existing.title}.`,
+  });
+
+  response.status(201).json({ preApproval: serializePreApproval(updatedRows[0]!), comment });
+});
+
+router.post("/pre-approvals/:id/approve", requireRole("client"), async (request, response) => {
+  const preApprovalId = routeParam(request.params.id);
+  const rows = await db.select().from(preApprovalsTable).where(eq(preApprovalsTable.id, preApprovalId)).limit(1);
+  const existing = rows[0];
+  if (!existing) {
+    respondNotFound(response, "Pre-approval not found");
+    return;
+  }
+
+  if (!assertClientCanAccess(request, existing, response)) {
+    return;
+  }
+
+  if (existing.status !== "submitted") {
+    response.status(400).json({ message: "Only submitted pre-approvals can be approved." });
+    return;
+  }
+
+  const updatedRows = await db
+    .update(preApprovalsTable)
+    .set({
+      status: "approved",
+      approvedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(preApprovalsTable.id, existing.id))
+    .returning();
+
+  await insertBusinessAudit({
+    ...recordActor(request),
+    action: "approved",
+    entityType: "pre-approval",
+    entityId: existing.id,
+    summary: `${existing.clientNameSnapshot} approved pre-approval ${existing.title}.`,
+  });
+
+  await deliverNotification(
+    notifyAdmins(notificationActor(request), {
+      type: "pre_approval_approved",
+      title: "Client approved pre-approval",
+      body: `${existing.clientNameSnapshot} approved ${existing.title}.`,
+      link: "/pre-approvals",
+      metadata: { entityType: "pre-approval", entityId: existing.id },
+    }),
+  );
+
+  response.json({ preApproval: serializePreApproval(updatedRows[0]!) });
+});
+
+router.post("/pre-approvals/:id/receive-funds", requireRole("admin"), async (request, response) => {
+  const preApprovalId = routeParam(request.params.id);
+  const rows = await db.select().from(preApprovalsTable).where(eq(preApprovalsTable.id, preApprovalId)).limit(1);
+  const existing = rows[0];
+  if (!existing) {
+    respondNotFound(response, "Pre-approval not found");
+    return;
+  }
+
+  if (existing.status !== "approved") {
+    response.status(400).json({ message: "Only client-approved pre-approvals can be marked as received." });
+    return;
+  }
+
+  if (existing.receivedAt || existing.receivedFundId) {
+    response.status(400).json({ message: "Funds for this pre-approval were already marked as received." });
+    return;
+  }
+
+  const totalAmount = serializePreApproval(existing).totalAmount;
+  if (totalAmount <= 0) {
+    response.status(400).json({ message: "This pre-approval does not have a receivable quotation amount." });
+    return;
+  }
+
+  const now = new Date();
+  const fundId = createId("fund");
+  const [updatedPreApproval] = await db.transaction(async (transaction) => {
+    await transaction.insert(fundsTable).values({
+      id: fundId,
+      source: `Pre Approval - ${existing.title}`,
+      amount: totalAmount,
+      date: now,
+      note: `Received from ${existing.clientNameSnapshot} for ${existing.project}.`,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return transaction
+      .update(preApprovalsTable)
+      .set({
+        receivedAt: now,
+        receivedFundId: fundId,
+        updatedAt: now,
+      })
+      .where(eq(preApprovalsTable.id, existing.id))
+      .returning();
+  });
+
+  invalidateBusinessStoreCache();
+
+  await insertBusinessAudit({
+    ...recordActor(request),
+    action: "funds_received",
+    entityType: "pre-approval",
+    entityId: existing.id,
+    summary: `Marked INR ${totalAmount} received for pre-approval ${existing.title}.`,
+  });
+
+  response.json({ preApproval: serializePreApproval(updatedPreApproval!) });
+});
+
+router.post("/pre-approvals/:id/request-changes", requireRole("client"), async (request, response) => {
+  const parsed = preApprovalCommentSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ message: "Please add a comment explaining the requested changes." });
+    return;
+  }
+
+  const preApprovalId = routeParam(request.params.id);
+  const rows = await db.select().from(preApprovalsTable).where(eq(preApprovalsTable.id, preApprovalId)).limit(1);
+  const existing = rows[0];
+  if (!existing) {
+    respondNotFound(response, "Pre-approval not found");
+    return;
+  }
+
+  if (!assertClientCanAccess(request, existing, response)) {
+    return;
+  }
+
+  if (existing.status !== "submitted") {
+    response.status(400).json({ message: "Only submitted pre-approvals can be returned for changes." });
+    return;
+  }
+
+  const comment = {
+    id: createId("pa_comment"),
+    authorId: request.auth!.user.id,
+    authorName: request.auth!.user.name ?? existing.clientNameSnapshot,
+    authorRole: "client" as const,
+    message: parsed.data.message,
+    createdAt: nowIso(),
+  };
+
+  const updatedRows = await db
+    .update(preApprovalsTable)
+    .set({
+      status: "changes_requested",
+      comments: [...existing.comments, comment],
+      updatedAt: new Date(),
+    })
+    .where(eq(preApprovalsTable.id, existing.id))
+    .returning();
+
+  await insertBusinessAudit({
+    ...recordActor(request),
+    action: "changes_requested",
+    entityType: "pre-approval",
+    entityId: existing.id,
+    summary: `${existing.clientNameSnapshot} requested changes for ${existing.title}.`,
+  });
+
+  await deliverNotification(
+    notifyAdmins(notificationActor(request), {
+      type: "pre_approval_changes_requested",
+      title: "Client requested changes",
+      body: `${existing.clientNameSnapshot} requested changes on ${existing.title}.`,
+      link: "/pre-approvals",
+      metadata: { entityType: "pre-approval", entityId: existing.id },
+    }),
+  );
+
+  response.json({ preApproval: serializePreApproval(updatedRows[0]!) });
 });
 
 export default router;

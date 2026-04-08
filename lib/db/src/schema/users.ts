@@ -1,9 +1,17 @@
 import { createInsertSchema } from "drizzle-zod";
-import { index, integer, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { index, integer, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
-export const userRoleEnum = pgEnum("user_role", ["admin", "employee"]);
+export const userRoleEnum = pgEnum("user_role", ["admin", "employee", "client"]);
 export const userStatusEnum = pgEnum("user_status", ["active", "inactive"]);
 export const userPayTypeEnum = pgEnum("user_pay_type", ["monthly", "hourly"]);
+
+export interface ClientBillingInfo {
+  companyName?: string;
+  address?: string;
+  phone?: string;
+  email?: string;
+  website?: string;
+}
 
 export const usersTable = pgTable(
   "users",
@@ -20,6 +28,7 @@ export const usersTable = pgTable(
     payType: userPayTypeEnum("pay_type").notNull().default("monthly"),
     hourlyRate: integer("hourly_rate").notNull().default(0),
     profilePhotoUrl: text("profile_photo_url"),
+    clientInfo: jsonb("client_info").$type<ClientBillingInfo>().notNull().default({}),
     hashedPassword: text("hashed_password").notNull(),
     status: userStatusEnum("status").notNull().default("active"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

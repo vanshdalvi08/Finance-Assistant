@@ -16,7 +16,11 @@ const loginSchema = z.object({
   password: z.string().min(8),
 });
 
-function resolveWorkspace(role: "admin" | "employee") {
+function resolveWorkspace(role: "admin" | "employee" | "client") {
+  if (role === "client") {
+    return "/client/pre-approvals";
+  }
+
   return role === "admin" ? "/" : "/employee/timesheet";
 }
 
@@ -166,7 +170,7 @@ export default function LoginPage() {
         </Card>
 
         <p className="text-center text-xs text-muted-foreground mt-8">
-          Secure role-based access for admin and employee workspaces.
+          Secure role-based access for admin, employee, and client workspaces.
         </p>
       </div>
     </div>

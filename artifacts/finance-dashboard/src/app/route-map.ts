@@ -6,8 +6,10 @@ export const routes = {
   adminEmployees: "/admin/employees",
   adminSalary: "/admin/salary",
   adminFunds: "/admin/funds",
+  adminClients: "/admin/clients",
   adminProjectBudgets: "/admin/project-budgets",
   adminPurchaseOrders: "/admin/purchase-orders",
+  adminPreApprovals: "/admin/pre-approvals",
   adminExpenses: "/admin/expenses",
   adminTransactions: "/admin/transactions",
   adminTimesheetValidation: "/admin/timesheets",
@@ -19,4 +21,5 @@ export const routes = {
   employeeExpenses: "/employee/expenses",
   employeeSalarySlips: "/employee/salary-slips",
   employeeProfile: "/employee/profile",
+  clientPreApprovals: "/client/pre-approvals",
 } as const;

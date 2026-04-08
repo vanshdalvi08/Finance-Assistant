@@ -29,7 +29,7 @@ import {
 
 export type ApprovalStatus = "draft" | "submitted" | "approved" | "rejected";
 export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
-export type ActorRole = "admin" | "employee" | "system";
+export type ActorRole = "admin" | "employee" | "client" | "system";
 export type LeaveRequestStatus = "pending" | "approved" | "rejected";
 export type LeaveRequestKind = "leave" | "holiday";
 
@@ -202,7 +202,9 @@ export interface AuditTrailEntry {
     | "category"
     | "project-budget"
     | "purchase-order"
-    | "purchase-order-task";
+    | "purchase-order-task"
+    | "pre-approval"
+    | "pre-approval-comment";
   entityId: string;
   summary: string;
   createdAt: string;
@@ -228,7 +230,7 @@ export interface UserProfile {
   id: string;
   name: string;
   email: string;
-  role: "admin" | "employee";
+  role: "admin" | "employee" | "client";
   employeeId: string | null;
   position: string | null;
   department: string | null;
@@ -260,6 +262,11 @@ let schemaReady: Promise<void> | null = null;
 let storeWriteQueue: Promise<void> = Promise.resolve();
 let storeCache: BusinessStore | null = null;
 let storeReadPromise: Promise<BusinessStore> | null = null;
+
+export function invalidateBusinessStoreCache() {
+  storeCache = null;
+  storeReadPromise = null;
+}
 
 export function createId(prefix: string): string {
   void prefix;
@@ -575,7 +582,10 @@ function auditEntryFromRow(row: DbAuditTrailEntry): AuditTrailEntry {
   return {
     id: row.id,
     actorName: row.actorName.trim(),
-    actorRole: row.actorRole === "employee" || row.actorRole === "system" ? row.actorRole : "admin",
+    actorRole:
+      row.actorRole === "employee" || row.actorRole === "client" || row.actorRole === "system"
+        ? row.actorRole
+        : "admin",
     action: row.action,
     entityType:
       row.entityType === "employee" ||
@@ -586,7 +596,9 @@ function auditEntryFromRow(row: DbAuditTrailEntry): AuditTrailEntry {
       row.entityType === "category" ||
       row.entityType === "project-budget" ||
       row.entityType === "purchase-order" ||
-      row.entityType === "purchase-order-task"
+      row.entityType === "purchase-order-task" ||
+      row.entityType === "pre-approval" ||
+      row.entityType === "pre-approval-comment"
         ? row.entityType
         : "timesheet",
     entityId: row.entityId,
@@ -1110,7 +1122,10 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
     auditTrail: Array.isArray(input.auditTrail) ? input.auditTrail.map((entry) => ({
       id: entry.id ?? createId("audit"),
       actorName: String(entry.actorName ?? "System").trim(),
-      actorRole: entry.actorRole === "employee" || entry.actorRole === "system" ? entry.actorRole : "admin",
+      actorRole:
+        entry.actorRole === "employee" || entry.actorRole === "client" || entry.actorRole === "system"
+          ? entry.actorRole
+          : "admin",
       action: String(entry.action ?? "updated"),
       entityType: entry.entityType,
       entityId: String(entry.entityId ?? "").trim(),

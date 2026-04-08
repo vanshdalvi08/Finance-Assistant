@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { api, ExpenseCategory } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -34,6 +34,14 @@ interface CategoryFormState {
   color: string;
   group: "personal" | "office";
   editId?: string;
+}
+
+interface CompanyFormState {
+  companyName: string;
+  address: string;
+  phone: string;
+  email: string;
+  website: string;
 }
 
 function CategoryCard({
@@ -126,10 +134,51 @@ export default function Settings() {
     color: PRESET_COLORS[0],
     group: "office",
   });
+  const [companyForm, setCompanyForm] = useState<CompanyFormState>({
+    companyName: "",
+    address: "",
+    phone: "",
+    email: "",
+    website: "",
+  });
 
   const { data: categories = [] } = useQuery({
     queryKey: ["categories"],
     queryFn: api.getCategories,
+  });
+
+  const { data: companyInfo } = useQuery({
+    queryKey: ["companySettings"],
+    queryFn: api.getCompanySettings,
+  });
+
+  useEffect(() => {
+    if (!companyInfo) {
+      return;
+    }
+
+    setCompanyForm({
+      companyName: companyInfo.companyName ?? "",
+      address: companyInfo.address ?? "",
+      phone: companyInfo.phone ?? "",
+      email: companyInfo.email ?? "",
+      website: companyInfo.website ?? "",
+    });
+  }, [companyInfo]);
+
+  const companyMutation = useMutation({
+    mutationFn: api.updateCompanySettings,
+    onSuccess: (saved) => {
+      queryClient.setQueryData(["companySettings"], saved);
+      toast({ title: "Company information saved", description: "This will prefill future pre-approval exports." });
+    },
+    onError: (error) => {
+      toast({
+        title: "Could not save company information",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    },
   });
 
   const saveMutation = useMutation({
@@ -194,6 +243,45 @@ export default function Settings() {
         </div>
 
         <div className="space-y-4">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Company Information</h2>
+          <Card className="border-border/50">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Pre Approval Export Details</CardTitle>
+              <p className="text-sm text-muted-foreground">
+                These details prefill the company block in the exported quotation format.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Company Name</Label>
+                  <Input value={companyForm.companyName} onChange={(event) => setCompanyForm((current) => ({ ...current, companyName: event.target.value }))} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Phone</Label>
+                  <Input value={companyForm.phone} onChange={(event) => setCompanyForm((current) => ({ ...current, phone: event.target.value }))} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Email</Label>
+                  <Input value={companyForm.email} onChange={(event) => setCompanyForm((current) => ({ ...current, email: event.target.value }))} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Website</Label>
+                  <Input value={companyForm.website} onChange={(event) => setCompanyForm((current) => ({ ...current, website: event.target.value }))} />
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label>Address</Label>
+                  <Input value={companyForm.address} onChange={(event) => setCompanyForm((current) => ({ ...current, address: event.target.value }))} />
+                </div>
+              </div>
+              <div className="flex justify-end">
+                <Button onClick={() => companyMutation.mutate(companyForm)} disabled={companyMutation.isPending || !companyForm.companyName.trim()}>
+                  {companyMutation.isPending ? "Saving..." : "Save Company Information"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
           <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Category Manager</h2>
           <CategorySection group="office" categories={categories} onAdd={openAdd} onEdit={openEdit} onDelete={deleteMutation.mutate} />
           <CategorySection group="personal" categories={categories} onAdd={openAdd} onEdit={openEdit} onDelete={deleteMutation.mutate} />

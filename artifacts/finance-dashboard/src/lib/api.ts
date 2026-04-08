@@ -1,7 +1,11 @@
 import {
+  createClientAccount,
   createEmployeeAccount,
+  deactivateClientAccount,
   deactivateEmployeeAccount,
+  listClientAccounts,
   listEmployeeAccounts,
+  updateClientAccount,
   updateEmployeeAccount,
 } from "@/auth/auth-service";
 import { requestJson } from "@/auth/http-client";
@@ -26,6 +30,19 @@ export interface Employee {
   payType: "monthly" | "hourly";
   hourlyRate?: number;
   status: "Active" | "Inactive";
+}
+
+export interface ClientAccount {
+  id: string;
+  name: string;
+  email: string;
+  phone?: string;
+  company?: string;
+  address?: string;
+  website?: string;
+  billingEmail?: string;
+  status: "Active" | "Inactive";
+  temporaryPassword?: string;
 }
 
 export interface Salary {
@@ -219,6 +236,69 @@ export interface PurchaseOrder {
   tasks: PurchaseOrderTask[];
 }
 
+export type PreApprovalStatus = "draft" | "submitted" | "changes_requested" | "approved";
+
+export interface PreApprovalTask {
+  id: string;
+  taskName: string;
+  description: string;
+  hours: number;
+  rate: number;
+  amount: number;
+}
+
+export interface PreApprovalComment {
+  id: string;
+  authorId?: string;
+  authorName: string;
+  authorRole: "admin" | "client";
+  message: string;
+  createdAt: string;
+}
+
+export interface PreApprovalPartyInfo {
+  companyName?: string;
+  address?: string;
+  phone?: string;
+  email?: string;
+  website?: string;
+}
+
+export interface PreApprovalProjectInfo {
+  workDescription?: string;
+  projectStartDate?: string;
+  projectCompletionDate?: string;
+  totalContractValue?: number;
+  retainagePercent?: number;
+  retainageAmount?: number;
+  previouslyBilledAmount?: number;
+}
+
+export interface PreApproval {
+  id: string;
+  title: string;
+  project: string;
+  clientId: string;
+  clientNameSnapshot: string;
+  date: string;
+  notes?: string;
+  companyInfo?: PreApprovalPartyInfo;
+  clientInfo?: PreApprovalPartyInfo;
+  projectInfo?: PreApprovalProjectInfo;
+  status: PreApprovalStatus;
+  submittedAt?: string;
+  approvedAt?: string;
+  receivedAt?: string;
+  receivedFundId?: string;
+  createdById?: string;
+  createdAt: string;
+  updatedAt: string;
+  totalHours: number;
+  totalAmount: number;
+  tasks: PreApprovalTask[];
+  comments: PreApprovalComment[];
+}
+
 interface CategoryInput {
   name: string;
   color: string;
@@ -302,6 +382,23 @@ interface CreatePurchaseOrderInput {
   vendor?: string;
   date: string;
   notes?: string;
+  tasks?: Array<{
+    taskName: string;
+    description?: string;
+    hours: number;
+    rate: number;
+  }>;
+}
+
+interface CreatePreApprovalInput {
+  title: string;
+  project: string;
+  clientId: string;
+  date: string;
+  notes?: string;
+  companyInfo?: PreApprovalPartyInfo;
+  clientInfo?: PreApprovalPartyInfo;
+  projectInfo?: PreApprovalProjectInfo;
   tasks?: Array<{
     taskName: string;
     description?: string;
@@ -438,6 +535,20 @@ function mapAuthUserToEmployee(user: AuthUser): Employee {
     salary: Number(user.salary ?? 0),
     payType: user.payType ?? ((user.hourlyRate ?? 0) > 0 ? "hourly" : "monthly"),
     hourlyRate: user.hourlyRate ?? undefined,
+    status: user.status === "inactive" ? "Inactive" : "Active",
+  };
+}
+
+function mapAuthUserToClient(user: AuthUser): ClientAccount {
+  return {
+    id: user.id,
+    name: user.name ?? user.email.split("@")[0],
+    email: user.email,
+    phone: user.phone ?? "",
+    company: user.department ?? "",
+    address: user.clientInfo?.address ?? "",
+    website: user.clientInfo?.website ?? "",
+    billingEmail: user.clientInfo?.email ?? user.email,
     status: user.status === "inactive" ? "Inactive" : "Active",
   };
 }
@@ -904,6 +1015,71 @@ export const api = {
   syncEmployeeAccounts: async (employees: AuthUser[]) => employees.filter((item) => item.role === "employee").map(mapAuthUserToEmployee),
   syncEmployeeAccount: async (employee: AuthUser) => mapAuthUserToEmployee(employee),
 
+  getClients: async () => {
+    const result = await listClientAccounts();
+    return result.clients
+      .filter((client) => client.role === "client")
+      .map(mapAuthUserToClient)
+      .sort((left, right) => left.name.localeCompare(right.name));
+  },
+
+  addClient: async (input: {
+    name: string;
+    email: string;
+    phone: string;
+    company?: string;
+    address?: string;
+    website?: string;
+    billingEmail?: string;
+    status?: "Active" | "Inactive";
+  }) => {
+    const result = await createClientAccount({
+      name: input.name,
+      email: input.email,
+      phone: input.phone,
+      company: input.company,
+      address: input.address,
+      website: input.website,
+      billingEmail: input.billingEmail,
+      status: input.status === "Inactive" ? "inactive" : "active",
+    });
+
+    return {
+      ...mapAuthUserToClient(result.user),
+      temporaryPassword: result.temporaryPassword,
+    };
+  },
+
+  updateClient: async (input: {
+    id: string;
+    name: string;
+    email: string;
+    phone: string;
+    company?: string;
+    address?: string;
+    website?: string;
+    billingEmail?: string;
+    status?: "Active" | "Inactive";
+  }) => {
+    const result = await updateClientAccount({
+      id: input.id,
+      name: input.name,
+      email: input.email,
+      phone: input.phone,
+      company: input.company,
+      address: input.address,
+      website: input.website,
+      billingEmail: input.billingEmail,
+      status: input.status === "Inactive" ? "inactive" : "active",
+    });
+
+    return mapAuthUserToClient(result.user);
+  },
+
+  deleteClient: async (id: string) => {
+    await deactivateClientAccount(id);
+  },
+
   addEmployee: async (input: AddEmployeeInput) => {
     const result = await createEmployeeAccount({
       name: input.name,
@@ -1240,6 +1416,40 @@ export const api = {
 
   payPurchaseOrderTask: async (input: { poId: string; taskId: string; actorName?: string }) =>
     (await businessPost<{ purchaseOrder: PurchaseOrder }>(`/purchase-orders/${input.poId}/tasks/${input.taskId}/pay`, {})).purchaseOrder,
+
+  getPreApprovals: async () =>
+    (await businessGet<{ preApprovals: PreApproval[] }>("/pre-approvals")).preApprovals,
+
+  getCompanySettings: async () =>
+    (await businessGet<{ companyInfo: PreApprovalPartyInfo }>("/company-settings")).companyInfo,
+
+  updateCompanySettings: async (input: PreApprovalPartyInfo) =>
+    (await businessPost<{ companyInfo: PreApprovalPartyInfo }>("/company-settings", input, "PATCH")).companyInfo,
+
+  createPreApproval: async (input: CreatePreApprovalInput) =>
+    (await businessPost<{ preApproval: PreApproval }>("/pre-approvals", input)).preApproval,
+
+  updatePreApproval: async (input: CreatePreApprovalInput & { id: string }) =>
+    (await businessPost<{ preApproval: PreApproval }>(`/pre-approvals/${input.id}`, input, "PATCH")).preApproval,
+
+  deletePreApproval: async (id: string) => {
+    await businessPost<void>(`/pre-approvals/${id}`, undefined, "DELETE");
+  },
+
+  submitPreApproval: async (id: string) =>
+    (await businessPost<{ preApproval: PreApproval }>(`/pre-approvals/${id}/submit`, {})).preApproval,
+
+  approvePreApproval: async (id: string) =>
+    (await businessPost<{ preApproval: PreApproval }>(`/pre-approvals/${id}/approve`, {})).preApproval,
+
+  receivePreApprovalFunds: async (id: string) =>
+    (await businessPost<{ preApproval: PreApproval }>(`/pre-approvals/${id}/receive-funds`, {})).preApproval,
+
+  requestPreApprovalChanges: async (id: string, message: string) =>
+    (await businessPost<{ preApproval: PreApproval }>(`/pre-approvals/${id}/request-changes`, { message })).preApproval,
+
+  commentOnPreApproval: async (id: string, message: string) =>
+    (await businessPost<{ preApproval: PreApproval }>(`/pre-approvals/${id}/comments`, { message })).preApproval,
 
   getTransactions: async () => (await businessGet<{ transactions: Transaction[] }>("/transactions")).transactions,
 

@@ -19,6 +19,11 @@ export const notificationTypeEnum = pgEnum("notification_type", [
   "purchase_order_created",
   "purchase_order_task_added",
   "purchase_order_task_paid",
+  "pre_approval_created",
+  "pre_approval_submitted",
+  "pre_approval_approved",
+  "pre_approval_changes_requested",
+  "pre_approval_commented",
   "fund_created",
 ]);
 

@@ -43,6 +43,27 @@
       "when": 1775371093168,
       "tag": "0005_cuddly_snowbird",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1775641099620,
+      "tag": "0006_common_golden_guardian",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1775641994706,
+      "tag": "0007_previous_alex_wilder",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1775649479732,
+      "tag": "0008_parallel_namorita",
+      "breakpoints": true
     }
   ]
 }

@@ -12,6 +12,7 @@ import {
   CreditCard,
   FileBarChart2,
   FolderKanban,
+  Handshake,
   History,
   LayoutDashboard,
   LogOut,
@@ -55,6 +56,7 @@ const adminGroups: AdminNavGroup[] = [
       { href: "/funds", label: "Funds", icon: Wallet },
       { href: "/project-budgets", label: "Projects", icon: FolderKanban },
       { href: "/purchase-orders", label: "PO", icon: BriefcaseBusiness },
+      { href: "/pre-approvals", label: "Pre Approval", icon: Handshake },
       { href: "/expenses", label: "Expenses", icon: Receipt },
     ],
   },
@@ -63,6 +65,7 @@ const adminGroups: AdminNavGroup[] = [
     label: "Workforce",
     items: [
       { href: "/employees", label: "Employees", icon: Users },
+      { href: "/clients", label: "Clients", icon: UserRound },
       { href: "/salary", label: "Salary", icon: CreditCard },
       { href: "/timesheets", label: "Timesheets", icon: Clock3 },
       { href: "/leave-management", label: "Leave Management", icon: CalendarRange },
@@ -89,6 +92,10 @@ const employeeNavItems: NavItem[] = [
   { href: "/employee/expenses", label: "My Expenses", icon: Receipt },
   { href: "/employee/salary-slips", label: "Salary Slips", icon: CreditCard },
   { href: "/employee/profile", label: "Profile", icon: UserRound },
+];
+
+const clientNavItems: NavItem[] = [
+  { href: "/client/pre-approvals", label: "Pre Approvals", icon: Handshake },
 ];
 
 function getInitials(email: string): string {
@@ -493,6 +500,27 @@ export function Sidebar() {
               </div>
             </div>
           )
+        ) : role === "client" ? (
+          <div className="flex flex-col gap-1">
+            {clientNavItems.map((item) => {
+              const active = isRouteActive(location, item.href);
+              return (
+                <Link key={item.href} href={item.href}>
+                  <div
+                    className={cn(
+                      "relative flex cursor-pointer items-center gap-3 rounded-md px-3 py-2 transition-colors",
+                      active
+                        ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+                        : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground",
+                    )}
+                  >
+                    <item.icon className="h-4 w-4 shrink-0" />
+                    {!sidebarCollapsed && <span>{item.label}</span>}
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
         ) : (
           <div className="flex flex-col gap-1">
             {employeeNavItems.map((item) => {

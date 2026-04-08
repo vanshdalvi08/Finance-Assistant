@@ -34,6 +34,7 @@ async function loadUser(userId: string): Promise<PublicUser | null> {
     payType: user.payType,
     hourlyRate: user.hourlyRate,
     profilePhotoUrl: user.profilePhotoUrl ?? null,
+    clientInfo: user.clientInfo ?? {},
     status: user.status,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
@@ -66,7 +67,7 @@ export async function requireAuth(request: Request, response: Response, next: Ne
   }
 }
 
-export function requireRole(...roles: Array<"admin" | "employee">) {
+export function requireRole(...roles: Array<"admin" | "employee" | "client">) {
   return (request: Request, response: Response, next: NextFunction) => {
     const role = request.auth?.user.role;
     if (!role || !roles.includes(role)) {

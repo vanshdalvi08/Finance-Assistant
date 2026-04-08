@@ -1,6 +1,6 @@
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "@workspace/db";
-import { passwordResetTokensTable, refreshSessionsTable, usersTable, type User } from "@workspace/db/schema";
+import { passwordResetTokensTable, refreshSessionsTable, usersTable, type ClientBillingInfo, type User } from "@workspace/db/schema";
 import { getAppUrl, getSmtpConfig, isProduction, optionalEnv } from "./env";
 import { generateRandomToken, generateTemporaryPassword, hashPassword, hashSha256, verifyPassword } from "./security";
 import { ACCESS_TOKEN_TTL, REFRESH_TOKEN_TTL, signAccessToken, signRefreshToken, verifyRefreshToken } from "./jwt";
@@ -14,7 +14,7 @@ export interface PublicUser {
   name: string;
   email: string;
   phone: string;
-  role: "admin" | "employee";
+  role: "admin" | "employee" | "client";
   employeeId: string | null;
   position: string | null;
   department: string | null;
@@ -22,6 +22,7 @@ export interface PublicUser {
   payType: "monthly" | "hourly";
   hourlyRate: number;
   profilePhotoUrl: string | null;
+  clientInfo: ClientBillingInfo;
   status: "active" | "inactive";
   createdAt: Date;
   updatedAt: Date;
@@ -59,6 +60,21 @@ export interface UpdateEmployeeInput {
   profilePhotoUrl?: string | null;
   department?: string | null;
   status?: "active" | "inactive";
+}
+
+export interface CreateClientInput {
+  name: string;
+  email: string;
+  phone: string;
+  company?: string | null;
+  address?: string | null;
+  website?: string | null;
+  billingEmail?: string | null;
+  status?: "active" | "inactive";
+}
+
+export interface UpdateClientInput extends CreateClientInput {
+  id: string;
 }
 
 export interface UpdateOwnProfileInput {
@@ -116,6 +132,7 @@ function publicUser(user: User): PublicUser {
     payType: user.payType,
     hourlyRate: user.hourlyRate,
     profilePhotoUrl: user.profilePhotoUrl ?? null,
+    clientInfo: user.clientInfo ?? {},
     status: user.status,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
@@ -350,6 +367,85 @@ export async function createEmployeeAccount(input: CreateEmployeeInput): Promise
   };
 }
 
+export async function createClientAccount(input: CreateClientInput): Promise<{ user: PublicUser; temporaryPassword: string; onboardingEmailSent: boolean }> {
+  const email = normalizeEmail(input.email);
+  const phone = normalizePhone(input.phone);
+  const temporaryPassword = generateTemporaryPassword();
+  const hashedPassword = await hashPassword(temporaryPassword);
+  const now = new Date();
+  const clientInfo: ClientBillingInfo = {
+    companyName: input.company?.trim() || input.name.trim(),
+    address: input.address?.trim() || "",
+    phone,
+    email: input.billingEmail?.trim() || email,
+    website: input.website?.trim() || "",
+  };
+
+  let user: User;
+  try {
+    const rows = await db
+      .insert(usersTable)
+      .values({
+        name: input.name.trim(),
+        email,
+        phone,
+        role: "client",
+        employeeId: null,
+        position: "Client",
+        department: input.company?.trim() || null,
+        salary: 0,
+        payType: "monthly",
+        hourlyRate: 0,
+        profilePhotoUrl: null,
+        clientInfo,
+        hashedPassword,
+        status: input.status ?? "active",
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
+    user = rows[0]!;
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      throw new Error("Client email or phone already exists");
+    }
+
+    throw error;
+  }
+
+  const portalUrl = getAppUrl();
+  const subject = "Your Yojak client portal is ready";
+  const text = [
+    `Hello ${user.name},`,
+    "",
+    "Your Yojak client portal account has been created.",
+    `Login email: ${user.email}`,
+    `Temporary password: ${temporaryPassword}`,
+    `Portal: ${portalUrl}`,
+    "",
+    "Please sign in and change your password when you first access the portal.",
+  ].join("\n");
+
+  const onboardingEmailSent = Boolean(getSmtpConfig());
+  if (onboardingEmailSent) {
+    runAuthSideEffect(
+      sendMail({
+        to: user.email,
+        subject,
+        text,
+        html: text.replace(/\n/g, "<br />"),
+      }),
+      `send client onboarding email to ${user.email}`,
+    );
+  }
+
+  return {
+    user: publicUser(user),
+    temporaryPassword,
+    onboardingEmailSent,
+  };
+}
+
 export async function updateEmployeeAccount(input: UpdateEmployeeInput): Promise<{ user: PublicUser }> {
   const id = input.id.trim();
   const email = normalizeEmail(input.email);
@@ -401,6 +497,54 @@ export async function updateEmployeeAccount(input: UpdateEmployeeInput): Promise
   return { user: publicUser(user) };
 }
 
+export async function updateClientAccount(input: UpdateClientInput): Promise<{ user: PublicUser }> {
+  const id = input.id.trim();
+  const email = normalizeEmail(input.email);
+  const phone = normalizePhone(input.phone);
+  const now = new Date();
+  const existing = await findUserById(id);
+
+  if (!existing || existing.role !== "client") {
+    throw new Error("Client not found");
+  }
+
+  let rows: User[];
+  try {
+    rows = await db
+      .update(usersTable)
+      .set({
+        name: input.name.trim(),
+        email,
+        phone,
+        department: input.company?.trim() || null,
+        clientInfo: {
+          companyName: input.company?.trim() || input.name.trim(),
+          address: input.address?.trim() || "",
+          phone,
+          email: input.billingEmail?.trim() || email,
+          website: input.website?.trim() || "",
+        },
+        status: input.status ?? "active",
+        updatedAt: now,
+      })
+      .where(and(eq(usersTable.id, id), eq(usersTable.role, "client")))
+      .returning();
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      throw new Error("Client email or phone already exists");
+    }
+
+    throw error;
+  }
+
+  const user = rows[0];
+  if (!user) {
+    throw new Error("Client not found");
+  }
+
+  return { user: publicUser(user) };
+}
+
 export async function deactivateEmployeeAccount(id: string): Promise<{ user: PublicUser }> {
   const rows = await db
     .delete(usersTable)
@@ -415,11 +559,35 @@ export async function deactivateEmployeeAccount(id: string): Promise<{ user: Pub
   return { user: publicUser(user) };
 }
 
+export async function deactivateClientAccount(id: string): Promise<{ user: PublicUser }> {
+  const rows = await db
+    .delete(usersTable)
+    .where(and(eq(usersTable.id, id.trim()), eq(usersTable.role, "client")))
+    .returning();
+
+  const user = rows[0];
+  if (!user) {
+    throw new Error("Client not found");
+  }
+
+  return { user: publicUser(user) };
+}
+
 export async function listEmployees() {
   const rows = await db
     .select()
     .from(usersTable)
     .where(eq(usersTable.role, "employee"))
+    .orderBy(desc(usersTable.createdAt));
+
+  return rows.map(publicUser);
+}
+
+export async function listClients() {
+  const rows = await db
+    .select()
+    .from(usersTable)
+    .where(eq(usersTable.role, "client"))
     .orderBy(desc(usersTable.createdAt));
 
   return rows.map(publicUser);

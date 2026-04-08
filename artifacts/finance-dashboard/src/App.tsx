@@ -8,7 +8,9 @@ import TransactionsPage from "@/pages/transactions";
 import EmployeesPage from "@/pages/employees";
 import SalaryPage from "@/pages/salary";
 import FundsPage from "@/pages/funds";
+import ClientsPage from "@/pages/clients";
 import PurchaseOrdersPage from "@/pages/purchase-orders";
+import PreApprovalsPage from "@/pages/pre-approvals";
 import ProjectBudgetsPage from "@/pages/project-budgets";
 import ExpensesPage from "@/pages/expenses";
 import SettingsPage from "@/pages/settings";
@@ -21,6 +23,7 @@ import EmployeeLeavesPage from "@/pages/employee/leaves";
 import EmployeeExpensesPage from "@/pages/employee/expenses";
 import EmployeeSalarySlipsPage from "@/pages/employee/salary-slips";
 import EmployeeProfilePage from "@/pages/employee/profile";
+import ClientPreApprovalsPage from "@/pages/client/pre-approvals";
 import NotFoundPage from "@/pages/not-found";
 import type { UserRole } from "@/auth/types";
 
@@ -37,7 +40,15 @@ function redirectForSession(isAuthenticated: boolean, role: UserRole | null) {
     return <Redirect to="/login" />;
   }
 
-  return <Redirect to={role === "employee" ? "/employee/timesheet" : "/"} />;
+  if (role === "employee") {
+    return <Redirect to="/employee/timesheet" />;
+  }
+
+  if (role === "client") {
+    return <Redirect to="/client/pre-approvals" />;
+  }
+
+  return <Redirect to="/" />;
 }
 
 function renderAdminRoute(
@@ -54,6 +65,14 @@ function renderEmployeeRoute(
   element: React.ReactNode,
 ) {
   return isAuthenticated && role === "employee" ? element : redirectForSession(isAuthenticated, role);
+}
+
+function renderClientRoute(
+  isAuthenticated: boolean,
+  role: UserRole | null,
+  element: React.ReactNode,
+) {
+  return isAuthenticated && role === "client" ? element : redirectForSession(isAuthenticated, role);
 }
 
 function LegacyRouter() {
@@ -89,8 +108,14 @@ function LegacyRouter() {
         <Route path="/funds">
           {renderAdminRoute(isAuthenticated, role, <FundsPage />)}
         </Route>
+        <Route path="/clients">
+          {renderAdminRoute(isAuthenticated, role, <ClientsPage />)}
+        </Route>
         <Route path="/purchase-orders">
           {renderAdminRoute(isAuthenticated, role, <PurchaseOrdersPage />)}
+        </Route>
+        <Route path="/pre-approvals">
+          {renderAdminRoute(isAuthenticated, role, <PreApprovalsPage />)}
         </Route>
         <Route path="/project-budgets">
           {renderAdminRoute(isAuthenticated, role, <ProjectBudgetsPage />)}
@@ -118,7 +143,9 @@ function LegacyRouter() {
         <Route path="/admin/employees">{renderAdminRoute(isAuthenticated, role, <Redirect to="/employees" />)}</Route>
         <Route path="/admin/salary">{renderAdminRoute(isAuthenticated, role, <Redirect to="/salary" />)}</Route>
         <Route path="/admin/funds">{renderAdminRoute(isAuthenticated, role, <Redirect to="/funds" />)}</Route>
+        <Route path="/admin/clients">{renderAdminRoute(isAuthenticated, role, <Redirect to="/clients" />)}</Route>
         <Route path="/admin/purchase-orders">{renderAdminRoute(isAuthenticated, role, <Redirect to="/purchase-orders" />)}</Route>
+        <Route path="/admin/pre-approvals">{renderAdminRoute(isAuthenticated, role, <Redirect to="/pre-approvals" />)}</Route>
         <Route path="/admin/project-budgets">{renderAdminRoute(isAuthenticated, role, <Redirect to="/project-budgets" />)}</Route>
         <Route path="/admin/expenses">{renderAdminRoute(isAuthenticated, role, <Redirect to="/expenses" />)}</Route>
         <Route path="/admin/settings">{renderAdminRoute(isAuthenticated, role, <Redirect to="/settings" />)}</Route>
@@ -143,6 +170,12 @@ function LegacyRouter() {
         </Route>
         <Route path="/employee/profile">
           {renderEmployeeRoute(isAuthenticated, role, <EmployeeProfilePage />)}
+        </Route>
+        <Route path="/client/dashboard">
+          {renderClientRoute(isAuthenticated, role, <Redirect to="/client/pre-approvals" />)}
+        </Route>
+        <Route path="/client/pre-approvals">
+          {renderClientRoute(isAuthenticated, role, <ClientPreApprovalsPage />)}
         </Route>
         <Route>
           {isAuthenticated ? <NotFoundPage /> : <Redirect to="/login" />}
