@@ -28,6 +28,7 @@ export interface NotificationActor {
   id?: string;
   name: string;
   role: ActorRole;
+  tenantId?: string;
 }
 
 export interface NotificationPayload {
@@ -92,7 +93,7 @@ function toNotificationItem(row: Notification): NotificationItem {
   };
 }
 
-async function getUsersByIds(userIds: string[]): Promise<Map<string, NotificationRecipient>> {
+async function getUsersByIds(userIds: string[], tenantId?: string): Promise<Map<string, NotificationRecipient>> {
   if (userIds.length === 0) {
     return new Map();
   }
@@ -104,13 +105,17 @@ async function getUsersByIds(userIds: string[]): Promise<Map<string, Notificatio
       email: usersTable.email,
     })
     .from(usersTable)
-    .where(inArray(usersTable.id, Array.from(new Set(userIds))));
+    .where(
+      tenantId
+        ? and(inArray(usersTable.id, Array.from(new Set(userIds))), eq(usersTable.tenantId, tenantId.trim()))
+        : inArray(usersTable.id, Array.from(new Set(userIds))),
+    );
 
   return new Map(rows.map((row) => [row.id, row]));
 }
 
 async function insertNotifications(recipientIds: string[], actor: NotificationActor, payload: NotificationPayload) {
-  const recipients = await getUsersByIds(recipientIds);
+  const recipients = await getUsersByIds(recipientIds, actor.tenantId);
   if (recipients.size === 0) {
     return [] as Array<{ id: string; recipientId: string; title: string; body: string; link: string | null }>;
   }
@@ -211,7 +216,11 @@ export async function notifyAdmins(actor: NotificationActor, payload: Notificati
       id: usersTable.id,
     })
     .from(usersTable)
-    .where(and(eq(usersTable.role, "admin"), eq(usersTable.status, "active")));
+    .where(
+      actor.tenantId
+        ? and(eq(usersTable.role, "admin"), eq(usersTable.status, "active"), eq(usersTable.tenantId, actor.tenantId.trim()))
+        : and(eq(usersTable.role, "admin"), eq(usersTable.status, "active")),
+    );
 
   const recipients = rows.map((row) => row.id).filter((id) => !excludeUserIds.includes(id));
   return notifyUsersByIds(recipients, actor, payload);

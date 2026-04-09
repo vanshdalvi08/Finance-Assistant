@@ -2,6 +2,7 @@ import { createInsertSchema } from "drizzle-zod";
 import { relations, sql } from "drizzle-orm";
 import { boolean, index, integer, jsonb, pgEnum, pgTable, real, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { usersTable } from "./users";
+import { tenantsTable } from "./tenants";
 
 export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type ApprovalStatus = "draft" | "submitted" | "approved" | "rejected";
@@ -103,7 +104,13 @@ export interface PreApprovalProjectInfoRecord {
   previouslyBilledAmount?: number;
 }
 
-export interface CompanySettingsRecord extends PreApprovalPartyInfoRecord {}
+export interface CompanySettingsRecord extends PreApprovalPartyInfoRecord {
+  leavePolicy?: {
+    annualLimit: number;
+    updatedAt: string;
+    updatedBy?: string;
+  };
+}
 
 export const approvalStatusEnum = pgEnum("approval_status", ["draft", "submitted", "approved", "rejected"]);
 export const salaryStatusEnum = pgEnum("salary_status", ["pending", "paid"]);
@@ -138,17 +145,25 @@ export const businessStateTable = pgTable("business_state", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const companySettingsTable = pgTable("company_settings", {
-  id: text("id").primaryKey().default("company"),
-  data: jsonb("data").$type<CompanySettingsRecord>().notNull().default({}),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const companySettingsTable = pgTable(
+  "company_settings",
+  {
+    id: text("id").primaryKey(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenantsTable.id, { onDelete: "cascade" }),
+    data: jsonb("data").$type<CompanySettingsRecord>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    tenantUnique: uniqueIndex("company_settings_tenant_unique").on(table.tenantId),
+  }),
+);
 
 export const fundsTable = pgTable(
   "funds",
   {
     id: text("id").primaryKey(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenantsTable.id, { onDelete: "cascade" }),
     source: text("source").notNull(),
     amount: integer("amount").notNull().default(0),
     date: timestamp("date", { withTimezone: true }).notNull(),
@@ -157,6 +172,7 @@ export const fundsTable = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    tenantIndex: index("funds_tenant_index").on(table.tenantId),
     sourceIndex: index("funds_source_index").on(table.source),
     dateIndex: index("funds_date_index").on(table.date),
   }),
@@ -194,6 +210,7 @@ export const expensesTable = pgTable(
   "expenses",
   {
     id: text("id").primaryKey(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenantsTable.id, { onDelete: "cascade" }),
     employeeId: uuid("employee_id").references(() => usersTable.id, { onDelete: "set null" }),
     employeeNameSnapshot: text("employee_name_snapshot"),
     project: text("project"),
@@ -212,6 +229,7 @@ export const expensesTable = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    tenantIndex: index("expenses_tenant_index").on(table.tenantId),
     employeeIndex: index("expenses_employee_index").on(table.employeeId),
     statusIndex: index("expenses_status_index").on(table.status),
     dateIndex: index("expenses_date_index").on(table.date),
@@ -230,6 +248,7 @@ export const salariesTable = pgTable(
   "salaries",
   {
     id: text("id").primaryKey(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenantsTable.id, { onDelete: "cascade" }),
     employeeId: uuid("employee_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
     employeeNameSnapshot: text("employee_name_snapshot"),
     amount: integer("amount").notNull().default(0),
@@ -246,6 +265,7 @@ export const salariesTable = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    tenantIndex: index("salaries_tenant_index").on(table.tenantId),
     employeeIndex: index("salaries_employee_index").on(table.employeeId),
     statusIndex: index("salaries_status_index").on(table.status),
     dateIndex: index("salaries_date_index").on(table.date),
@@ -294,6 +314,7 @@ export const projectBudgetsTable = pgTable(
   "project_budgets",
   {
     id: text("id").primaryKey(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenantsTable.id, { onDelete: "cascade" }),
     project: text("project").notNull(),
     totalBudget: integer("total_budget").notNull().default(0),
     client: text("client"),
@@ -303,7 +324,8 @@ export const projectBudgetsTable = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    projectUnique: uniqueIndex("project_budgets_project_unique").on(table.project),
+    tenantIndex: index("project_budgets_tenant_index").on(table.tenantId),
+    projectUnique: uniqueIndex("project_budgets_tenant_project_unique").on(table.tenantId, table.project),
     projectIndex: index("project_budgets_project_index").on(table.project),
     updatedIndex: index("project_budgets_updated_index").on(table.updatedAt),
   }),
@@ -319,6 +341,7 @@ export const purchaseOrdersTable = pgTable(
   "purchase_orders",
   {
     id: text("id").primaryKey(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenantsTable.id, { onDelete: "cascade" }),
     title: text("title").notNull(),
     totalAmount: integer("total_amount").notNull().default(0),
     usedAmount: integer("used_amount").notNull().default(0),
@@ -331,6 +354,7 @@ export const purchaseOrdersTable = pgTable(
     tasks: jsonb("tasks").$type<PurchaseOrderTaskRecord[]>().notNull().default(sql`'[]'::jsonb`),
   },
   (table) => ({
+    tenantIndex: index("purchase_orders_tenant_index").on(table.tenantId),
     titleIndex: index("purchase_orders_title_index").on(table.title),
     vendorIndex: index("purchase_orders_vendor_index").on(table.vendor),
     dateIndex: index("purchase_orders_date_index").on(table.date),
@@ -348,6 +372,7 @@ export const preApprovalsTable = pgTable(
   "pre_approvals",
   {
     id: text("id").primaryKey(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenantsTable.id, { onDelete: "cascade" }),
     title: text("title").notNull(),
     project: text("project").notNull(),
     clientId: uuid("client_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
@@ -369,6 +394,7 @@ export const preApprovalsTable = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    tenantIndex: index("pre_approvals_tenant_index").on(table.tenantId),
     clientIndex: index("pre_approvals_client_index").on(table.clientId),
     statusIndex: index("pre_approvals_status_index").on(table.status),
     projectIndex: index("pre_approvals_project_index").on(table.project),
@@ -387,6 +413,7 @@ export const auditTrailTable = pgTable(
   "audit_trail",
   {
     id: text("id").primaryKey(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenantsTable.id, { onDelete: "cascade" }),
     actorName: text("actor_name").notNull(),
     actorRole: actorRoleEnum("actor_role").notNull(),
     action: text("action").notNull(),
@@ -396,6 +423,7 @@ export const auditTrailTable = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    tenantIndex: index("audit_trail_tenant_index").on(table.tenantId),
     actorIndex: index("audit_trail_actor_index").on(table.actorName),
     entityIndex: index("audit_trail_entity_index").on(table.entityType, table.entityId),
     createdIndex: index("audit_trail_created_index").on(table.createdAt),
@@ -411,6 +439,7 @@ export const projectsTable = pgTable(
   "projects",
   {
     id: text("id").primaryKey(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenantsTable.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     client: text("client"),
     note: text("note").notNull().default(""),
@@ -420,6 +449,7 @@ export const projectsTable = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    tenantIndex: index("projects_tenant_index").on(table.tenantId),
     nameIndex: index("projects_name_index").on(table.name),
     clientIndex: index("projects_client_index").on(table.client),
     statusIndex: index("projects_status_index").on(table.status),
@@ -437,6 +467,7 @@ export const projectTasksTable = pgTable(
   "project_tasks",
   {
     id: text("id").primaryKey(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenantsTable.id, { onDelete: "cascade" }),
     projectId: text("project_id").notNull().references(() => projectsTable.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     description: text("description").notNull().default(""),
@@ -448,6 +479,7 @@ export const projectTasksTable = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    tenantIndex: index("project_tasks_tenant_index").on(table.tenantId),
     projectIndex: index("project_tasks_project_index").on(table.projectId),
     nameIndex: index("project_tasks_name_index").on(table.name),
     statusIndex: index("project_tasks_status_index").on(table.status),

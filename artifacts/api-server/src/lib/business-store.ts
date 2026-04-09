@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { db, usersTable } from "@workspace/db";
-import { asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import {
   auditTrailTable,
   businessStateTable,
@@ -26,6 +26,7 @@ import {
   type Timesheet as DbTimesheet,
   type TimesheetLine as DbTimesheetLine,
 } from "@workspace/db/schema";
+import { DEFAULT_TENANT_ID } from "./tenants";
 
 export type ApprovalStatus = "draft" | "submitted" | "approved" | "rejected";
 export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
@@ -35,6 +36,7 @@ export type LeaveRequestKind = "leave" | "holiday";
 
 export interface FundRecord {
   id: string;
+  tenantId: string;
   source: string;
   amount: number;
   date: string;
@@ -54,6 +56,7 @@ export interface ExpenseCategoryRecord {
 
 export interface ExpenseRecord {
   id: string;
+  tenantId: string;
   employeeId?: string;
   employeeNameSnapshot?: string;
   project?: string;
@@ -74,6 +77,7 @@ export interface ExpenseRecord {
 
 export interface SalaryRecord {
   id: string;
+  tenantId: string;
   employeeId: string;
   employeeNameSnapshot?: string;
   amount: number;
@@ -125,6 +129,7 @@ export interface ProjectBudgetTask {
 
 export interface ProjectBudget {
   id: string;
+  tenantId: string;
   project: string;
   totalBudget: number;
   client?: string;
@@ -147,6 +152,7 @@ export interface PurchaseOrderTask {
 
 export interface PurchaseOrder {
   id: string;
+  tenantId: string;
   title: string;
   totalAmount: number;
   usedAmount: number;
@@ -161,6 +167,7 @@ export interface PurchaseOrder {
 
 export interface HolidayRecord {
   id: string;
+  tenantId: string;
   date: string;
   name: string;
   createdAt: string;
@@ -169,6 +176,7 @@ export interface HolidayRecord {
 
 export interface LeaveRequestRecord {
   id: string;
+  tenantId: string;
   employeeId: string;
   employeeNameSnapshot: string;
   startDate: string;
@@ -191,6 +199,7 @@ export interface LeavePolicyRecord {
 
 export interface AuditTrailEntry {
   id: string;
+  tenantId?: string;
   actorName: string;
   actorRole: ActorRole;
   action: string;
@@ -229,6 +238,7 @@ type BusinessStateData = Partial<BusinessStore>;
 
 export interface UserProfile {
   id: string;
+  tenantId?: string;
   name: string;
   email: string;
   role: "admin" | "employee" | "client";
@@ -394,6 +404,7 @@ function stripNormalizedStore(store: BusinessStore): BusinessStateData {
 function fundFromRow(row: DbFund): FundRecord {
   return {
     id: row.id,
+    tenantId: String((row as DbFund & { tenantId?: string }).tenantId ?? DEFAULT_TENANT_ID),
     source: row.source.trim(),
     amount: Math.abs(Number(row.amount ?? 0)),
     date: toIso(row.date),
@@ -406,6 +417,7 @@ function fundFromRow(row: DbFund): FundRecord {
 function fundToRow(fund: FundRecord) {
   return {
     id: fund.id,
+    tenantId: fund.tenantId?.trim() || DEFAULT_TENANT_ID,
     source: fund.source.trim(),
     amount: Math.abs(Number(fund.amount ?? 0)),
     date: toDate(fund.date),
@@ -440,9 +452,14 @@ function categoryToRow(category: ExpenseCategoryRecord) {
 function expenseFromRow(row: DbExpense): ExpenseRecord {
   const attachmentPath =
     "attachmentPath" in row && typeof row.attachmentPath === "string" ? row.attachmentPath : null;
+  const tenantId =
+    "tenantId" in row && typeof (row as { tenantId?: unknown }).tenantId === "string"
+      ? String((row as { tenantId?: string }).tenantId ?? DEFAULT_TENANT_ID)
+      : DEFAULT_TENANT_ID;
 
   return {
     id: row.id,
+    tenantId,
     employeeId: row.employeeId ?? undefined,
     employeeNameSnapshot: row.employeeNameSnapshot?.trim() || undefined,
     project: row.project?.trim() || undefined,
@@ -468,6 +485,7 @@ function expenseFromRow(row: DbExpense): ExpenseRecord {
 function expenseToRow(expense: ExpenseRecord) {
   return {
     id: expense.id,
+    tenantId: expense.tenantId?.trim() || DEFAULT_TENANT_ID,
     employeeId: expense.employeeId ?? null,
     employeeNameSnapshot: expense.employeeNameSnapshot?.trim() || null,
     project: expense.project?.trim() || null,
@@ -490,6 +508,7 @@ function expenseToRow(expense: ExpenseRecord) {
 function salaryFromRow(row: DbSalary): SalaryRecord {
   return {
     id: row.id,
+    tenantId: String((row as DbSalary & { tenantId?: string }).tenantId ?? DEFAULT_TENANT_ID),
     employeeId: row.employeeId,
     employeeNameSnapshot: row.employeeNameSnapshot?.trim() || undefined,
     amount: Math.abs(Number(row.amount ?? 0)),
@@ -510,6 +529,7 @@ function salaryFromRow(row: DbSalary): SalaryRecord {
 function salaryToRow(salary: SalaryRecord) {
   return {
     id: salary.id,
+    tenantId: salary.tenantId?.trim() || DEFAULT_TENANT_ID,
     employeeId: salary.employeeId,
     employeeNameSnapshot: salary.employeeNameSnapshot?.trim() || null,
     amount: Math.abs(Number(salary.amount ?? 0)),
@@ -530,6 +550,7 @@ function salaryToRow(salary: SalaryRecord) {
 function purchaseOrderFromRow(row: DbPurchaseOrder): PurchaseOrder {
   return {
     id: row.id,
+    tenantId: String((row as DbPurchaseOrder & { tenantId?: string }).tenantId ?? DEFAULT_TENANT_ID),
     title: row.title.trim(),
     totalAmount: Math.abs(Number(row.totalAmount ?? 0)),
     usedAmount: Math.abs(Number(row.usedAmount ?? 0)),
@@ -557,6 +578,7 @@ function purchaseOrderFromRow(row: DbPurchaseOrder): PurchaseOrder {
 function purchaseOrderToRow(order: PurchaseOrder) {
   return {
     id: order.id,
+    tenantId: order.tenantId?.trim() || DEFAULT_TENANT_ID,
     title: order.title.trim(),
     totalAmount: Math.abs(Number(order.totalAmount ?? 0)),
     usedAmount: Math.abs(Number(order.usedAmount ?? 0)),
@@ -582,6 +604,7 @@ function purchaseOrderToRow(order: PurchaseOrder) {
 function auditEntryFromRow(row: DbAuditTrailEntry): AuditTrailEntry {
   return {
     id: row.id,
+    tenantId: row.tenantId ?? DEFAULT_TENANT_ID,
     actorName: row.actorName.trim(),
     actorRole:
       row.actorRole === "employee" || row.actorRole === "client" || row.actorRole === "system"
@@ -611,6 +634,7 @@ function auditEntryFromRow(row: DbAuditTrailEntry): AuditTrailEntry {
 function auditEntryToRow(entry: AuditTrailEntry) {
   return {
     id: entry.id,
+    tenantId: entry.tenantId?.trim() || DEFAULT_TENANT_ID,
     actorName: entry.actorName.trim(),
     actorRole: entry.actorRole,
     action: entry.action,
@@ -624,6 +648,7 @@ function auditEntryToRow(entry: AuditTrailEntry) {
 function projectBudgetFromRow(row: DbProjectBudget): ProjectBudget {
   return {
     id: row.id,
+    tenantId: String((row as DbProjectBudget & { tenantId?: string }).tenantId ?? DEFAULT_TENANT_ID),
     project: row.project,
     totalBudget: Number(row.totalBudget ?? 0),
     client: row.client?.trim() || undefined,
@@ -652,8 +677,10 @@ function projectBudgetFromNormalizedRow(
   tasks: DbProjectTask[],
   legacyBudget?: DbProjectBudget | null,
 ): ProjectBudget {
+  const legacyTenantId = String((legacyBudget as DbProjectBudget & { tenantId?: string } | null | undefined)?.tenantId ?? DEFAULT_TENANT_ID);
   return {
     id: row.id,
+    tenantId: String((row as DbProject & { tenantId?: string }).tenantId ?? legacyTenantId ?? DEFAULT_TENANT_ID),
     project: row.name,
     totalBudget: Number(legacyBudget?.totalBudget ?? 0),
     client: row.client?.trim() || legacyBudget?.client?.trim() || undefined,
@@ -770,6 +797,7 @@ function timesheetFromNormalizedRow(
 function projectBudgetToRow(budget: ProjectBudget) {
   return {
     id: budget.id,
+    tenantId: budget.tenantId?.trim() || DEFAULT_TENANT_ID,
     project: budget.project.trim(),
     totalBudget: Math.abs(Number(budget.totalBudget ?? 0)),
     client: budget.client?.trim() || null,
@@ -813,6 +841,7 @@ function timesheetToRow(entry: TimesheetEntry) {
 function projectBudgetToNormalizedRow(budget: ProjectBudget, createdById: string | null) {
   return {
     id: budget.id,
+    tenantId: budget.tenantId?.trim() || DEFAULT_TENANT_ID,
     name: budget.project.trim(),
     client: budget.client?.trim() || null,
     note: budget.note?.trim() || "",
@@ -826,6 +855,7 @@ function projectBudgetToNormalizedRow(budget: ProjectBudget, createdById: string
 function projectTasksToRows(budget: ProjectBudget, createdById: string | null) {
   return (budget.tasks ?? []).map((task, index) => ({
     id: task.id ?? createId("task"),
+    tenantId: budget.tenantId?.trim() || DEFAULT_TENANT_ID,
     projectId: budget.id,
     name: task.name.trim(),
     description: task.description?.trim() || "",
@@ -990,6 +1020,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
   return {
     funds: Array.isArray(input.funds) ? input.funds.map((fund) => ({
       id: fund.id ?? createId("fund"),
+      tenantId: String((fund as FundRecord).tenantId ?? DEFAULT_TENANT_ID).trim() || DEFAULT_TENANT_ID,
       source: String(fund.source ?? "").trim(),
       amount: Math.abs(Number(fund.amount ?? 0)),
       date: normalizeDate(String(fund.date ?? nowIso())),
@@ -1007,6 +1038,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
     })) : defaults.categories,
     expenses: Array.isArray(input.expenses) ? input.expenses.map((expense) => ({
       id: expense.id ?? createId("exp"),
+      tenantId: String((expense as ExpenseRecord).tenantId ?? DEFAULT_TENANT_ID).trim() || DEFAULT_TENANT_ID,
       employeeId: expense.employeeId?.trim() || undefined,
       employeeNameSnapshot: expense.employeeNameSnapshot?.trim() || undefined,
       project: expense.project?.trim() || undefined,
@@ -1026,6 +1058,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
     })) : [],
     salaries: Array.isArray(input.salaries) ? input.salaries.map((salary) => ({
       id: salary.id ?? createId("sal"),
+      tenantId: String((salary as SalaryRecord).tenantId ?? DEFAULT_TENANT_ID).trim() || DEFAULT_TENANT_ID,
       employeeId: String(salary.employeeId ?? "").trim(),
       employeeNameSnapshot: salary.employeeNameSnapshot?.trim() || undefined,
       amount: Math.abs(Number(salary.amount ?? 0)),
@@ -1067,6 +1100,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
     })) : [],
     projectBudgets: Array.isArray(input.projectBudgets) ? input.projectBudgets.map((budget) => ({
       id: budget.id ?? createId("pb"),
+      tenantId: String((budget as ProjectBudget).tenantId ?? DEFAULT_TENANT_ID).trim() || DEFAULT_TENANT_ID,
       project: String(budget.project ?? "").trim(),
       totalBudget: Math.abs(Number(budget.totalBudget ?? 0)),
       client: budget.client?.trim() || undefined,
@@ -1083,6 +1117,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
     })) : [],
     purchaseOrders: Array.isArray(input.purchaseOrders) ? input.purchaseOrders.map((order) => ({
       id: order.id ?? createId("po"),
+      tenantId: String((order as PurchaseOrder).tenantId ?? DEFAULT_TENANT_ID).trim() || DEFAULT_TENANT_ID,
       title: String(order.title ?? "").trim(),
       totalAmount: Math.abs(Number(order.totalAmount ?? 0)),
       usedAmount: Math.abs(Number(order.usedAmount ?? 0)),
@@ -1105,6 +1140,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
     })) : [],
     holidays: Array.isArray(input.holidays) ? input.holidays.map((holiday) => ({
       id: holiday.id ?? createId("hol"),
+      tenantId: String((holiday as HolidayRecord).tenantId ?? DEFAULT_TENANT_ID).trim() || DEFAULT_TENANT_ID,
       date: normalizeDate(String(holiday.date ?? nowIso())),
       name: String(holiday.name ?? "").trim() || "Holiday",
       createdAt: normalizeDate(String(holiday.createdAt ?? nowIso())),
@@ -1112,6 +1148,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
     })) : [],
     leaveRequests: Array.isArray(input.leaveRequests) ? input.leaveRequests.map((request) => ({
       id: request.id ?? createId("leave"),
+      tenantId: String((request as LeaveRequestRecord).tenantId ?? DEFAULT_TENANT_ID).trim() || DEFAULT_TENANT_ID,
       employeeId: String(request.employeeId ?? "").trim(),
       employeeNameSnapshot: String(request.employeeNameSnapshot ?? "").trim(),
       startDate: normalizeDate(String(request.startDate ?? nowIso())),
@@ -1594,6 +1631,7 @@ function createAuditEntry(input: Omit<AuditTrailEntry, "id" | "createdAt">): Aud
   return {
     id: createId("audit"),
     createdAt: nowIso(),
+    tenantId: input.tenantId?.trim() || DEFAULT_TENANT_ID,
     ...input,
   };
 }
@@ -1927,6 +1965,7 @@ export async function reviewTimesheetFast(input: {
       const rate = effectiveHourlyRate(input.employee);
       salary = {
         id: existingPayroll?.id ?? createId("sal"),
+        tenantId: input.employee.tenantId ?? DEFAULT_TENANT_ID,
         employeeId: input.employee.id,
         employeeNameSnapshot: input.employee.name,
         amount: Math.round(hours * rate),
@@ -1992,10 +2031,11 @@ export function pushAuditEvent(store: BusinessStore, input: Omit<AuditTrailEntry
   };
 }
 
-export async function loadEmployeeProfile(employeeId: string): Promise<UserProfile | null> {
+export async function loadEmployeeProfile(employeeId: string, tenantId?: string): Promise<UserProfile | null> {
   const rows = await db
     .select({
       id: usersTable.id,
+      tenantId: usersTable.tenantId,
       name: usersTable.name,
       email: usersTable.email,
       role: usersTable.role,
@@ -2008,7 +2048,7 @@ export async function loadEmployeeProfile(employeeId: string): Promise<UserProfi
       status: usersTable.status,
     })
     .from(usersTable)
-    .where(eq(usersTable.id, employeeId.trim()))
+    .where(tenantId ? and(eq(usersTable.id, employeeId.trim()), eq(usersTable.tenantId, tenantId.trim())) : eq(usersTable.id, employeeId.trim()))
     .limit(1);
 
   const user = rows[0];
@@ -2018,6 +2058,7 @@ export async function loadEmployeeProfile(employeeId: string): Promise<UserProfi
 
   return {
     id: user.id,
+    tenantId: String(user.tenantId ?? DEFAULT_TENANT_ID),
     name: user.name,
     email: user.email,
     role: user.role,
@@ -2031,10 +2072,11 @@ export async function loadEmployeeProfile(employeeId: string): Promise<UserProfi
   };
 }
 
-export async function loadEmployees() {
+export async function loadEmployees(tenantId?: string) {
   const rows = await db
     .select({
       id: usersTable.id,
+      tenantId: usersTable.tenantId,
       name: usersTable.name,
       email: usersTable.email,
       role: usersTable.role,
@@ -2047,10 +2089,11 @@ export async function loadEmployees() {
       status: usersTable.status,
     })
     .from(usersTable)
-    .where(eq(usersTable.role, "employee"));
+    .where(tenantId ? and(eq(usersTable.role, "employee"), eq(usersTable.tenantId, tenantId.trim())) : eq(usersTable.role, "employee"));
 
   return rows.map((user) => ({
     id: user.id,
+    tenantId: String(user.tenantId ?? DEFAULT_TENANT_ID),
     name: user.name,
     email: user.email,
     role: user.role,

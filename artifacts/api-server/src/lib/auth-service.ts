@@ -1,6 +1,7 @@
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "@workspace/db";
 import { passwordResetTokensTable, refreshSessionsTable, usersTable, type ClientBillingInfo, type User } from "@workspace/db/schema";
+import { DEFAULT_TENANT_ID } from "./tenants";
 import { getAppUrl, getSmtpConfig, isProduction, optionalEnv } from "./env";
 import { generateRandomToken, generateTemporaryPassword, hashPassword, hashSha256, verifyPassword } from "./security";
 import { ACCESS_TOKEN_TTL, REFRESH_TOKEN_TTL, signAccessToken, signRefreshToken, verifyRefreshToken } from "./jwt";
@@ -11,6 +12,7 @@ import { uploadProfilePhotoDataUrl } from "./storage";
 
 export interface PublicUser {
   id: string;
+  tenantId: string;
   name: string;
   email: string;
   phone: string;
@@ -36,6 +38,7 @@ export interface LoginResult {
 }
 
 export interface CreateEmployeeInput {
+  tenantId?: string;
   name: string;
   email: string;
   phone: string;
@@ -50,6 +53,7 @@ export interface CreateEmployeeInput {
 
 export interface UpdateEmployeeInput {
   id: string;
+  tenantId?: string;
   name: string;
   email: string;
   phone: string;
@@ -63,6 +67,7 @@ export interface UpdateEmployeeInput {
 }
 
 export interface CreateClientInput {
+  tenantId?: string;
   name: string;
   email: string;
   phone: string;
@@ -121,6 +126,7 @@ async function resolveProfilePhotoUrl(profilePhotoUrl: string | null | undefined
 function publicUser(user: User): PublicUser {
   return {
     id: user.id,
+    tenantId: user.tenantId,
     name: user.name,
     email: user.email,
     phone: user.phone,
@@ -144,21 +150,33 @@ function isUniqueViolation(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && (error as { code?: string }).code === "23505";
 }
 
-async function findUserByEmail(email: string): Promise<User | null> {
-  const rows = await db.select().from(usersTable).where(eq(usersTable.email, normalizeEmail(email))).limit(1);
+async function findUserByEmail(email: string, tenantId?: string): Promise<User | null> {
+  const rows = await db
+    .select()
+    .from(usersTable)
+    .where(
+      tenantId
+        ? and(eq(usersTable.email, normalizeEmail(email)), eq(usersTable.tenantId, tenantId.trim()))
+        : eq(usersTable.email, normalizeEmail(email)),
+    )
+    .limit(1);
   return rows[0] ?? null;
 }
 
-async function findUserById(userId: string): Promise<User | null> {
-  const rows = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+async function findUserById(userId: string, tenantId?: string): Promise<User | null> {
+  const rows = await db
+    .select()
+    .from(usersTable)
+    .where(tenantId ? and(eq(usersTable.id, userId), eq(usersTable.tenantId, tenantId.trim())) : eq(usersTable.id, userId))
+    .limit(1);
   return rows[0] ?? null;
 }
 
-async function getNextEmployeeId(): Promise<string> {
+async function getNextEmployeeId(tenantId: string): Promise<string> {
   const rows = await db
     .select({ employeeId: usersTable.employeeId })
     .from(usersTable)
-    .where(eq(usersTable.role, "employee"))
+    .where(and(eq(usersTable.role, "employee"), eq(usersTable.tenantId, tenantId.trim())))
     .orderBy(desc(usersTable.createdAt));
 
   const highest = rows.reduce((max, row) => {
@@ -235,6 +253,7 @@ export async function loginWithPassword(email: string, password: string): Promis
   const session = await createRefreshSession(user.id);
   const accessToken = signAccessToken({
     sub: user.id,
+    tenantId: user.tenantId,
     role: user.role,
     email: user.email,
     name: user.name,
@@ -269,6 +288,7 @@ export async function refreshLogin(refreshToken: string): Promise<LoginResult> {
   const nextSession = await createRefreshSession(user.id);
   const accessToken = signAccessToken({
     sub: user.id,
+    tenantId: user.tenantId,
     role: user.role,
     email: user.email,
     name: user.name,
@@ -298,8 +318,9 @@ export async function logoutRefreshToken(refreshToken: string): Promise<void> {
 export async function createEmployeeAccount(input: CreateEmployeeInput): Promise<{ user: PublicUser; temporaryPassword: string; onboardingEmailSent: boolean }> {
   const email = normalizeEmail(input.email);
   const phone = normalizePhone(input.phone);
+  const tenantId = input.tenantId?.trim() || DEFAULT_TENANT_ID;
   const temporaryPassword = generateTemporaryPassword();
-  const employeeId = await getNextEmployeeId();
+  const employeeId = await getNextEmployeeId(tenantId);
   const hashedPassword = await hashPassword(temporaryPassword);
   const now = new Date();
   const profilePhotoUrl = await resolveProfilePhotoUrl(input.profilePhotoUrl, `employees/${employeeId}`);
@@ -309,6 +330,7 @@ export async function createEmployeeAccount(input: CreateEmployeeInput): Promise
     const rows = await db
       .insert(usersTable)
       .values({
+        tenantId,
         name: input.name.trim(),
         email,
         phone,
@@ -370,6 +392,7 @@ export async function createEmployeeAccount(input: CreateEmployeeInput): Promise
 export async function createClientAccount(input: CreateClientInput): Promise<{ user: PublicUser; temporaryPassword: string; onboardingEmailSent: boolean }> {
   const email = normalizeEmail(input.email);
   const phone = normalizePhone(input.phone);
+  const tenantId = input.tenantId?.trim() || DEFAULT_TENANT_ID;
   const temporaryPassword = generateTemporaryPassword();
   const hashedPassword = await hashPassword(temporaryPassword);
   const now = new Date();
@@ -386,6 +409,7 @@ export async function createClientAccount(input: CreateClientInput): Promise<{ u
     const rows = await db
       .insert(usersTable)
       .values({
+        tenantId,
         name: input.name.trim(),
         email,
         phone,
@@ -448,10 +472,11 @@ export async function createClientAccount(input: CreateClientInput): Promise<{ u
 
 export async function updateEmployeeAccount(input: UpdateEmployeeInput): Promise<{ user: PublicUser }> {
   const id = input.id.trim();
+  const tenantId = input.tenantId?.trim() || DEFAULT_TENANT_ID;
   const email = normalizeEmail(input.email);
   const phone = normalizePhone(input.phone);
   const now = new Date();
-  const existing = await findUserById(id);
+  const existing = await findUserById(id, tenantId);
 
   if (!existing || existing.role !== "employee") {
     throw new Error("Employee not found");
@@ -479,7 +504,7 @@ export async function updateEmployeeAccount(input: UpdateEmployeeInput): Promise
         status: input.status ?? "active",
         updatedAt: now,
       })
-      .where(and(eq(usersTable.id, id), eq(usersTable.role, "employee")))
+      .where(and(eq(usersTable.id, id), eq(usersTable.role, "employee"), eq(usersTable.tenantId, tenantId)))
       .returning();
   } catch (error) {
     if (isUniqueViolation(error)) {
@@ -499,10 +524,11 @@ export async function updateEmployeeAccount(input: UpdateEmployeeInput): Promise
 
 export async function updateClientAccount(input: UpdateClientInput): Promise<{ user: PublicUser }> {
   const id = input.id.trim();
+  const tenantId = input.tenantId?.trim() || DEFAULT_TENANT_ID;
   const email = normalizeEmail(input.email);
   const phone = normalizePhone(input.phone);
   const now = new Date();
-  const existing = await findUserById(id);
+  const existing = await findUserById(id, tenantId);
 
   if (!existing || existing.role !== "client") {
     throw new Error("Client not found");
@@ -527,7 +553,7 @@ export async function updateClientAccount(input: UpdateClientInput): Promise<{ u
         status: input.status ?? "active",
         updatedAt: now,
       })
-      .where(and(eq(usersTable.id, id), eq(usersTable.role, "client")))
+      .where(and(eq(usersTable.id, id), eq(usersTable.role, "client"), eq(usersTable.tenantId, tenantId)))
       .returning();
   } catch (error) {
     if (isUniqueViolation(error)) {
@@ -545,10 +571,10 @@ export async function updateClientAccount(input: UpdateClientInput): Promise<{ u
   return { user: publicUser(user) };
 }
 
-export async function deactivateEmployeeAccount(id: string): Promise<{ user: PublicUser }> {
+export async function deactivateEmployeeAccount(id: string, tenantId = DEFAULT_TENANT_ID): Promise<{ user: PublicUser }> {
   const rows = await db
     .delete(usersTable)
-    .where(and(eq(usersTable.id, id.trim()), eq(usersTable.role, "employee")))
+    .where(and(eq(usersTable.id, id.trim()), eq(usersTable.role, "employee"), eq(usersTable.tenantId, tenantId)))
     .returning();
 
   const user = rows[0];
@@ -559,10 +585,10 @@ export async function deactivateEmployeeAccount(id: string): Promise<{ user: Pub
   return { user: publicUser(user) };
 }
 
-export async function deactivateClientAccount(id: string): Promise<{ user: PublicUser }> {
+export async function deactivateClientAccount(id: string, tenantId = DEFAULT_TENANT_ID): Promise<{ user: PublicUser }> {
   const rows = await db
     .delete(usersTable)
-    .where(and(eq(usersTable.id, id.trim()), eq(usersTable.role, "client")))
+    .where(and(eq(usersTable.id, id.trim()), eq(usersTable.role, "client"), eq(usersTable.tenantId, tenantId)))
     .returning();
 
   const user = rows[0];
@@ -573,21 +599,21 @@ export async function deactivateClientAccount(id: string): Promise<{ user: Publi
   return { user: publicUser(user) };
 }
 
-export async function listEmployees() {
+export async function listEmployees(tenantId = DEFAULT_TENANT_ID) {
   const rows = await db
     .select()
     .from(usersTable)
-    .where(eq(usersTable.role, "employee"))
+    .where(and(eq(usersTable.role, "employee"), eq(usersTable.tenantId, tenantId)))
     .orderBy(desc(usersTable.createdAt));
 
   return rows.map(publicUser);
 }
 
-export async function listClients() {
+export async function listClients(tenantId = DEFAULT_TENANT_ID) {
   const rows = await db
     .select()
     .from(usersTable)
-    .where(eq(usersTable.role, "client"))
+    .where(and(eq(usersTable.role, "client"), eq(usersTable.tenantId, tenantId)))
     .orderBy(desc(usersTable.createdAt));
 
   return rows.map(publicUser);
@@ -721,6 +747,7 @@ export async function ensureInitialAdmin(): Promise<void> {
   const now = new Date();
 
   await db.insert(usersTable).values({
+    tenantId: DEFAULT_TENANT_ID,
     name: optionalEnv("ADMIN_NAME")?.trim() || "Yojak Admin",
     email,
     phone: optionalEnv("ADMIN_PHONE")?.trim() || "9999999999",

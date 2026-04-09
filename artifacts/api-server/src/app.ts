@@ -4,10 +4,15 @@ import cookieParser from "cookie-parser";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import { logger } from "./lib/logger";
-import { getApiOriginCandidates } from "./lib/env";
+import { getApiOriginCandidates, isProduction } from "./lib/env";
 
 const app: Express = express();
 const REQUEST_BODY_LIMIT = "4mb";
+
+app.disable("x-powered-by");
+if (isProduction()) {
+  app.set("trust proxy", 1);
+}
 
 app.use(
   pinoHttp({
@@ -34,6 +39,14 @@ app.use(
     credentials: true,
   }),
 );
+app.use((_request, response, next) => {
+  response.setHeader("X-Content-Type-Options", "nosniff");
+  response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  response.setHeader("X-Frame-Options", "DENY");
+  response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  next();
+});
 app.use(cookieParser());
 app.use(express.json({ limit: REQUEST_BODY_LIMIT }));
 app.use(express.urlencoded({ extended: true, limit: REQUEST_BODY_LIMIT }));
@@ -48,7 +61,7 @@ app.use((error: unknown, _request: Request, response: Response, _next: NextFunct
     (error as { type?: string }).type === "entity.too.large"
   ) {
     response.status(413).json({
-      message: "Uploaded file is too large. Please use an image under 4 MB.",
+      message: "Uploaded payload is too large. Please use a smaller file.",
     });
     return;
   }

@@ -2,8 +2,17 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import { z } from "zod";
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
-import { auditTrailTable, companySettingsTable, fundsTable, preApprovalsTable, usersTable, type PreApproval as DbPreApproval } from "@workspace/db/schema";
+import {
+  auditTrailTable,
+  companySettingsTable,
+  fundsTable,
+  preApprovalsTable,
+  usersTable,
+  type CompanySettingsRecord,
+  type PreApproval as DbPreApproval,
+} from "@workspace/db/schema";
 import { requireAuth, requireRole } from "../middlewares/auth";
+import { rateLimit } from "../middlewares/rate-limit";
 import {
   DAY_KEYS,
   type ApprovalStatus,
@@ -41,10 +50,17 @@ import {
   submitTimesheetFast,
   invalidateBusinessStoreCache,
 } from "../lib/business-store";
+import { DEFAULT_TENANT_ID } from "../lib/tenants";
 import { resolveExpenseAttachmentUrl } from "../lib/storage";
 import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../lib/notifications";
 
 const router: IRouter = Router();
+const mutationLimiter = rateLimit({
+  name: "business-mutations",
+  windowMs: 15 * 60 * 1000,
+  max: 180,
+  message: "Too many changes in a short period. Please slow down and try again.",
+});
 
 function routeParam(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] ?? "" : value ?? "";
@@ -256,16 +272,26 @@ function paidSalaries(store: BusinessStore) {
   return store.salaries.filter((salary) => salary.status === "paid");
 }
 
-function availableFunds(store: BusinessStore) {
-  const totalFunds = store.funds.reduce((sum, fund) => sum + Math.abs(Number(fund.amount ?? 0)), 0);
-  const spentExpenses = approveExpenses(store).reduce((sum, expense) => sum + Math.abs(Number(expense.amount ?? 0)), 0);
-  const spentSalary = paidSalaries(store).reduce((sum, salary) => sum + Math.abs(Number(salary.amount ?? 0)), 0);
+function tenantSalaryFilter(salary: SalaryRecord, tenantId: string) {
+  return (salary.tenantId ?? DEFAULT_TENANT_ID) === tenantId;
+}
+
+function availableFunds(store: BusinessStore, tenantId?: string) {
+  const totalFunds = store.funds
+    .filter((fund) => (tenantId ? tenantFundFilter(fund, tenantId) : true))
+    .reduce((sum, fund) => sum + Math.abs(Number(fund.amount ?? 0)), 0);
+  const spentExpenses = approveExpenses(store)
+    .filter((expense) => (tenantId ? tenantExpenseFilter(expense, tenantId) : true))
+    .reduce((sum, expense) => sum + Math.abs(Number(expense.amount ?? 0)), 0);
+  const spentSalary = paidSalaries(store)
+    .filter((salary) => (tenantId ? tenantSalaryFilter(salary, tenantId) : true))
+    .reduce((sum, salary) => sum + Math.abs(Number(salary.amount ?? 0)), 0);
   return Math.max(0, Number((totalFunds - spentExpenses - spentSalary).toFixed(2)));
 }
 
-function ensureFunds(store: BusinessStore, amount: number, label: string) {
+function ensureFunds(store: BusinessStore, amount: number, label: string, tenantId?: string) {
   const required = Math.abs(Number(amount ?? 0));
-  const available = availableFunds(store);
+  const available = availableFunds(store, tenantId);
   if (required > available) {
     throw new Error(`Insufficient total funds for ${label}. Available balance is ${available.toLocaleString("en-IN")} INR.`);
   }
@@ -297,6 +323,7 @@ function serializePreApproval(row: DbPreApproval) {
 
   return {
     id: row.id,
+    tenantId: row.tenantId,
     title: row.title,
     project: row.project,
     clientId: row.clientId,
@@ -322,6 +349,7 @@ function serializePreApproval(row: DbPreApproval) {
 }
 
 async function insertBusinessAudit(input: {
+  tenantId: string;
   actorName: string;
   actorRole: "admin" | "employee" | "client" | "system";
   action: string;
@@ -331,6 +359,7 @@ async function insertBusinessAudit(input: {
 }) {
   await db.insert(auditTrailTable).values({
     id: createId("audit"),
+    tenantId: input.tenantId.trim() || "00000000-0000-0000-0000-000000000101",
     actorName: input.actorName,
     actorRole: input.actorRole,
     action: input.action,
@@ -341,17 +370,30 @@ async function insertBusinessAudit(input: {
   });
 }
 
-async function loadClientUser(clientId: string) {
+async function loadClientUser(clientId: string, tenantId?: string) {
   const rows = await db
     .select()
     .from(usersTable)
-    .where(and(eq(usersTable.id, clientId), eq(usersTable.role, "client"), eq(usersTable.status, "active")))
+    .where(
+      and(
+        eq(usersTable.id, clientId),
+        eq(usersTable.role, "client"),
+        eq(usersTable.status, "active"),
+        tenantId ? eq(usersTable.tenantId, tenantId) : undefined,
+      ),
+    )
     .limit(1);
 
   return rows[0] ?? null;
 }
 
 function assertClientCanAccess(request: Request, preApproval: DbPreApproval, response: Response) {
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  if ((preApproval.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
+    return false;
+  }
+
   if (request.auth?.user.role === "client" && preApproval.clientId !== request.auth.user.id) {
     response.status(403).json({ message: "Forbidden" });
     return false;
@@ -380,6 +422,7 @@ function notificationActor(request: Request) {
     id: request.auth?.user.id,
     name: request.auth?.user.name ?? "System",
     role: request.auth?.user.role ?? "system",
+    tenantId: request.auth?.user.tenantId,
   } as const;
 }
 
@@ -402,9 +445,14 @@ function leaveKindLabel(kind: LeaveRequestKind) {
   return kind === "holiday" ? "holiday" : "leave";
 }
 
-function countLeaveDaysInYear(store: BusinessStore, employeeId: string, year: number) {
+function countLeaveDaysInYear(store: BusinessStore, employeeId: string, year: number, tenantId: string) {
   return store.leaveRequests.reduce((sum, request) => {
-    if (request.employeeId !== employeeId || request.kind !== "leave" || request.status === "rejected") {
+    if (
+      (request.tenantId ?? DEFAULT_TENANT_ID) !== tenantId ||
+      request.employeeId !== employeeId ||
+      request.kind !== "leave" ||
+      request.status === "rejected"
+    ) {
       return sum;
     }
 
@@ -453,7 +501,7 @@ interface MonthCalendar {
   days: MonthCalendarDay[];
 }
 
-function buildMonthCalendar(store: BusinessStore, employeeId: string, month: string) {
+function buildMonthCalendar(store: BusinessStore, employeeId: string, month: string, tenantId: string) {
   const [yearString, monthString] = month.split("-");
   const year = Number(yearString);
   const monthIndex = Number(monthString) - 1;
@@ -462,11 +510,11 @@ function buildMonthCalendar(store: BusinessStore, employeeId: string, month: str
   const holidaysByDate = new Map<string, HolidayRecord>();
   const leaveRequestsByDate = new Map<string, LeaveRequestRecord>();
 
-  for (const holiday of store.holidays.filter((item) => monthKeyFromDate(item.date) === month)) {
+  for (const holiday of store.holidays.filter((item) => (item.tenantId ?? DEFAULT_TENANT_ID) === tenantId && monthKeyFromDate(item.date) === month)) {
     holidaysByDate.set(normalizeDate(holiday.date).slice(0, 10), holiday);
   }
 
-  for (const request of store.leaveRequests.filter((item) => item.employeeId === employeeId && item.status !== "rejected")) {
+  for (const request of store.leaveRequests.filter((item) => (item.tenantId ?? DEFAULT_TENANT_ID) === tenantId && item.employeeId === employeeId && item.status !== "rejected")) {
     for (let day = 1; day <= daysInMonth; day += 1) {
       const date = new Date(year, monthIndex, day, 12, 0, 0, 0);
       const iso = date.toISOString().slice(0, 10);
@@ -619,16 +667,43 @@ async function serializeExpenses(expenses: ExpenseRecord[]) {
   return Promise.all(expenses.map((expense) => serializeExpense(expense)));
 }
 
+function tenantExpenseFilter(expense: ExpenseRecord, tenantId: string) {
+  return (expense.tenantId ?? DEFAULT_TENANT_ID) === tenantId;
+}
+
+function tenantFundFilter(fund: FundRecord, tenantId: string) {
+  return (fund.tenantId ?? DEFAULT_TENANT_ID) === tenantId;
+}
+
+function tenantProjectFilter(project: ProjectBudget, tenantId: string) {
+  return (project.tenantId ?? DEFAULT_TENANT_ID) === tenantId;
+}
+
+function tenantPurchaseOrderFilter(order: PurchaseOrder, tenantId: string) {
+  return (order.tenantId ?? DEFAULT_TENANT_ID) === tenantId;
+}
+
 router.use(requireAuth);
+router.use((request, response, next) => {
+  if (["POST", "PATCH", "PUT", "DELETE"].includes(request.method)) {
+    return mutationLimiter(request, response, next);
+  }
+
+  next();
+});
 
 router.get("/overview", requireRole("admin"), async (_request, response) => {
   const store = await readStore();
-  const employees = await loadEmployees();
-  const approved = approveExpenses(store);
-  const totalFunds = store.funds.reduce((sum, fund) => sum + Math.abs(fund.amount), 0);
+  const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const employees = await loadEmployees(tenantId);
+  const tenantExpenses = store.expenses.filter((expense) => tenantExpenseFilter(expense, tenantId));
+  const tenantFunds = store.funds.filter((fund) => tenantFundFilter(fund, tenantId));
+  const tenantSalaries = store.salaries.filter((salary) => tenantSalaryFilter(salary, tenantId));
+  const approved = approveExpenses({ ...store, expenses: tenantExpenses });
+  const totalFunds = tenantFunds.reduce((sum, fund) => sum + Math.abs(fund.amount), 0);
   const totalExpenses = approved.reduce((sum, expense) => sum + Math.abs(expense.amount), 0);
-  const totalSalaryPaid = paidSalaries(store).reduce((sum, salary) => sum + Math.abs(salary.amount), 0);
-  const currentBalance = availableFunds(store);
+  const totalSalaryPaid = paidSalaries({ ...store, salaries: tenantSalaries }).reduce((sum, salary) => sum + Math.abs(salary.amount), 0);
+  const currentBalance = availableFunds(store, tenantId);
   const currentMonth = new Date().toISOString().slice(0, 7);
   const currentYear = new Date().getFullYear();
 
@@ -638,17 +713,25 @@ router.get("/overview", requireRole("admin"), async (_request, response) => {
     totalSalaryPaid,
     activeEmployees: employees.filter((employee) => employee.status === "active").length,
     currentBalance,
-    pendingExpenses: store.expenses.filter((expense) => expense.status === "submitted").length,
-    pendingTimesheets: store.timesheets.filter((entry) => entry.status === "submitted").length,
-    monthToDateFunds: store.funds.filter((fund) => fund.date.slice(0, 7) === currentMonth).reduce((sum, fund) => sum + fund.amount, 0),
+    pendingExpenses: tenantExpenses.filter((expense) => expense.status === "submitted").length,
+    pendingTimesheets: store.timesheets.filter(
+      (entry) => entry.status === "submitted" && employees.some((employee) => employee.id === entry.employeeId),
+    ).length,
+    monthToDateFunds: tenantFunds.filter((fund) => fund.date.slice(0, 7) === currentMonth).reduce((sum, fund) => sum + fund.amount, 0),
     monthToDateExpenses: approved.filter((expense) => expense.date.slice(0, 7) === currentMonth).reduce((sum, expense) => sum + expense.amount, 0),
-    yearToDateFunds: store.funds.filter((fund) => new Date(fund.date).getFullYear() === currentYear).reduce((sum, fund) => sum + fund.amount, 0),
+    yearToDateFunds: tenantFunds.filter((fund) => new Date(fund.date).getFullYear() === currentYear).reduce((sum, fund) => sum + fund.amount, 0),
     yearToDateExpenses: approved.filter((expense) => new Date(expense.date).getFullYear() === currentYear).reduce((sum, expense) => sum + expense.amount, 0),
   });
 });
 
 router.get("/charts", requireRole("admin"), async (_request, response) => {
   const store = await readStore();
+  const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const tenantEmployees = await loadEmployees(tenantId);
+  const tenantEmployeeIds = new Set(tenantEmployees.map((employee) => employee.id));
+  const tenantFunds = store.funds.filter((fund) => tenantFundFilter(fund, tenantId));
+  const tenantExpenses = store.expenses.filter((expense) => tenantExpenseFilter(expense, tenantId));
+  const tenantSalaries = paidSalaries(store).filter((salary) => tenantSalaryFilter(salary, tenantId));
   const months = Array.from({ length: 6 }, (_, index) => {
     const date = new Date();
     date.setMonth(date.getMonth() - (5 - index), 1);
@@ -662,19 +745,19 @@ router.get("/charts", requireRole("admin"), async (_request, response) => {
   });
 
   const buckets = new Map(months.map((month) => [month.key, month]));
-  for (const fund of store.funds) {
+  for (const fund of tenantFunds) {
     const bucket = buckets.get(fund.date.slice(0, 7));
     if (bucket) {
       bucket.funds += Math.abs(fund.amount);
     }
   }
-  for (const expense of approveExpenses(store)) {
+  for (const expense of approveExpenses({ ...store, expenses: tenantExpenses })) {
     const bucket = buckets.get(expense.date.slice(0, 7));
     if (bucket) {
       bucket.expenses += Math.abs(expense.amount);
     }
   }
-  for (const salary of paidSalaries(store)) {
+  for (const salary of tenantSalaries.filter((item) => tenantEmployeeIds.has(item.employeeId))) {
     const bucket = buckets.get((salary.paidAt ?? salary.date).slice(0, 7));
     if (bucket) {
       bucket.salary += Math.abs(salary.amount);
@@ -684,7 +767,7 @@ router.get("/charts", requireRole("admin"), async (_request, response) => {
   response.json({
     finance: months.map(({ month, funds, expenses, salary }) => ({ month, funds, expenses, salary })),
     expenseCategories: Array.from(
-      approveExpenses(store).reduce((map, expense) => {
+      approveExpenses({ ...store, expenses: tenantExpenses }).reduce((map, expense) => {
         map.set(expense.category, (map.get(expense.category) ?? 0) + Math.abs(expense.amount));
         return map;
       }, new Map<string, number>()),
@@ -694,10 +777,14 @@ router.get("/charts", requireRole("admin"), async (_request, response) => {
 
 router.get("/transactions", requireRole("admin"), async (_request, response) => {
   const store = await readStore();
-  const employees = await loadEmployees();
+  const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const employees = await loadEmployees(tenantId);
   const employeeNames = new Map(employees.map((employee) => [employee.id, employee.name]));
+  const tenantFunds = store.funds.filter((fund) => tenantFundFilter(fund, tenantId));
+  const tenantExpenses = store.expenses.filter((expense) => tenantExpenseFilter(expense, tenantId));
+  const tenantSalaries = paidSalaries(store).filter((salary) => tenantSalaryFilter(salary, tenantId));
   const transactions = [
-    ...store.funds.map((fund) => ({
+    ...tenantFunds.map((fund) => ({
       id: `tx_${fund.id}`,
       type: "fund" as const,
       amount: Math.abs(fund.amount),
@@ -705,7 +792,7 @@ router.get("/transactions", requireRole("admin"), async (_request, response) => 
       description: fund.source,
       category: "Funds",
     })),
-    ...approveExpenses(store).map((expense) => ({
+    ...approveExpenses({ ...store, expenses: tenantExpenses }).map((expense) => ({
       id: `tx_${expense.id}`,
       type: "expense" as const,
       amount: -Math.abs(expense.amount),
@@ -713,7 +800,7 @@ router.get("/transactions", requireRole("admin"), async (_request, response) => 
       description: expense.description,
       category: expense.category,
     })),
-    ...paidSalaries(store).map((salary) => ({
+    ...tenantSalaries.map((salary) => ({
       id: `tx_${salary.id}`,
       type: "salary" as const,
       amount: -Math.abs(salary.amount),
@@ -728,15 +815,21 @@ router.get("/transactions", requireRole("admin"), async (_request, response) => 
 
 router.get("/audit-trail", requireRole("admin"), async (_request, response) => {
   const store = await readStore();
-  response.json({ auditTrail: [...store.auditTrail].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()) });
+  const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  response.json({
+    auditTrail: [...store.auditTrail]
+      .filter((entry) => (entry.tenantId ?? DEFAULT_TENANT_ID) === tenantId)
+      .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()),
+  });
 });
 
 router.get("/holidays", async (request, response) => {
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const month = request.query.month?.toString().trim();
   const holidays = month
-    ? store.holidays.filter((holiday) => holiday.date.slice(0, 7) === month)
-    : store.holidays;
+    ? store.holidays.filter((holiday) => (holiday.tenantId ?? DEFAULT_TENANT_ID) === tenantId && holiday.date.slice(0, 7) === month)
+    : store.holidays.filter((holiday) => (holiday.tenantId ?? DEFAULT_TENANT_ID) === tenantId);
   response.json({ holidays: [...holidays].sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime()) });
 });
 
@@ -749,9 +842,15 @@ router.post("/holidays", requireRole("admin"), async (request, response) => {
 
   const store = await readStore();
   const now = nowIso();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const existing = parsed.data.id ? store.holidays.find((holiday) => holiday.id === parsed.data.id) : null;
+  if (existing && (existing.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
   const holiday: HolidayRecord = {
     id: parsed.data.id ?? existing?.id ?? createId("hol"),
+    tenantId,
     date: normalizeDate(parsed.data.date),
     name: parsed.data.name.trim(),
     createdAt: existing?.createdAt ?? now,
@@ -774,6 +873,12 @@ router.delete("/holidays/:id", requireRole("admin"), async (request, response) =
     return;
   }
 
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  if ((existing.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
   await updateStore((current) => ({
     ...current,
     holidays: current.holidays.filter((holiday) => holiday.id !== request.params.id),
@@ -783,6 +888,14 @@ router.delete("/holidays/:id", requireRole("admin"), async (request, response) =
 });
 
 router.get("/leave-settings", async (_request, response) => {
+  const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const rows = await db.select().from(companySettingsTable).where(eq(companySettingsTable.tenantId, tenantId)).limit(1);
+  const leavePolicy = (rows[0]?.data as { leavePolicy?: LeavePolicyRecord } | undefined)?.leavePolicy;
+  if (leavePolicy) {
+    response.json({ leavePolicy });
+    return;
+  }
+
   const store = await readStore();
   response.json({ leavePolicy: store.leavePolicy });
 });
@@ -800,16 +913,40 @@ router.patch("/leave-settings", requireRole("admin"), async (request, response) 
     updatedBy: request.auth?.user.name ?? "Admin",
   };
 
-  const store = await updateStore((current) => ({
-    ...current,
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const rows = await db.select().from(companySettingsTable).where(eq(companySettingsTable.tenantId, tenantId)).limit(1);
+  const existing = rows[0]?.data ?? {};
+  const nextData = {
+    ...(existing as Record<string, unknown>),
     leavePolicy,
-  }));
+  };
 
-  response.json({ leavePolicy: store.leavePolicy });
+  const updated = await db
+    .insert(companySettingsTable)
+    .values({
+      id: tenantId,
+      tenantId,
+      data: nextData as CompanySettingsRecord,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: companySettingsTable.tenantId,
+      set: {
+        data: nextData as CompanySettingsRecord,
+        updatedAt: new Date(),
+      },
+    })
+    .returning();
+
+  response.json({ leavePolicy: (updated[0]?.data as { leavePolicy?: LeavePolicyRecord } | undefined)?.leavePolicy ?? leavePolicy });
 });
 
 router.get("/company-settings", requireRole("admin"), async (_request, response) => {
-  const rows = await db.select().from(companySettingsTable).where(eq(companySettingsTable.id, "company")).limit(1);
+  const tenantId = _request.auth?.user.tenantId;
+  const rows = tenantId
+    ? await db.select().from(companySettingsTable).where(eq(companySettingsTable.tenantId, tenantId)).limit(1)
+    : [];
   response.json({ companyInfo: rows[0]?.data ?? {} });
 });
 
@@ -821,16 +958,23 @@ router.patch("/company-settings", requireRole("admin"), async (request, response
   }
 
   const now = new Date();
+  const tenantId = request.auth?.user.tenantId;
+  if (!tenantId) {
+    response.status(401).json({ message: "Unauthorized" });
+    return;
+  }
+
   const rows = await db
     .insert(companySettingsTable)
     .values({
-      id: "company",
+      id: tenantId,
+      tenantId,
       data: parsed.data,
       createdAt: now,
       updatedAt: now,
     })
     .onConflictDoUpdate({
-      target: companySettingsTable.id,
+      target: companySettingsTable.tenantId,
       set: {
         data: parsed.data,
         updatedAt: now,
@@ -843,13 +987,14 @@ router.patch("/company-settings", requireRole("admin"), async (request, response
 
 router.get("/leave-requests", async (request, response) => {
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const employeeId = request.auth?.user.role === "employee" ? request.auth.user.id : request.query.employeeId?.toString().trim();
   const month = request.query.month?.toString().trim();
   const status = request.query.status?.toString().trim();
   const leaveRequests = employeeId
-    ? store.leaveRequests.filter((leaveRequest) => leaveRequest.employeeId === employeeId)
+    ? store.leaveRequests.filter((leaveRequest) => (leaveRequest.tenantId ?? DEFAULT_TENANT_ID) === tenantId && leaveRequest.employeeId === employeeId)
     : request.auth?.user.role === "admin"
-      ? store.leaveRequests
+      ? store.leaveRequests.filter((leaveRequest) => (leaveRequest.tenantId ?? DEFAULT_TENANT_ID) === tenantId)
       : [];
 
   const filtered = leaveRequests.filter((leaveRequest) => {
@@ -880,11 +1025,12 @@ router.post("/leave-requests", async (request, response) => {
   }
 
   const employeeId = request.auth.user.id;
-  const employeeProfile = await loadEmployeeProfile(employeeId);
+  const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const employeeProfile = await loadEmployeeProfile(employeeId, tenantId);
   const employeeNameSnapshot = employeeProfile?.name ?? request.auth.user.name ?? "Employee";
   const startDate = normalizeDate(parsed.data.startDate);
   const endDate = normalizeDate(parsed.data.endDate);
-  const store = await readStore();
   const kind: LeaveRequestKind = "leave";
 
   if (new Date(startDate).getTime() > new Date(endDate).getTime()) {
@@ -914,17 +1060,20 @@ router.post("/leave-requests", async (request, response) => {
   }
 
   const requestedDays = enumerateDays(startDate, endDate).length;
-  const alreadyUsedDays = countLeaveDaysInYear(store, employeeId, requestYear);
+  const alreadyUsedDays = countLeaveDaysInYear(store, employeeId, requestYear, tenantId);
   const nextUsedDays = alreadyUsedDays + requestedDays;
-  if (nextUsedDays > store.leavePolicy.annualLimit) {
+  const leavePolicyRows = await db.select().from(companySettingsTable).where(eq(companySettingsTable.tenantId, tenantId)).limit(1);
+  const tenantLeavePolicy = (leavePolicyRows[0]?.data as { leavePolicy?: LeavePolicyRecord } | undefined)?.leavePolicy ?? store.leavePolicy;
+  if (nextUsedDays > tenantLeavePolicy.annualLimit) {
     response.status(400).json({
-      message: `This request exceeds the annual leave limit of ${store.leavePolicy.annualLimit} day(s).`,
+      message: `This request exceeds the annual leave limit of ${tenantLeavePolicy.annualLimit} day(s).`,
     });
     return;
   }
 
   const leaveRequest: LeaveRequestRecord = {
     id: parsed.data.id ?? createId("leave"),
+    tenantId,
     employeeId,
     employeeNameSnapshot,
     startDate,
@@ -960,6 +1109,12 @@ router.delete("/leave-requests/:id", async (request, response) => {
     return;
   }
 
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  if ((existing.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
   if (!isAdminRequest && existing.status === "approved") {
     response.status(409).json({ message: "Approved time off cannot be removed by the employee." });
     return;
@@ -984,6 +1139,12 @@ router.patch("/leave-requests/:id/status", requireRole("admin"), async (request,
   const existing = store.leaveRequests.find((leaveRequest) => leaveRequest.id === request.params.id);
   if (!existing) {
     respondNotFound(response, "Leave request not found");
+    return;
+  }
+
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  if ((existing.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
     return;
   }
 
@@ -1019,12 +1180,15 @@ router.get("/month-calendar", async (request, response) => {
   }
 
   const store = await readStore();
-  response.json({ monthCalendar: buildMonthCalendar(store, employeeId, month) });
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  response.json({ monthCalendar: buildMonthCalendar(store, employeeId, month, tenantId) });
 });
 
 router.route("/funds").get(requireRole("admin"), async (_request, response) => {
   const store = await readStore();
-  response.json({ funds: [...store.funds].sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime()) });
+  const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const funds = store.funds.filter((fund) => tenantFundFilter(fund, tenantId));
+  response.json({ funds: [...funds].sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime()) });
 }).post(requireRole("admin"), async (request, response) => {
   const parsed = fundSchema.safeParse(request.body);
   if (!parsed.success) {
@@ -1034,8 +1198,14 @@ router.route("/funds").get(requireRole("admin"), async (_request, response) => {
 
   const store = await readStore();
   const existing = parsed.data.id ? store.funds.find((fund) => fund.id === parsed.data.id) : null;
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  if (existing && (existing.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
   const fund: FundRecord = {
     id: parsed.data.id ?? existing?.id ?? createId("fund"),
+    tenantId,
     source: parsed.data.source.trim(),
     amount: Math.abs(parsed.data.amount),
     date: normalizeDate(parsed.data.date),
@@ -1101,6 +1271,11 @@ router.route("/funds/:id").get(requireRole("admin"), async (request, response) =
     return;
   }
 
+  if ((fund.tenantId ?? DEFAULT_TENANT_ID) !== (request.auth?.user.tenantId ?? DEFAULT_TENANT_ID)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
   response.json({ fund });
 }).patch(requireRole("admin"), async (request, response) => {
   const parsed = fundSchema.safeParse({ ...request.body, id: request.params.id });
@@ -1113,6 +1288,11 @@ router.route("/funds/:id").get(requireRole("admin"), async (request, response) =
   const existing = store.funds.find((fund) => fund.id === request.params.id);
   if (!existing) {
     respondNotFound(response, "Fund not found");
+    return;
+  }
+
+  if ((existing.tenantId ?? DEFAULT_TENANT_ID) !== (request.auth?.user.tenantId ?? DEFAULT_TENANT_ID)) {
+    response.status(403).json({ message: "Forbidden" });
     return;
   }
 
@@ -1177,6 +1357,11 @@ router.route("/funds/:id").get(requireRole("admin"), async (request, response) =
   const target = store.funds.find((fund) => fund.id === request.params.id);
   if (!target) {
     respondNotFound(response, "Fund not found");
+    return;
+  }
+
+  if ((target.tenantId ?? DEFAULT_TENANT_ID) !== (request.auth?.user.tenantId ?? DEFAULT_TENANT_ID)) {
+    response.status(403).json({ message: "Forbidden" });
     return;
   }
 
@@ -1255,7 +1440,10 @@ router.route("/categories").get(async (_request, response) => {
     categories: existing ? store.categories.map((item) => (item.id === category.id ? category : item)) : [...store.categories, category],
     expenses: existing
       ? store.expenses.map((expense) =>
-          expense.category === existing.name ? { ...expense, category: category.name, group: category.group, updatedAt: nowIso() } : expense,
+          (expense.tenantId ?? DEFAULT_TENANT_ID) === (request.auth?.user.tenantId ?? DEFAULT_TENANT_ID) &&
+          expense.category === existing.name
+            ? { ...expense, category: category.name, group: category.group, updatedAt: nowIso() }
+            : expense,
         )
       : store.expenses,
   };
@@ -1307,7 +1495,10 @@ router.route("/categories/:id").get(requireRole("admin"), async (request, respon
     ...store,
     categories: store.categories.map((item) => (item.id === category.id ? category : item)),
     expenses: store.expenses.map((expense) =>
-      expense.category === existing.name ? { ...expense, category: category.name, group: category.group, updatedAt: nowIso() } : expense,
+      (expense.tenantId ?? DEFAULT_TENANT_ID) === (request.auth?.user.tenantId ?? DEFAULT_TENANT_ID) &&
+      expense.category === existing.name
+        ? { ...expense, category: category.name, group: category.group, updatedAt: nowIso() }
+        : expense,
     ),
   };
 
@@ -1349,8 +1540,9 @@ router.route("/categories/:id").get(requireRole("admin"), async (request, respon
 
 router.get("/expenses", async (request, response) => {
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const employeeId = scopedEmployeeId(request, (request.query as { employeeId?: string }).employeeId);
-  let expenses = store.expenses;
+  let expenses = store.expenses.filter((expense) => expense.tenantId === tenantId || (expense.tenantId == null && tenantId === DEFAULT_TENANT_ID));
 
   if (employeeId) {
     expenses = expenses.filter((expense) => expense.employeeId === employeeId);
@@ -1379,17 +1571,28 @@ router.post("/expenses", async (request, response) => {
 
   const store = await readStore();
   const actor = recordActor(request);
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const employeeId = request.auth?.user.role === "employee" ? request.auth.user.id : parsed.data.employeeId?.trim() || undefined;
-  const employee = employeeId ? await loadEmployeeProfile(employeeId) : null;
+  const employee = employeeId ? await loadEmployeeProfile(employeeId, tenantId) : null;
   const existing = parsed.data.id ? store.expenses.find((expense) => expense.id === parsed.data.id) : null;
   const status = parsed.data.status ?? existing?.status ?? "submitted";
 
+  if (existing && existing.tenantId !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+  if (employeeId && employeeId !== request.auth?.user.id && request.auth?.user.role === "employee") {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
   if (status === "approved" && (!existing || existing.status !== "approved")) {
-    ensureFunds(store, parsed.data.amount, "this expense");
+    ensureFunds(store, parsed.data.amount, "this expense", tenantId);
   }
 
   const expense: ExpenseRecord = {
     id: parsed.data.id ?? existing?.id ?? createId("exp"),
+    tenantId,
     employeeId,
     employeeNameSnapshot: request.auth?.user.role === "employee" ? request.auth.user.name : parsed.data.employeeNameSnapshot?.trim() || existing?.employeeNameSnapshot || employee?.name,
     project: parsed.data.project?.trim() || existing?.project,
@@ -1460,9 +1663,15 @@ router.post("/expenses", async (request, response) => {
 
 router.route("/expenses/:id").get(async (request, response) => {
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const expense = store.expenses.find((item) => item.id === request.params.id);
   if (!expense) {
     respondNotFound(response, "Expense not found");
+    return;
+  }
+
+  if ((expense.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
     return;
   }
 
@@ -1480,9 +1689,15 @@ router.route("/expenses/:id").get(async (request, response) => {
   }
 
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const existing = store.expenses.find((expense) => expense.id === request.params.id);
   if (!existing) {
     respondNotFound(response, "Expense not found");
+    return;
+  }
+
+  if ((existing.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
     return;
   }
 
@@ -1493,7 +1708,7 @@ router.route("/expenses/:id").get(async (request, response) => {
 
   const status = parsed.data.status ?? existing.status;
   if (status === "approved" && existing.status !== "approved") {
-    ensureFunds(store, parsed.data.amount, "this expense");
+    ensureFunds(store, parsed.data.amount, "this expense", tenantId);
   }
 
   const expense: ExpenseRecord = {
@@ -1536,9 +1751,15 @@ router.route("/expenses/:id").get(async (request, response) => {
   response.json({ expense: await serializeExpense(expense) });
 }).delete(async (request, response) => {
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const existing = store.expenses.find((expense) => expense.id === request.params.id);
   if (!existing) {
     respondNotFound(response, "Expense not found");
+    return;
+  }
+
+  if ((existing.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
     return;
   }
 
@@ -1577,14 +1798,20 @@ router.patch("/expenses/:id/status", requireRole("admin"), async (request, respo
   }
 
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const existing = store.expenses.find((expense) => expense.id === request.params.id);
   if (!existing) {
     respondNotFound(response, "Expense not found");
     return;
   }
 
+  if (existing.tenantId !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
   if (parsed.data.status === "approved" && existing.status !== "approved") {
-    ensureFunds(store, existing.amount, "this expense");
+    ensureFunds(store, existing.amount, "this expense", tenantId);
   }
 
   const expense: ExpenseRecord = {
@@ -1634,10 +1861,20 @@ router.patch("/expenses/:id/status", requireRole("admin"), async (request, respo
 
 router.get("/salaries", async (request, response) => {
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const tenantEmployees = await loadEmployees(tenantId);
+  const tenantEmployeeIds = new Set(tenantEmployees.map((employee) => employee.id));
   const employeeId = scopedEmployeeId(request, (request.query as { employeeId?: string }).employeeId);
-  let salaries = [...store.salaries].sort(
-    (left, right) => new Date(right.paidAt ?? right.date).getTime() - new Date(left.paidAt ?? left.date).getTime(),
-  );
+  if (employeeId && !tenantEmployeeIds.has(employeeId)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
+  let salaries = [...store.salaries]
+    .filter((salary) => tenantSalaryFilter(salary, tenantId))
+    .sort(
+      (left, right) => new Date(right.paidAt ?? right.date).getTime() - new Date(left.paidAt ?? left.date).getTime(),
+    );
 
   if (employeeId) {
     salaries = salaries.filter((salary) => salary.employeeId === employeeId);
@@ -1656,8 +1893,13 @@ router.post("/salaries", requireRole("admin"), async (request, response) => {
   }
 
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const existing = parsed.data.id ? store.salaries.find((salary) => salary.id === parsed.data.id) : null;
-  const employee = await loadEmployeeProfile(parsed.data.employeeId);
+  if (existing && !tenantSalaryFilter(existing, tenantId)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+  const employee = await loadEmployeeProfile(parsed.data.employeeId, tenantId);
   if (!employee) {
     respondNotFound(response, "Employee not found");
     return;
@@ -1665,11 +1907,12 @@ router.post("/salaries", requireRole("admin"), async (request, response) => {
 
   const status = parsed.data.status ?? existing?.status ?? "pending";
   if (status === "paid" && (!existing || existing.status !== "paid")) {
-    ensureFunds(store, parsed.data.amount, "this salary payment");
+    ensureFunds(store, parsed.data.amount, "this salary payment", tenantId);
   }
 
   const salary: SalaryRecord = {
     id: parsed.data.id ?? existing?.id ?? createId("sal"),
+    tenantId,
     employeeId: parsed.data.employeeId.trim(),
     employeeNameSnapshot: parsed.data.employeeNameSnapshot?.trim() || existing?.employeeNameSnapshot || employee.name,
     amount: Math.abs(parsed.data.amount),
@@ -1712,6 +1955,12 @@ router.route("/salaries/:id").get(async (request, response) => {
     return;
   }
 
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  if (!tenantSalaryFilter(salary, tenantId)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
   if (request.auth?.user.role === "employee" && salary.employeeId !== request.auth.user.id) {
     response.status(403).json({ message: "Forbidden" });
     return;
@@ -1732,7 +1981,12 @@ router.route("/salaries/:id").get(async (request, response) => {
     return;
   }
 
-  const employee = await loadEmployeeProfile(parsed.data.employeeId);
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  if (!tenantSalaryFilter(existing, tenantId)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+  const employee = await loadEmployeeProfile(parsed.data.employeeId, tenantId);
   if (!employee) {
     respondNotFound(response, "Employee not found");
     return;
@@ -1740,11 +1994,12 @@ router.route("/salaries/:id").get(async (request, response) => {
 
   const status = parsed.data.status ?? existing.status;
   if (status === "paid" && existing.status !== "paid") {
-    ensureFunds(store, parsed.data.amount, "this salary payment");
+    ensureFunds(store, parsed.data.amount, "this salary payment", tenantId);
   }
 
   const salary: SalaryRecord = {
     ...existing,
+    tenantId,
     employeeId: parsed.data.employeeId.trim(),
     employeeNameSnapshot: parsed.data.employeeNameSnapshot?.trim() || existing.employeeNameSnapshot || employee.name,
     amount: Math.abs(parsed.data.amount),
@@ -1815,6 +2070,12 @@ router.route("/salaries/:id").get(async (request, response) => {
     return;
   }
 
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  if (!tenantSalaryFilter(salary, tenantId)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
   const next = pushAuditEvent(
     {
       ...store,
@@ -1847,9 +2108,15 @@ router.post("/salaries/:id/pay", requireRole("admin"), async (request, response)
     return;
   }
 
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  if (!tenantSalaryFilter(existing, tenantId)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
   if (existing.status !== "paid") {
     try {
-      ensureFunds(store, existing.amount, "this salary payment");
+      ensureFunds(store, existing.amount, "this salary payment", tenantId);
     } catch (error) {
       response.status(400).json({
         message: error instanceof Error ? error.message : "Insufficient total funds for this salary payment.",
@@ -1860,6 +2127,7 @@ router.post("/salaries/:id/pay", requireRole("admin"), async (request, response)
 
   const salary: SalaryRecord = {
     ...existing,
+    tenantId,
     status: "paid",
     paidAt: nowIso(),
     date: nowIso(),
@@ -1918,7 +2186,14 @@ router.post("/salaries/:id/pay", requireRole("admin"), async (request, response)
 
 router.get("/timesheets", async (request, response) => {
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const tenantEmployees = await loadEmployees(tenantId);
+  const tenantEmployeeIds = new Set(tenantEmployees.map((employee) => employee.id));
   const employeeId = scopedEmployeeId(request, (request.query as { employeeId?: string }).employeeId);
+  if (employeeId && !tenantEmployeeIds.has(employeeId)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
   let timesheets = store.timesheets
     .filter((entry) => entry.status !== "draft" || timesheetHasContent(entry))
     .sort((left, right) => new Date(right.weekStart).getTime() - new Date(left.weekStart).getTime());
@@ -1927,6 +2202,8 @@ router.get("/timesheets", async (request, response) => {
     timesheets = timesheets.filter((entry) => entry.employeeId === employeeId);
   } else if (request.auth?.user.role !== "admin") {
     timesheets = timesheets.filter((entry) => entry.employeeId === request.auth?.user.id);
+  } else {
+    timesheets = timesheets.filter((entry) => tenantEmployeeIds.has(entry.employeeId));
   }
 
   response.json({ timesheets });
@@ -1934,8 +2211,19 @@ router.get("/timesheets", async (request, response) => {
 
 router.get("/timesheets/summary", async (request, response) => {
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const tenantEmployees = await loadEmployees(tenantId);
+  const tenantEmployeeIds = new Set(tenantEmployees.map((employee) => employee.id));
   const employeeId = scopedEmployeeId(request, (request.query as { employeeId?: string }).employeeId);
-  const timesheets = employeeId ? store.timesheets.filter((entry) => entry.employeeId === employeeId) : store.timesheets;
+  if (employeeId && !tenantEmployeeIds.has(employeeId)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+  const timesheets = employeeId
+    ? store.timesheets.filter((entry) => entry.employeeId === employeeId)
+    : request.auth?.user.role === "admin"
+      ? store.timesheets.filter((entry) => tenantEmployeeIds.has(entry.employeeId))
+      : store.timesheets.filter((entry) => entry.employeeId === request.auth?.user.id);
 
   response.json({
     pending: timesheets.filter((entry) => entry.status === "submitted").length,
@@ -1954,6 +2242,12 @@ router.get("/timesheets/by-week", async (request, response) => {
   }
 
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const tenantEmployees = await loadEmployees(tenantId);
+  if (!tenantEmployees.some((employee) => employee.id === employeeId)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
   const timesheet = store.timesheets.find(
     (entry) => entry.employeeId === employeeId && normalizeWeekStart(entry.weekStart) === normalizeWeekStart(weekStart),
   );
@@ -1963,12 +2257,19 @@ router.get("/timesheets/by-week", async (request, response) => {
 
 router.get("/timesheets/:id", async (request, response) => {
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const tenantEmployees = await loadEmployees(tenantId);
+  const tenantEmployeeIds = new Set(tenantEmployees.map((employee) => employee.id));
   const timesheet = store.timesheets.find((entry) => entry.id === request.params.id);
   if (!timesheet) {
     respondNotFound(response, "Timesheet not found");
     return;
   }
 
+  if (!tenantEmployeeIds.has(timesheet.employeeId)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
   if (request.auth?.user.role === "employee" && timesheet.employeeId !== request.auth.user.id) {
     response.status(403).json({ message: "Forbidden" });
     return;
@@ -1986,14 +2287,22 @@ router.post("/timesheets", async (request, response) => {
 
   const store = await readStore();
   const actor = recordActor(request);
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const employeeId = request.auth?.user.role === "employee" ? request.auth.user.id : parsed.data.employeeId;
+  if (request.auth?.user.role === "employee" || request.auth?.user.role === "admin") {
+    const tenantEmployees = await loadEmployees(tenantId);
+    if (!tenantEmployees.some((employee) => employee.id === employeeId)) {
+      response.status(403).json({ message: "Forbidden" });
+      return;
+    }
+  }
   const employee =
     request.auth?.user.role === "employee"
       ? {
           id: request.auth.user.id,
           name: request.auth.user.name ?? "Employee",
         }
-      : await loadEmployeeProfile(employeeId);
+      : await loadEmployeeProfile(employeeId, tenantId);
   if (!employee) {
     respondNotFound(response, "Employee not found");
     return;
@@ -2072,6 +2381,7 @@ router.patch("/timesheets/:id", async (request, response) => {
   }
 
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const existing = store.timesheets.find((entry) => entry.id === request.params.id);
   if (!existing) {
     respondNotFound(response, "Timesheet not found");
@@ -2090,7 +2400,7 @@ router.patch("/timesheets/:id", async (request, response) => {
           id: request.auth.user.id,
           name: request.auth.user.name ?? existing.employeeNameSnapshot,
         }
-      : await loadEmployeeProfile(employeeId);
+      : await loadEmployeeProfile(employeeId, tenantId);
   if (!employee) {
     respondNotFound(response, "Employee not found");
     return;
@@ -2143,6 +2453,7 @@ router.post("/timesheets/submit", async (request, response) => {
   }
 
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const employeeId = request.auth?.user.role === "employee" ? request.auth.user.id : parsed.data.employeeId;
   const employee =
     request.auth?.user.role === "employee"
@@ -2150,7 +2461,7 @@ router.post("/timesheets/submit", async (request, response) => {
           id: request.auth.user.id,
           name: request.auth.user.name ?? "Employee",
         }
-      : await loadEmployeeProfile(employeeId);
+      : await loadEmployeeProfile(employeeId, tenantId);
 
   if (!employee) {
     respondNotFound(response, "Employee not found");
@@ -2248,12 +2559,19 @@ router.post("/timesheets/submit", async (request, response) => {
 
 router.post("/timesheets/:id/submit", async (request, response) => {
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const tenantEmployees = await loadEmployees(tenantId);
+  const tenantEmployeeIds = new Set(tenantEmployees.map((employee) => employee.id));
   const existing = store.timesheets.find((entry) => entry.id === request.params.id);
   if (!existing) {
     respondNotFound(response, "Timesheet not found");
     return;
   }
 
+  if (!tenantEmployeeIds.has(existing.employeeId)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
   if (request.auth?.user.role === "employee" && existing.employeeId !== request.auth.user.id) {
     response.status(403).json({ message: "Forbidden" });
     return;
@@ -2314,13 +2632,21 @@ router.post("/timesheets/:id/approve", requireRole("admin"), async (request, res
   }
 
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const tenantEmployees = await loadEmployees(tenantId);
+  const tenantEmployeeIds = new Set(tenantEmployees.map((employee) => employee.id));
   const existing = store.timesheets.find((entry) => entry.id === request.params.id);
   if (!existing) {
     respondNotFound(response, "Timesheet not found");
     return;
   }
 
-  const employee = await loadEmployeeProfile(existing.employeeId);
+  if (!tenantEmployeeIds.has(existing.employeeId)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
+  const employee = await loadEmployeeProfile(existing.employeeId, tenantId);
   const reviewResult = await reviewTimesheetFast({
     id: String(request.params.id),
     status: "approved",
@@ -2378,9 +2704,17 @@ router.post("/timesheets/:id/reject", requireRole("admin"), async (request, resp
   }
 
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const tenantEmployees = await loadEmployees(tenantId);
+  const tenantEmployeeIds = new Set(tenantEmployees.map((employee) => employee.id));
   const existing = store.timesheets.find((entry) => entry.id === request.params.id);
   if (!existing) {
     respondNotFound(response, "Timesheet not found");
+    return;
+  }
+
+  if (!tenantEmployeeIds.has(existing.employeeId)) {
+    response.status(403).json({ message: "Forbidden" });
     return;
   }
 
@@ -2434,9 +2768,17 @@ router.post("/timesheets/:id/reject", requireRole("admin"), async (request, resp
 
 router.delete("/timesheets/:id", async (request, response) => {
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const tenantEmployees = await loadEmployees(tenantId);
+  const tenantEmployeeIds = new Set(tenantEmployees.map((employee) => employee.id));
   const existing = store.timesheets.find((entry) => entry.id === request.params.id);
   if (!existing) {
     respondNotFound(response, "Timesheet not found");
+    return;
+  }
+
+  if (!tenantEmployeeIds.has(existing.employeeId)) {
+    response.status(403).json({ message: "Forbidden" });
     return;
   }
 
@@ -2465,15 +2807,19 @@ router.delete("/timesheets/:id", async (request, response) => {
 
 router.get("/projects", requireRole("admin"), async (_request, response) => {
   const store = await readStore();
+  const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const projectBudgets = store.projectBudgets.filter((budget) => tenantProjectFilter(budget, tenantId));
   response.json({
-    projectBudgets: [...store.projectBudgets].sort((left, right) => left.project.localeCompare(right.project)),
-    projects: [...store.projectBudgets].sort((left, right) => left.project.localeCompare(right.project)),
+    projectBudgets: [...projectBudgets].sort((left, right) => left.project.localeCompare(right.project)),
+    projects: [...projectBudgets].sort((left, right) => left.project.localeCompare(right.project)),
   });
 });
 
 router.get("/projects/catalog", async (_request, response) => {
   const store = await readStore();
-  const projects = [...store.projectBudgets]
+  const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const projects = store.projectBudgets
+    .filter((budget) => tenantProjectFilter(budget, tenantId))
     .sort((left, right) => left.project.localeCompare(right.project))
     .map((budget) => ({
       id: budget.id,
@@ -2491,8 +2837,11 @@ router.get("/projects/catalog", async (_request, response) => {
 
 router.get("/projects/summary", async (_request, response) => {
   const store = await readStore();
-  const employees = await loadEmployees();
+  const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const employees = await loadEmployees(tenantId);
   const employeeMap = new Map(employees.map((employee) => [employee.id, employee]));
+  const tenantExpenses = store.expenses.filter((expense) => tenantExpenseFilter(expense, tenantId));
+  const tenantProjectBudgets = store.projectBudgets.filter((budget) => tenantProjectFilter(budget, tenantId));
   const grouped = new Map<string, {
     id: string;
     project: string;
@@ -2506,7 +2855,7 @@ router.get("/projects/summary", async (_request, response) => {
 
   const ensureBucket = (project: string) => {
     if (!grouped.has(project)) {
-      const budget = store.projectBudgets.find((item) => item.project === project);
+      const budget = tenantProjectBudgets.find((item) => item.project === project);
       grouped.set(project, {
         id: budget?.id ?? `project_${project.toLowerCase().replace(/[^a-z0-9]+/g, "_")}`,
         project,
@@ -2523,6 +2872,9 @@ router.get("/projects/summary", async (_request, response) => {
   };
 
   for (const entry of store.timesheets) {
+    if (!employeeMap.has(entry.employeeId)) {
+      continue;
+    }
     if (entry.status === "draft" || entry.status === "rejected") {
       continue;
     }
@@ -2542,7 +2894,7 @@ router.get("/projects/summary", async (_request, response) => {
     }
   }
 
-  for (const expense of store.expenses.filter((item) => item.status === "approved")) {
+  for (const expense of approveExpenses({ ...store, expenses: tenantExpenses })) {
     const project = expense.project?.trim();
     if (!project) {
       continue;
@@ -2569,9 +2921,17 @@ router.get("/projects/summary", async (_request, response) => {
 
 router.get("/projects/names", async (_request, response) => {
   const store = await readStore();
+  const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const employees = await loadEmployees(tenantId);
+  const employeeIds = new Set(employees.map((employee) => employee.id));
+  const tenantExpenses = store.expenses.filter((expense) => tenantExpenseFilter(expense, tenantId));
+  const tenantProjectBudgets = store.projectBudgets.filter((budget) => tenantProjectFilter(budget, tenantId));
   const names = new Set<string>();
 
   for (const entry of store.timesheets) {
+    if (!employeeIds.has(entry.employeeId)) {
+      continue;
+    }
     for (const line of entry.lines) {
       if (line.project.trim()) {
         names.add(line.project.trim());
@@ -2579,13 +2939,13 @@ router.get("/projects/names", async (_request, response) => {
     }
   }
 
-  for (const expense of store.expenses) {
+  for (const expense of tenantExpenses) {
     if (expense.project?.trim()) {
       names.add(expense.project.trim());
     }
   }
 
-  for (const budget of store.projectBudgets) {
+  for (const budget of tenantProjectBudgets) {
     if (budget.project.trim()) {
       names.add(budget.project.trim());
     }
@@ -2602,9 +2962,15 @@ router.post("/projects", requireRole("admin"), async (request, response) => {
   }
 
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const existing = parsed.data.id ? store.projectBudgets.find((budget) => budget.id === parsed.data.id) : null;
+  if (existing && !tenantProjectFilter(existing, tenantId)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
   const budget: ProjectBudget = {
     id: parsed.data.id ?? existing?.id ?? createId("pb"),
+    tenantId,
     project: parsed.data.project.trim(),
     totalBudget: Math.abs(parsed.data.totalBudget),
     client: parsed.data.client?.trim() || existing?.client,
@@ -2646,6 +3012,12 @@ router.route("/projects/:id").get(async (request, response) => {
     return;
   }
 
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  if (!tenantProjectFilter(project, tenantId)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
   response.json({ projectBudget: project, project });
 }).patch(requireRole("admin"), async (request, response) => {
   const parsed = projectSchema.safeParse({ ...request.body, id: request.params.id });
@@ -2661,8 +3033,15 @@ router.route("/projects/:id").get(async (request, response) => {
     return;
   }
 
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  if (!tenantProjectFilter(existing, tenantId)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
   const budget: ProjectBudget = {
     ...existing,
+    tenantId,
     project: parsed.data.project.trim(),
     totalBudget: Math.abs(parsed.data.totalBudget),
     client: parsed.data.client?.trim() || existing.client,
@@ -2701,6 +3080,12 @@ router.route("/projects/:id").get(async (request, response) => {
     return;
   }
 
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  if (!tenantProjectFilter(existing, tenantId)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
   const next = pushAuditEvent(
     {
       ...store,
@@ -2733,6 +3118,12 @@ router.post("/projects/:id/tasks", requireRole("admin"), async (request, respons
     return;
   }
 
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  if (!tenantProjectFilter(existing, tenantId)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
   const task: ProjectBudget["tasks"][number] = {
     id: parsed.data.id ?? createId("pbt"),
     name: parsed.data.name.trim(),
@@ -2762,8 +3153,11 @@ router.post("/projects/:id/tasks", requireRole("admin"), async (request, respons
 
 router.get("/purchase-orders", requireRole("admin"), async (_request, response) => {
   const store = await readStore();
+  const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   response.json({
-    purchaseOrders: [...store.purchaseOrders].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()),
+    purchaseOrders: store.purchaseOrders
+      .filter((order) => tenantPurchaseOrderFilter(order, tenantId))
+      .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()),
   });
 });
 
@@ -2775,7 +3169,12 @@ router.post("/purchase-orders", requireRole("admin"), async (request, response) 
   }
 
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const existing = parsed.data.id ? store.purchaseOrders.find((order) => order.id === parsed.data.id) : null;
+  if (existing && !tenantPurchaseOrderFilter(existing, tenantId)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
   const tasks = (parsed.data.tasks ?? existing?.tasks ?? [])
     .map((task) => {
       const hours = Math.max(0, Number(task.hours ?? 0));
@@ -2799,6 +3198,7 @@ router.post("/purchase-orders", requireRole("admin"), async (request, response) 
   }
   const order: PurchaseOrder = {
     id: parsed.data.id ?? existing?.id ?? createId("po"),
+    tenantId,
     title: parsed.data.title.trim(),
     totalAmount,
     usedAmount: existing?.usedAmount ?? 0,
@@ -2837,6 +3237,12 @@ router.route("/purchase-orders/:id").get(async (request, response) => {
     return;
   }
 
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  if (!tenantPurchaseOrderFilter(purchaseOrder, tenantId)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
   response.json({ purchaseOrder });
 }).patch(requireRole("admin"), async (request, response) => {
   const parsed = poSchema.safeParse({ ...request.body, id: request.params.id });
@@ -2849,6 +3255,12 @@ router.route("/purchase-orders/:id").get(async (request, response) => {
   const existing = store.purchaseOrders.find((order) => order.id === request.params.id);
   if (!existing) {
     respondNotFound(response, "Purchase order not found");
+    return;
+  }
+
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  if (!tenantPurchaseOrderFilter(existing, tenantId)) {
+    response.status(403).json({ message: "Forbidden" });
     return;
   }
 
@@ -2866,6 +3278,7 @@ router.route("/purchase-orders/:id").get(async (request, response) => {
 
   const purchaseOrder: PurchaseOrder = {
     ...existing,
+    tenantId,
     title: parsed.data.title.trim(),
     totalAmount,
     remainingAmount: Number((totalAmount - existing.usedAmount).toFixed(2)),
@@ -2896,6 +3309,12 @@ router.route("/purchase-orders/:id").get(async (request, response) => {
   const existing = store.purchaseOrders.find((order) => order.id === request.params.id);
   if (!existing) {
     respondNotFound(response, "Purchase order not found");
+    return;
+  }
+
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  if (!tenantPurchaseOrderFilter(existing, tenantId)) {
+    response.status(403).json({ message: "Forbidden" });
     return;
   }
 
@@ -2933,6 +3352,12 @@ router.post("/purchase-orders/:id/tasks", requireRole("admin"), async (request, 
   const existing = store.purchaseOrders.find((order) => order.id === request.params.id);
   if (!existing) {
     respondNotFound(response, "Purchase order not found");
+    return;
+  }
+
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  if (!tenantPurchaseOrderFilter(existing, tenantId)) {
+    response.status(403).json({ message: "Forbidden" });
     return;
   }
 
@@ -2988,6 +3413,12 @@ router.post("/purchase-orders/:id/tasks/:taskId/pay", requireRole("admin"), asyn
     return;
   }
 
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  if (!tenantPurchaseOrderFilter(order, tenantId)) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
   if (task.status === "paid") {
     response.json({ purchaseOrder: order });
     return;
@@ -2998,7 +3429,7 @@ router.post("/purchase-orders/:id/tasks/:taskId/pay", requireRole("admin"), asyn
     return;
   }
 
-  ensureFunds(store, task.amount, "this PO task payment");
+  ensureFunds(store, task.amount, "this PO task payment", tenantId);
   const now = nowIso();
   const next = pushAuditEvent(
     {
@@ -3006,6 +3437,7 @@ router.post("/purchase-orders/:id/tasks/:taskId/pay", requireRole("admin"), asyn
       expenses: [
         {
           id: createId("exp"),
+          tenantId,
           category: "Budget Sheet",
           group: "office",
           amount: task.amount,
@@ -3076,10 +3508,15 @@ router.post("/purchase-orders/:id/tasks/:taskId/pay", requireRole("admin"), asyn
 });
 
 router.get("/pre-approvals", requireRole("admin", "client"), async (request, response) => {
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const rows = await db
     .select()
     .from(preApprovalsTable)
-    .where(request.auth?.user.role === "client" ? eq(preApprovalsTable.clientId, request.auth.user.id) : undefined)
+    .where(
+      request.auth?.user.role === "client"
+        ? and(eq(preApprovalsTable.tenantId, tenantId), eq(preApprovalsTable.clientId, request.auth.user.id))
+        : eq(preApprovalsTable.tenantId, tenantId),
+    )
     .orderBy(desc(preApprovalsTable.updatedAt));
 
   response.json({ preApprovals: rows.map(serializePreApproval) });
@@ -3092,9 +3529,14 @@ router.post("/pre-approvals", requireRole("admin"), async (request, response) =>
     return;
   }
 
-  const client = await loadClientUser(parsed.data.clientId);
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const client = await loadClientUser(parsed.data.clientId, tenantId);
   if (!client) {
     response.status(400).json({ message: "Select a valid active client." });
+    return;
+  }
+  if ((client.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
     return;
   }
 
@@ -3107,6 +3549,7 @@ router.post("/pre-approvals", requireRole("admin"), async (request, response) =>
     .insert(preApprovalsTable)
     .values({
       id: createId("pa"),
+      tenantId,
       title: parsed.data.title.trim(),
       project: parsed.data.project.trim(),
       clientId: client.id,
@@ -3126,6 +3569,7 @@ router.post("/pre-approvals", requireRole("admin"), async (request, response) =>
     .returning();
 
   await insertBusinessAudit({
+    tenantId,
     ...recordActor(request),
     action: "created",
     entityType: "pre-approval",
@@ -3137,11 +3581,17 @@ router.post("/pre-approvals", requireRole("admin"), async (request, response) =>
 });
 
 router.route("/pre-approvals/:id").get(requireRole("admin", "client"), async (request, response) => {
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const preApprovalId = routeParam(request.params.id);
   const rows = await db.select().from(preApprovalsTable).where(eq(preApprovalsTable.id, preApprovalId)).limit(1);
   const preApproval = rows[0];
   if (!preApproval) {
     respondNotFound(response, "Pre-approval not found");
+    return;
+  }
+
+  if ((preApproval.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
     return;
   }
 
@@ -3151,6 +3601,7 @@ router.route("/pre-approvals/:id").get(requireRole("admin", "client"), async (re
 
   response.json({ preApproval: serializePreApproval(preApproval) });
 }).patch(requireRole("admin"), async (request, response) => {
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const preApprovalId = routeParam(request.params.id);
   const parsed = preApprovalSchema.safeParse({ ...request.body, id: preApprovalId });
   if (!parsed.success) {
@@ -3165,14 +3616,23 @@ router.route("/pre-approvals/:id").get(requireRole("admin", "client"), async (re
     return;
   }
 
+  if ((existing.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
   if (existing.status === "approved") {
     response.status(400).json({ message: "Approved pre-approvals cannot be edited." });
     return;
   }
 
-  const client = await loadClientUser(parsed.data.clientId);
+  const client = await loadClientUser(parsed.data.clientId, tenantId);
   if (!client) {
     response.status(400).json({ message: "Select a valid active client." });
+    return;
+  }
+  if ((client.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
     return;
   }
 
@@ -3185,6 +3645,7 @@ router.route("/pre-approvals/:id").get(requireRole("admin", "client"), async (re
     .set({
       title: parsed.data.title.trim(),
       project: parsed.data.project.trim(),
+      tenantId,
       clientId: client.id,
       clientNameSnapshot: client.name,
       date: new Date(normalizeDate(parsed.data.date)),
@@ -3200,6 +3661,7 @@ router.route("/pre-approvals/:id").get(requireRole("admin", "client"), async (re
     .returning();
 
   await insertBusinessAudit({
+    tenantId,
     ...recordActor(request),
     action: "updated",
     entityType: "pre-approval",
@@ -3209,11 +3671,17 @@ router.route("/pre-approvals/:id").get(requireRole("admin", "client"), async (re
 
   response.json({ preApproval: serializePreApproval(rows[0]!) });
 }).delete(requireRole("admin"), async (request, response) => {
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const preApprovalId = routeParam(request.params.id);
   const existingRows = await db.select().from(preApprovalsTable).where(eq(preApprovalsTable.id, preApprovalId)).limit(1);
   const existing = existingRows[0];
   if (!existing) {
     respondNotFound(response, "Pre-approval not found");
+    return;
+  }
+
+  if ((existing.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
     return;
   }
 
@@ -3224,6 +3692,7 @@ router.route("/pre-approvals/:id").get(requireRole("admin", "client"), async (re
 
   await db.delete(preApprovalsTable).where(eq(preApprovalsTable.id, existing.id));
   await insertBusinessAudit({
+    tenantId,
     ...recordActor(request),
     action: "deleted",
     entityType: "pre-approval",
@@ -3235,11 +3704,17 @@ router.route("/pre-approvals/:id").get(requireRole("admin", "client"), async (re
 });
 
 router.post("/pre-approvals/:id/submit", requireRole("admin"), async (request, response) => {
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const preApprovalId = routeParam(request.params.id);
   const rows = await db.select().from(preApprovalsTable).where(eq(preApprovalsTable.id, preApprovalId)).limit(1);
   const existing = rows[0];
   if (!existing) {
     respondNotFound(response, "Pre-approval not found");
+    return;
+  }
+
+  if ((existing.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
     return;
   }
 
@@ -3264,6 +3739,7 @@ router.post("/pre-approvals/:id/submit", requireRole("admin"), async (request, r
     .returning();
 
   await insertBusinessAudit({
+    tenantId,
     ...recordActor(request),
     action: "submitted",
     entityType: "pre-approval",
@@ -3285,6 +3761,7 @@ router.post("/pre-approvals/:id/submit", requireRole("admin"), async (request, r
 });
 
 router.post("/pre-approvals/:id/comments", requireRole("admin", "client"), async (request, response) => {
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const parsed = preApprovalCommentSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Comment is required." });
@@ -3296,6 +3773,11 @@ router.post("/pre-approvals/:id/comments", requireRole("admin", "client"), async
   const existing = rows[0];
   if (!existing) {
     respondNotFound(response, "Pre-approval not found");
+    return;
+  }
+
+  if ((existing.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
     return;
   }
 
@@ -3328,6 +3810,7 @@ router.post("/pre-approvals/:id/comments", requireRole("admin", "client"), async
     .returning();
 
   await insertBusinessAudit({
+    tenantId,
     ...recordActor(request),
     action: "commented",
     entityType: "pre-approval-comment",
@@ -3339,11 +3822,17 @@ router.post("/pre-approvals/:id/comments", requireRole("admin", "client"), async
 });
 
 router.post("/pre-approvals/:id/approve", requireRole("client"), async (request, response) => {
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const preApprovalId = routeParam(request.params.id);
   const rows = await db.select().from(preApprovalsTable).where(eq(preApprovalsTable.id, preApprovalId)).limit(1);
   const existing = rows[0];
   if (!existing) {
     respondNotFound(response, "Pre-approval not found");
+    return;
+  }
+
+  if ((existing.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
     return;
   }
 
@@ -3367,6 +3856,7 @@ router.post("/pre-approvals/:id/approve", requireRole("client"), async (request,
     .returning();
 
   await insertBusinessAudit({
+    tenantId,
     ...recordActor(request),
     action: "approved",
     entityType: "pre-approval",
@@ -3388,11 +3878,17 @@ router.post("/pre-approvals/:id/approve", requireRole("client"), async (request,
 });
 
 router.post("/pre-approvals/:id/receive-funds", requireRole("admin"), async (request, response) => {
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const preApprovalId = routeParam(request.params.id);
   const rows = await db.select().from(preApprovalsTable).where(eq(preApprovalsTable.id, preApprovalId)).limit(1);
   const existing = rows[0];
   if (!existing) {
     respondNotFound(response, "Pre-approval not found");
+    return;
+  }
+
+  if ((existing.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
     return;
   }
 
@@ -3417,13 +3913,14 @@ router.post("/pre-approvals/:id/receive-funds", requireRole("admin"), async (req
   const [updatedPreApproval] = await db.transaction(async (transaction) => {
     await transaction.insert(fundsTable).values({
       id: fundId,
+      tenantId,
       source: `Pre Approval - ${existing.title}`,
       amount: totalAmount,
       date: now,
       note: `Received from ${existing.clientNameSnapshot} for ${existing.project}.`,
       createdAt: now,
       updatedAt: now,
-    });
+    } as never);
 
     return transaction
       .update(preApprovalsTable)
@@ -3439,6 +3936,7 @@ router.post("/pre-approvals/:id/receive-funds", requireRole("admin"), async (req
   invalidateBusinessStoreCache();
 
   await insertBusinessAudit({
+    tenantId,
     ...recordActor(request),
     action: "funds_received",
     entityType: "pre-approval",
@@ -3450,6 +3948,7 @@ router.post("/pre-approvals/:id/receive-funds", requireRole("admin"), async (req
 });
 
 router.post("/pre-approvals/:id/request-changes", requireRole("client"), async (request, response) => {
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const parsed = preApprovalCommentSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Please add a comment explaining the requested changes." });
@@ -3461,6 +3960,11 @@ router.post("/pre-approvals/:id/request-changes", requireRole("client"), async (
   const existing = rows[0];
   if (!existing) {
     respondNotFound(response, "Pre-approval not found");
+    return;
+  }
+
+  if ((existing.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
+    response.status(403).json({ message: "Forbidden" });
     return;
   }
 
@@ -3493,6 +3997,7 @@ router.post("/pre-approvals/:id/request-changes", requireRole("client"), async (
     .returning();
 
   await insertBusinessAudit({
+    tenantId,
     ...recordActor(request),
     action: "changes_requested",
     entityType: "pre-approval",

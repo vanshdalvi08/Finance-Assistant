@@ -11,9 +11,16 @@ import {
   updateEmployeeAccount,
 } from "../lib/auth-service";
 import { requireAuth, requireRole } from "../middlewares/auth";
+import { rateLimit } from "../middlewares/rate-limit";
 import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../lib/notifications";
 
 const router: IRouter = Router();
+const mutationLimiter = rateLimit({
+  name: "admin-mutations",
+  windowMs: 15 * 60 * 1000,
+  max: 80,
+  message: "Too many admin changes in a short period. Please try again later.",
+});
 
 const createEmployeeSchema = z.object({
   name: z.string().trim().min(2),
@@ -52,6 +59,7 @@ function notificationActor(request: Parameters<typeof requireAuth>[0]) {
     id: request.auth?.user.id,
     name: request.auth?.user.name ?? "System",
     role: request.auth?.user.role ?? "system",
+    tenantId: request.auth?.user.tenantId,
   } as const;
 }
 
@@ -63,14 +71,21 @@ function deliverNotification(work: Promise<unknown>) {
 }
 
 router.use(requireAuth, requireRole("admin"));
+router.use((request, response, next) => {
+  if (["POST", "PATCH", "PUT", "DELETE"].includes(request.method)) {
+    return mutationLimiter(request, response, next);
+  }
+
+  next();
+});
 
 router.get("/employees", async (_request, response) => {
-  const employees = await listEmployees();
+  const employees = await listEmployees(_request.auth?.user.tenantId);
   response.json({ employees });
 });
 
 router.get("/clients", async (_request, response) => {
-  const clients = await listClients();
+  const clients = await listClients(_request.auth?.user.tenantId);
   response.json({ clients });
 });
 
@@ -82,7 +97,10 @@ router.post("/employees", async (request, response) => {
   }
 
   try {
-    const result = await createEmployeeAccount(parsed.data);
+    const result = await createEmployeeAccount({
+      ...parsed.data,
+      tenantId: request.auth?.user.tenantId,
+    });
     const actor = notificationActor(request);
     await deliverNotification(
       notifyUsersByIds(
@@ -153,7 +171,10 @@ router.post("/clients", async (request, response) => {
   }
 
   try {
-    const result = await createClientAccount(parsed.data);
+    const result = await createClientAccount({
+      ...parsed.data,
+      tenantId: request.auth?.user.tenantId,
+    });
     const actor = notificationActor(request);
     await deliverNotification(
       notifyUsersByIds(
@@ -194,7 +215,10 @@ router.patch("/employees/:id", async (request, response) => {
   }
 
   try {
-    const result = await updateEmployeeAccount(parsed.data);
+    const result = await updateEmployeeAccount({
+      ...parsed.data,
+      tenantId: request.auth?.user.tenantId,
+    });
     const actor = notificationActor(request);
     await deliverNotification(
       notifyUsersByIds(
@@ -249,7 +273,10 @@ router.patch("/clients/:id", async (request, response) => {
   }
 
   try {
-    const result = await updateClientAccount(parsed.data);
+    const result = await updateClientAccount({
+      ...parsed.data,
+      tenantId: request.auth?.user.tenantId,
+    });
     response.json({ user: result.user });
   } catch (error) {
     response.status(409).json({ message: error instanceof Error ? error.message : "Failed to update client" });
@@ -265,7 +292,7 @@ router.delete("/employees/:id", async (request, response) => {
   }
 
   try {
-    const result = await deactivateEmployeeAccount(parsed.data);
+    const result = await deactivateEmployeeAccount(parsed.data, request.auth?.user.tenantId);
     const actor = notificationActor(request);
     await deliverNotification(
       notifyUsersByIds(
@@ -318,7 +345,7 @@ router.delete("/clients/:id", async (request, response) => {
   }
 
   try {
-    const result = await deactivateClientAccount(parsed.data);
+    const result = await deactivateClientAccount(parsed.data, request.auth?.user.tenantId);
     response.json({
       user: result.user,
       message: "Client removed",

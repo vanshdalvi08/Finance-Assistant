@@ -3,8 +3,37 @@ import { z } from "zod";
 import { loginWithPassword, logoutRefreshToken, refreshLogin, requestPasswordReset, resetPassword, updateOwnProfile } from "../lib/auth-service";
 import { requireAuth } from "../middlewares/auth";
 import { REFRESH_COOKIE_NAME, refreshCookieOptions } from "../lib/cookies";
+import { rateLimit } from "../middlewares/rate-limit";
 
 const router: IRouter = Router();
+
+const loginLimiter = rateLimit({
+  name: "auth-login",
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: "Too many login attempts. Please try again later.",
+});
+
+const resetRequestLimiter = rateLimit({
+  name: "auth-reset-request",
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  message: "Too many password reset requests. Please try again later.",
+});
+
+const resetLimiter = rateLimit({
+  name: "auth-reset",
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: "Too many password reset attempts. Please try again later.",
+});
+
+const profileUpdateLimiter = rateLimit({
+  name: "auth-profile-update",
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: "Too many profile updates. Please try again later.",
+});
 
 const loginSchema = z.object({
   email: z.string().trim().email(),
@@ -29,7 +58,7 @@ const updateProfileSchema = z.object({
   profilePhotoUrl: z.string().trim().max(2_500_000).nullable().optional(),
 });
 
-router.post("/login", async (request, response) => {
+router.post("/login", loginLimiter, async (request, response) => {
   const parsed = loginSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid login payload" });
@@ -82,7 +111,7 @@ router.post("/logout", async (request, response) => {
   response.status(204).send();
 });
 
-router.post("/request-reset", async (request, response) => {
+router.post("/request-reset", resetRequestLimiter, async (request, response) => {
   const parsed = resetRequestSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid reset request" });
@@ -95,7 +124,7 @@ router.post("/request-reset", async (request, response) => {
   });
 });
 
-router.post("/reset", async (request, response) => {
+router.post("/reset", resetLimiter, async (request, response) => {
   const parsed = resetSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid reset payload" });
@@ -116,7 +145,7 @@ router.get("/me", requireAuth, (request, response) => {
   });
 });
 
-router.patch("/me", requireAuth, async (request, response) => {
+router.patch("/me", requireAuth, profileUpdateLimiter, async (request, response) => {
   const parsed = updateProfileSchema.safeParse(request.body);
   if (!parsed.success || !request.auth?.user.id) {
     response.status(400).json({ message: "Invalid profile payload" });

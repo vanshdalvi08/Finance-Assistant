@@ -23,6 +23,7 @@ async function loadUser(userId: string): Promise<PublicUser | null> {
 
   return {
     id: user.id,
+    tenantId: user.tenantId,
     name: user.name,
     email: user.email,
     phone: user.phone,
@@ -52,7 +53,7 @@ export async function requireAuth(request: Request, response: Response, next: Ne
   try {
     const payload = verifyAccessToken(token);
     const user = await loadUser(payload.sub);
-    if (!user || user.status !== "active") {
+    if (!user || user.status !== "active" || user.tenantId !== payload.tenantId) {
       response.status(401).json({ message: "Unauthorized" });
       return;
     }

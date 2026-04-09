@@ -1,5 +1,6 @@
 import { createInsertSchema } from "drizzle-zod";
 import { index, integer, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { tenantsTable } from "./tenants";
 
 export const userRoleEnum = pgEnum("user_role", ["admin", "employee", "client"]);
 export const userStatusEnum = pgEnum("user_status", ["active", "inactive"]);
@@ -17,6 +18,7 @@ export const usersTable = pgTable(
   "users",
   {
     id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenantsTable.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     email: text("email").notNull(),
     phone: text("phone").notNull(),
@@ -36,6 +38,7 @@ export const usersTable = pgTable(
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
   },
   (table) => ({
+    tenantIndex: index("users_tenant_index").on(table.tenantId),
     emailUnique: uniqueIndex("users_email_unique").on(table.email),
     phoneUnique: uniqueIndex("users_phone_unique").on(table.phone),
     employeeIdUnique: uniqueIndex("users_employee_id_unique").on(table.employeeId),

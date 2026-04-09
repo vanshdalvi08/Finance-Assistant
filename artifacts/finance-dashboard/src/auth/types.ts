@@ -2,6 +2,7 @@ export type UserRole = "admin" | "employee" | "client";
 
 export interface AuthUser {
   id: string;
+  tenantId?: string;
   email: string;
   role: UserRole;
   name?: string;
