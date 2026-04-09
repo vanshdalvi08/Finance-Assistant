@@ -209,6 +209,7 @@ export interface ProjectBudgetTask {
   id: string;
   name: string;
   description?: string;
+  maxHours?: number;
   status: "active" | "archived";
 }
 
@@ -371,6 +372,7 @@ interface SaveProjectBudgetInput {
     id?: string;
     name: string;
     description?: string;
+    maxHours?: number;
     status?: "active" | "archived";
   }>;
   actorName?: string;

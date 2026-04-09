@@ -166,6 +166,7 @@ const projectTaskSchema = z.object({
   id: businessIdSchema.optional(),
   name: z.string().trim().min(2),
   description: z.string().trim().optional(),
+  maxHours: z.coerce.number().min(0).optional(),
   status: z.enum(["active", "archived"]).optional(),
 });
 
@@ -2612,6 +2613,7 @@ router.post("/projects", requireRole("admin"), async (request, response) => {
       id: task.id ?? createId("pbt"),
       name: task.name.trim(),
       description: task.description?.trim() || undefined,
+      maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : undefined,
       status: task.status === "archived" ? "archived" : "active",
     })),
     createdAt: existing?.createdAt ?? nowIso(),
@@ -2669,6 +2671,7 @@ router.route("/projects/:id").get(async (request, response) => {
       id: task.id ?? createId("pbt"),
       name: task.name.trim(),
       description: task.description?.trim() || undefined,
+      maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : undefined,
       status: task.status === "archived" ? "archived" : "active",
     })),
     updatedAt: nowIso(),
@@ -2734,6 +2737,7 @@ router.post("/projects/:id/tasks", requireRole("admin"), async (request, respons
     id: parsed.data.id ?? createId("pbt"),
     name: parsed.data.name.trim(),
     description: parsed.data.description?.trim() || undefined,
+    maxHours: Number(parsed.data.maxHours ?? 0) > 0 ? Number(parsed.data.maxHours) : undefined,
     status: parsed.data.status === "archived" ? "archived" : "active",
   };
   const next = pushAuditEvent(

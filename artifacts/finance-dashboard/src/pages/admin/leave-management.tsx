@@ -184,21 +184,7 @@ export default function AdminLeaveManagementPage() {
               Approve employee leave, set the annual allowance, and plan holidays from one focused workspace.
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <Input type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} className="w-[220px] rounded-xl" />
-            <Select value={selectedEmployeeId} onValueChange={setSelectedEmployeeId}>
-              <SelectTrigger className="w-[220px] rounded-xl">
-                <SelectValue placeholder="Select employee" />
-              </SelectTrigger>
-              <SelectContent>
-                {employees.map((employee) => (
-                  <SelectItem key={employee.id} value={employee.id}>
-                    {employee.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          <Input type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} className="w-[220px] rounded-xl" />
         </div>
 
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -430,13 +416,32 @@ export default function AdminLeaveManagementPage() {
           </div>
         </div>
 
-        <Card className="border-border/60 bg-card/80 shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-base font-medium">Employee Month Calendar</CardTitle>
-            <CardDescription>
-              Approved leave and holidays reflect here and also flow into the employee timesheet automatically.
-            </CardDescription>
-          </CardHeader>
+            <Card className="border-border/60 bg-card/80 shadow-sm">
+              <CardHeader>
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="space-y-1">
+                    <CardTitle className="text-base font-medium">Employee Month Calendar</CardTitle>
+                    <CardDescription>
+                      Approved leave and holidays reflect here and also flow into the employee timesheet automatically.
+                    </CardDescription>
+                  </div>
+                  <div className="w-full max-w-[240px] space-y-1">
+                    <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Calendar Employee</p>
+                    <Select value={selectedEmployeeId} onValueChange={setSelectedEmployeeId}>
+                      <SelectTrigger className="rounded-xl">
+                        <SelectValue placeholder="Select employee" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {employees.map((employee) => (
+                          <SelectItem key={employee.id} value={employee.id}>
+                            {employee.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </CardHeader>
           <CardContent className="space-y-4">
             {!selectedEmployee || !monthCalendar ? (
               <div className="rounded-xl border border-dashed border-border/60 px-4 py-10 text-center text-sm text-muted-foreground">

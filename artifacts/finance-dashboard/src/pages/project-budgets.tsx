@@ -32,6 +32,7 @@ type TaskDraft = {
   id?: string;
   name: string;
   description: string;
+  maxHours: string;
   status: "active" | "archived";
 };
 
@@ -46,6 +47,7 @@ type ProjectForm = {
 const EMPTY_TASK: TaskDraft = {
   name: "",
   description: "",
+  maxHours: "",
   status: "active",
 };
 
@@ -73,6 +75,7 @@ function toForm(project?: ProjectRecord | null): ProjectForm {
           id: task.id,
           name: task.name,
           description: task.description ?? "",
+          maxHours: task.maxHours ? String(task.maxHours) : "",
           status: task.status === "archived" ? "archived" : "active",
         }))
       : [cloneEmptyTask()],
@@ -134,6 +137,7 @@ export default function ProjectBudgetsPage() {
           id: task.id,
           name: task.name.trim(),
           description: task.description.trim(),
+          maxHours: Math.max(0, Number(task.maxHours || 0)) || undefined,
           status: task.status,
         }))
         .filter((task) => task.name.length > 0);
@@ -385,6 +389,11 @@ export default function ProjectBudgetsPage() {
                               {task.description ? (
                                 <p className="mt-1 text-sm text-muted-foreground">{task.description}</p>
                               ) : null}
+                              {task.maxHours ? (
+                                <p className="mt-2 text-xs text-muted-foreground">
+                                  Max claimable hours: <span className="font-medium text-foreground">{task.maxHours}h</span>
+                                </p>
+                              ) : null}
                             </div>
                             <Badge variant="outline" className="rounded-full border-border/60 bg-background/50 font-normal capitalize">
                               {task.status}
@@ -457,7 +466,7 @@ export default function ProjectBudgetsPage() {
             <div className="space-y-3">
               {form.tasks.map((task, index) => (
                 <div key={task.id ?? `task-${index}`} className="rounded-xl border border-border/60 bg-secondary/10 p-4">
-                  <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_160px_auto]">
+                  <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_140px_160px_auto]">
                     <Input
                       value={task.name}
                       onChange={(event) => updateTask(index, "name", event.target.value)}
@@ -467,6 +476,14 @@ export default function ProjectBudgetsPage() {
                       value={task.description}
                       onChange={(event) => updateTask(index, "description", event.target.value)}
                       placeholder="Short task description"
+                    />
+                    <Input
+                      type="number"
+                      min={0}
+                      step={0.5}
+                      value={task.maxHours}
+                      onChange={(event) => updateTask(index, "maxHours", event.target.value)}
+                      placeholder="Max hours"
                     />
                     <Select value={task.status} onValueChange={(value) => updateTask(index, "status", value)}>
                       <SelectTrigger className="rounded-xl">

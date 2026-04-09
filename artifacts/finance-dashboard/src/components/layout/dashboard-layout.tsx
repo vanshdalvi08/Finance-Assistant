@@ -13,7 +13,7 @@ export function DashboardLayout({ children }: { children: React.ReactNode }) {
       <main
         className={cn(
           "flex-1 pt-16 transition-all duration-300",
-          sidebarCollapsed ? "ml-16" : "ml-60"
+          sidebarCollapsed ? "ml-20" : "ml-60"
         )}
       >
         <div className="p-8 max-w-7xl mx-auto">{children}</div>

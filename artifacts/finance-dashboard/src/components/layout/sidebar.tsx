@@ -324,10 +324,12 @@ export function Sidebar() {
     <aside
       className={cn(
         "fixed left-0 top-0 z-40 flex h-screen flex-col border-r border-sidebar-border bg-sidebar transition-all duration-300",
-        sidebarCollapsed ? "w-16" : "w-64",
+        sidebarCollapsed
+          ? "w-20 bg-[linear-gradient(180deg,hsl(var(--sidebar))_0%,hsl(var(--sidebar))_58%,hsl(var(--sidebar-accent)/0.32)_100%)] shadow-[inset_-1px_0_0_rgba(255,255,255,0.02),0_12px_30px_rgba(0,0,0,0.22)]"
+          : "w-64",
       )}
     >
-      <div className="flex h-16 items-center justify-between border-b border-sidebar-border px-4">
+      <div className={cn("flex h-16 items-center border-b border-sidebar-border", sidebarCollapsed ? "justify-center px-2" : "justify-between px-4")}>
         {!sidebarCollapsed ? (
           <div className="flex items-center gap-2">
             <div className="flex h-6 w-6 items-center justify-center rounded bg-primary">
@@ -336,16 +338,16 @@ export function Sidebar() {
             <span className="font-bold tracking-tight text-sidebar-foreground">Yojak</span>
           </div>
         ) : (
-          <div className="mx-auto flex h-8 w-8 items-center justify-center rounded bg-primary">
+          <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl border border-sidebar-border/70 bg-primary/95 shadow-[0_10px_22px_rgba(0,0,0,0.25)]">
             <span className="text-sm font-bold text-primary-foreground">Y</span>
           </div>
         )}
       </div>
 
-      <div className="flex-1 overflow-y-auto px-2 py-4">
+      <div className={cn("flex-1 px-2 py-4", sidebarCollapsed ? "overflow-y-auto no-scrollbar" : "overflow-y-auto")}>
         {isAdmin ? (
           sidebarCollapsed ? (
-            <div className="flex flex-col gap-1">
+            <div className="mx-auto flex w-14 flex-col gap-2">
               {collapsedAdminItems.map((item) => {
                 const active = isRouteActive(location, item.href);
                 return (
@@ -353,13 +355,13 @@ export function Sidebar() {
                     <div
                       title={item.label}
                       className={cn(
-                        "relative flex cursor-pointer items-center justify-center rounded-md py-2.5 transition-colors",
+                        "relative flex h-12 w-12 cursor-pointer items-center justify-center rounded-[1.15rem] border border-transparent transition-all",
                         active
-                          ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
-                          : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground",
+                          ? "border-sidebar-border bg-sidebar-accent/95 font-medium text-sidebar-accent-foreground shadow-[0_0_0_1px_rgba(255,255,255,0.02),0_10px_20px_rgba(0,0,0,0.18)]"
+                          : "bg-sidebar-accent/10 text-muted-foreground hover:border-sidebar-border/60 hover:bg-sidebar-accent/35 hover:text-sidebar-foreground",
                       )}
                     >
-                      <item.icon className="h-4 w-4 shrink-0" />
+                      <item.icon className="h-5 w-5 shrink-0" />
                       {renderActivityBadge(item.href)}
                     </div>
                   </Link>
@@ -501,7 +503,7 @@ export function Sidebar() {
             </div>
           )
         ) : role === "client" ? (
-          <div className="flex flex-col gap-1">
+          <div className={cn("flex flex-col gap-1", sidebarCollapsed && "mx-auto w-11 gap-1.5")}>
             {clientNavItems.map((item) => {
               const active = isRouteActive(location, item.href);
               return (
@@ -509,12 +511,13 @@ export function Sidebar() {
                   <div
                     className={cn(
                       "relative flex cursor-pointer items-center gap-3 rounded-md px-3 py-2 transition-colors",
+                      sidebarCollapsed && "h-11 w-11 justify-center rounded-xl border border-transparent px-0",
                       active
                         ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
                         : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground",
                     )}
                   >
-                    <item.icon className="h-4 w-4 shrink-0" />
+                      <item.icon className="h-4 w-4 shrink-0" />
                     {!sidebarCollapsed && <span>{item.label}</span>}
                   </div>
                 </Link>
@@ -522,7 +525,7 @@ export function Sidebar() {
             })}
           </div>
         ) : (
-          <div className="flex flex-col gap-1">
+          <div className={cn("flex flex-col gap-1", sidebarCollapsed && "mx-auto w-11 gap-1.5")}>
             {employeeNavItems.map((item) => {
               const active = isRouteActive(location, item.href);
               return (
@@ -530,12 +533,13 @@ export function Sidebar() {
                   <div
                     className={cn(
                       "relative flex cursor-pointer items-center gap-3 rounded-md px-3 py-2 transition-colors",
+                      sidebarCollapsed && "h-11 w-11 justify-center rounded-xl border border-transparent px-0",
                       active
                         ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
                         : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-foreground",
                     )}
                   >
-                    <item.icon className="h-4 w-4 shrink-0" />
+                      <item.icon className="h-4 w-4 shrink-0" />
                     {!sidebarCollapsed && <span>{item.label}</span>}
                   </div>
                 </Link>
@@ -545,17 +549,20 @@ export function Sidebar() {
         )}
       </div>
 
-      <div className="flex justify-end border-t border-sidebar-border p-2">
+      <div className={cn("border-t border-sidebar-border p-2", sidebarCollapsed ? "flex justify-center bg-sidebar/70" : "flex justify-end")}>
         <button
           onClick={toggleSidebar}
-          className="rounded-md p-2 text-muted-foreground transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+          className={cn(
+            "rounded-xl p-2 text-muted-foreground transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-foreground",
+            sidebarCollapsed && "border border-sidebar-border/70 bg-sidebar-accent/25 shadow-sm",
+          )}
         >
           {sidebarCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
         </button>
       </div>
 
-      <div className="border-t border-sidebar-border p-3">
-        <div className="flex items-center gap-3">
+      <div className={cn("border-t border-sidebar-border p-3", sidebarCollapsed && "bg-sidebar/80")}>
+        <div className={cn("flex items-center gap-3", sidebarCollapsed && "justify-center")}>
           <EmployeeAvatar
             name={user?.name ?? userEmail ?? initials}
             src={user?.profilePhotoUrl}
@@ -575,8 +582,8 @@ export function Sidebar() {
             title="Sign out"
             data-testid="button-logout"
             className={cn(
-              "shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive",
-              sidebarCollapsed && "mx-auto",
+              "shrink-0 rounded-xl p-1.5 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive",
+              sidebarCollapsed && "border border-sidebar-border/70 bg-sidebar-accent/20",
             )}
           >
             <LogOut className="h-4 w-4" />

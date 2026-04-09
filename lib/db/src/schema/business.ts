@@ -42,6 +42,7 @@ export interface ProjectBudgetTaskRecord {
   id: string;
   name: string;
   description?: string;
+  maxHours?: number;
   status: ProjectTaskStatus;
 }
 
@@ -439,6 +440,7 @@ export const projectTasksTable = pgTable(
     projectId: text("project_id").notNull().references(() => projectsTable.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     description: text("description").notNull().default(""),
+    maxHours: real("max_hours"),
     status: projectTaskStatusEnum("status").notNull().default("active"),
     sortOrder: integer("sort_order").notNull().default(0),
     createdById: uuid("created_by_id").references(() => usersTable.id, { onDelete: "set null" }),

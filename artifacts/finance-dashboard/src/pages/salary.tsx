@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { api } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -127,6 +128,7 @@ function patchTransactions(current: Transaction[] | undefined, nextRecord: Salar
 export default function Salary() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [showPaidHistory, setShowPaidHistory] = useState(false);
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
   const { data: salaryData = [] } = useQuery({ queryKey: ["salaries"], queryFn: api.getSalaries });
@@ -234,7 +236,7 @@ export default function Salary() {
           </CardContent>
         </Card>
 
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div className="space-y-4">
           <Card className="border-border/50">
             <CardHeader className="pb-3">
               <CardTitle className="text-base flex items-center gap-2">
@@ -310,6 +312,20 @@ export default function Salary() {
             </CardContent>
           </Card>
 
+          {paidPayroll.length > 0 ? (
+            <div className="flex justify-end">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="rounded-full px-4 text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+                onClick={() => setShowPaidHistory((current) => !current)}
+              >
+                {showPaidHistory ? "Hide Paid History" : `Previous Paid Payroll (${paidPayroll.length})`}
+              </Button>
+            </div>
+          ) : null}
+
+          {showPaidHistory ? (
           <Card className="border-border/50">
             <CardHeader className="pb-3">
               <CardTitle className="text-base flex items-center gap-2">
@@ -359,6 +375,7 @@ export default function Salary() {
               </div>
             </CardContent>
           </Card>
+          ) : null}
         </div>
       </div>
     </DashboardLayout>

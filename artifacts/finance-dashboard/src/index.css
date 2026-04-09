@@ -203,4 +203,13 @@
     border: 2px solid transparent;
     background-clip: padding-box;
   }
+
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
 }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { api, type AdminOverview, type ChartPoint, type Fund, type Transaction } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -11,10 +11,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
-import { Area, AreaChart, ResponsiveContainer, Tooltip } from "recharts";
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowDownRight, Plus, Wallet } from "lucide-react";
+import { ArrowDownRight, ChevronDown, ChevronRight, Plus, Wallet } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
 const fundSchema = z.object({
@@ -83,6 +83,8 @@ export default function Funds() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [showPreviousInflows, setShowPreviousInflows] = useState(false);
+  const [openHistoryMonth, setOpenHistoryMonth] = useState<string | null>(null);
 
   const { data: funds = [] } = useQuery({
     queryKey: ["funds"],
@@ -98,6 +100,43 @@ export default function Funds() {
   });
 
   const totalCapitalInflow = funds.reduce((sum, fund) => sum + fund.amount, 0);
+  const simplifiedChartData = useMemo(
+    () =>
+      chartData.map((point) => ({
+        ...point,
+        label: point.month,
+      })),
+    [chartData],
+  );
+  const fundGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      { key: string; label: string; funds: Fund[]; total: number }
+    >();
+
+    for (const fund of [...funds].sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime())) {
+      const key = fund.date.slice(0, 7);
+      const group =
+        groups.get(key) ??
+        {
+          key,
+          label: format(new Date(`${key}-01T00:00:00`), "MMMM yyyy"),
+          funds: [],
+          total: 0,
+        };
+      group.funds.push(fund);
+      group.total += fund.amount;
+      groups.set(key, group);
+    }
+
+    return Array.from(groups.values()).sort((left, right) => right.key.localeCompare(left.key));
+  }, [funds]);
+  const latestFundGroup = fundGroups[0] ?? null;
+  const previousFundGroups = fundGroups.slice(1);
+  const activeHistoryMonth =
+    openHistoryMonth && previousFundGroups.some((group) => group.key === openHistoryMonth)
+      ? openHistoryMonth
+      : previousFundGroups[0]?.key ?? null;
 
   const form = useForm<z.infer<typeof fundSchema>>({
     resolver: zodResolver(fundSchema),
@@ -232,24 +271,40 @@ export default function Funds() {
 
         <Card className="border-border/50">
           <CardHeader className="py-4">
-            <CardTitle className="text-base">Capital Growth</CardTitle>
+            <CardTitle className="text-base">Capital Inflow Trend</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="h-[120px] w-full">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-2 text-sm">
+              <p className="text-muted-foreground">A simple month-by-month view of funds added to the business.</p>
+              <div className="rounded-xl border border-border/60 bg-secondary/10 px-3 py-1.5 text-xs text-muted-foreground">
+                Hover on the line to see the exact month and amount.
+              </div>
+            </div>
+            <div className="h-[210px] w-full">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartData} margin={{ top: 0, right: 0, left: 0, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="colorFundsOnly" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
-                      <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
+                <LineChart data={simplifiedChartData} margin={{ top: 12, right: 12, left: 8, bottom: 0 }}>
+                  <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="3 3" vertical={false} opacity={0.35} />
+                  <XAxis
+                    dataKey="label"
+                    tickLine={false}
+                    axisLine={false}
+                    tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
+                  />
                   <Tooltip
                     contentStyle={{ backgroundColor: "hsl(var(--card))", borderColor: "hsl(var(--border))" }}
                     labelStyle={{ color: "hsl(var(--muted-foreground))" }}
+                    labelFormatter={(label) => `Month: ${label}`}
+                    formatter={(value) => [formatCurrency(Number(value)), "Funds Added"]}
                   />
-                  <Area type="monotone" dataKey="funds" stroke="hsl(var(--primary))" fillOpacity={1} fill="url(#colorFundsOnly)" />
-                </AreaChart>
+                  <Line
+                    type="monotone"
+                    dataKey="funds"
+                    stroke="hsl(var(--primary))"
+                    strokeWidth={3}
+                    dot={{ r: 4, strokeWidth: 2, fill: "hsl(var(--background))" }}
+                    activeDot={{ r: 5 }}
+                  />
+                </LineChart>
               </ResponsiveContainer>
             </div>
           </CardContent>
@@ -257,47 +312,137 @@ export default function Funds() {
 
         <Card className="border-border/50">
           <CardHeader>
-            <CardTitle className="text-base">Inflow History</CardTitle>
+            <CardTitle className="text-base">Recent Inflows</CardTitle>
           </CardHeader>
           <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow className="border-border/50">
-                  <TableHead>Source</TableHead>
-                  <TableHead>Note</TableHead>
-                  <TableHead>Date</TableHead>
-                  <TableHead className="text-right">Amount</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {funds.length === 0 ? (
-                  <TableRow className="border-border/50">
-                    <TableCell colSpan={4} className="py-10 text-center text-muted-foreground">
-                      No inflows recorded yet.
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  funds.map((fund) => (
-                    <TableRow key={fund.id} className="border-border/50">
-                      <TableCell className="font-medium flex items-center gap-2">
-                        <div className="p-1.5 rounded-md bg-primary/10 text-primary">
-                          <ArrowDownRight className="w-3.5 h-3.5" />
-                        </div>
-                        {fund.source}
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">{fund.note || "-"}</TableCell>
-                      <TableCell className="text-muted-foreground">{format(new Date(fund.date), "MMM dd, yyyy")}</TableCell>
-                      <TableCell className="text-right font-medium text-primary">
-                        +{fund.amount.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
-                      </TableCell>
+            {!latestFundGroup ? (
+              <div className="py-10 text-center text-muted-foreground">No inflows recorded yet.</div>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between rounded-xl border border-border/60 bg-secondary/10 px-4 py-3">
+                  <div>
+                    <p className="text-sm font-medium">{latestFundGroup.label}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {latestFundGroup.funds.length} inflow{latestFundGroup.funds.length !== 1 ? "s" : ""}
+                    </p>
+                  </div>
+                  <p className="text-sm font-semibold text-primary">{formatCurrency(latestFundGroup.total)}</p>
+                </div>
+
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-border/50">
+                      <TableHead>Source</TableHead>
+                      <TableHead>Note</TableHead>
+                      <TableHead>Date</TableHead>
+                      <TableHead className="text-right">Amount</TableHead>
                     </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {latestFundGroup.funds.map((fund) => (
+                      <TableRow key={fund.id} className="border-border/50">
+                        <TableCell className="font-medium flex items-center gap-2">
+                          <div className="p-1.5 rounded-md bg-primary/10 text-primary">
+                            <ArrowDownRight className="w-3.5 h-3.5" />
+                          </div>
+                          {fund.source}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">{fund.note || "-"}</TableCell>
+                        <TableCell className="text-muted-foreground">{format(new Date(fund.date), "MMM dd, yyyy")}</TableCell>
+                        <TableCell className="text-right font-medium text-primary">
+                          +{fund.amount.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
           </CardContent>
         </Card>
+
+        {previousFundGroups.length > 0 ? (
+          <div className="flex justify-end">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="rounded-full px-4 text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+              onClick={() => setShowPreviousInflows((current) => !current)}
+            >
+              {showPreviousInflows ? "Hide Previous Inflows" : `Previous Inflows (${previousFundGroups.length})`}
+            </Button>
+          </div>
+        ) : null}
+
+        {showPreviousInflows && previousFundGroups.length > 0 ? (
+          <Card className="border-border/50">
+            <CardHeader>
+              <CardTitle className="text-base">Previous Inflows</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {previousFundGroups.map((group) => {
+                const isOpen = group.key === activeHistoryMonth;
+
+                return (
+                  <Card key={group.key} className="border-border/50 shadow-none">
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left"
+                      onClick={() => setOpenHistoryMonth((current) => (current === group.key ? null : group.key))}
+                    >
+                      <div className="flex items-center gap-2">
+                        {isOpen ? (
+                          <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                        )}
+                        <div>
+                          <p className="font-medium text-foreground">{group.label}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {group.funds.length} inflow{group.funds.length !== 1 ? "s" : ""}
+                          </p>
+                        </div>
+                      </div>
+                      <p className="text-sm font-semibold text-primary">{formatCurrency(group.total)}</p>
+                    </button>
+
+                    {isOpen ? (
+                      <CardContent className="pt-0">
+                        <Table>
+                          <TableHeader>
+                            <TableRow className="border-border/50">
+                              <TableHead>Source</TableHead>
+                              <TableHead>Note</TableHead>
+                              <TableHead>Date</TableHead>
+                              <TableHead className="text-right">Amount</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {group.funds.map((fund) => (
+                              <TableRow key={fund.id} className="border-border/50">
+                                <TableCell className="font-medium">{fund.source}</TableCell>
+                                <TableCell className="text-muted-foreground">{fund.note || "-"}</TableCell>
+                                <TableCell className="text-muted-foreground">{format(new Date(fund.date), "MMM dd, yyyy")}</TableCell>
+                                <TableCell className="text-right font-medium text-primary">
+                                  +{fund.amount.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </CardContent>
+                    ) : null}
+                  </Card>
+                );
+              })}
+            </CardContent>
+          </Card>
+        ) : null}
       </div>
     </DashboardLayout>
   );
+}
+
+function formatCurrency(value: number) {
+  return value.toLocaleString("en-IN", { style: "currency", currency: "INR" });
 }

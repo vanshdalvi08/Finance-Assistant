@@ -82,6 +82,10 @@ function lineTotal(line: TimesheetTaskLine) {
   return DAYS.reduce((sum, day) => sum + (line.hours[day.key] ?? 0), 0);
 }
 
+function positiveTaskLimit(task?: { maxHours?: number }) {
+  return Number(task?.maxHours ?? 0) > 0 ? Number(task?.maxHours) : undefined;
+}
+
 function entryTotal(entry: TimesheetEntry | null) {
   if (!entry) {
     return 0;
@@ -415,6 +419,29 @@ export default function EmployeeTimesheetPage() {
     });
   }
 
+  function taskLimitForLine(line: TimesheetTaskLine) {
+    if (!line.projectTaskId) {
+      return undefined;
+    }
+
+    const task = getProjectTaskOptions(line.project).find((option) => option.id === line.projectTaskId);
+    return positiveTaskLimit(task);
+  }
+
+  function claimedHoursForTask(taskId: string, excludeLineId?: string) {
+    if (!draft) {
+      return 0;
+    }
+
+    return draft.lines.reduce((sum, line) => {
+      if (line.projectTaskId !== taskId || line.id === excludeLineId) {
+        return sum;
+      }
+
+      return sum + lineTotal(line);
+    }, 0);
+  }
+
   const fieldControlClass =
     "h-9 w-full rounded-xl border border-border/55 bg-background/80 px-3 text-sm shadow-none outline-none transition focus:border-primary/50 focus:ring-2 focus:ring-primary/10 disabled:cursor-not-allowed disabled:opacity-60";
 
@@ -513,7 +540,23 @@ export default function EmployeeTimesheetPage() {
   }
 
   function changeHour(lineId: string, day: DayKey, rawValue: string) {
-    const nextValue = rawValue === "" ? 0 : Math.max(0, Math.min(24, Number(rawValue || 0)));
+    const requestedValue = rawValue === "" ? 0 : Math.max(0, Math.min(24, Number(rawValue || 0)));
+    const targetLine = draft?.lines.find((line) => line.id === lineId);
+    const taskLimit = targetLine ? taskLimitForLine(targetLine) : undefined;
+    const currentValue = Number(targetLine?.hours[day] ?? 0);
+    const currentLineTotal = targetLine ? lineTotal(targetLine) : 0;
+    const otherTaskHours = targetLine?.projectTaskId ? claimedHoursForTask(targetLine.projectTaskId, lineId) : 0;
+    const maxAvailableForCell =
+      taskLimit !== undefined ? Math.max(0, taskLimit - otherTaskHours - (currentLineTotal - currentValue)) : 24;
+    const nextValue = Math.max(0, Math.min(requestedValue, maxAvailableForCell, 24));
+
+    if (requestedValue > nextValue && taskLimit !== undefined) {
+      toast({
+        title: "Task hour limit reached",
+        description: `${targetLine?.task || "This task"} allows a maximum of ${taskLimit} hours this week.`,
+        variant: "destructive",
+      });
+    }
 
     updateLine(lineId, (line) => ({
       ...line,
@@ -719,6 +762,10 @@ export default function EmployeeTimesheetPage() {
                       const projectSelectionValue = getProjectSelectionValue(line);
                       const taskSelectionValue = getTaskSelectionValue(line);
                       const projectTaskOptions = getProjectTaskOptions(line.project);
+                      const selectedTaskLimit = taskLimitForLine(line);
+                      const selectedTaskClaimed = line.projectTaskId
+                        ? claimedHoursForTask(line.projectTaskId, line.id) + lineTotal(line)
+                        : lineTotal(line);
                       const showProjectInput = projectSelectionValue === "__custom__" || projectOptions.length === 0;
                       const hasProjectValue = Boolean(line.project.trim());
                       const showTaskInput = hasProjectValue && (taskSelectionValue === "__custom__" || projectTaskOptions.length === 0);
@@ -780,6 +827,7 @@ export default function EmployeeTimesheetPage() {
                                       {projectTaskOptions.map((task) => (
                                         <option key={task.id} value={task.name}>
                                           {task.name}
+                                          {positiveTaskLimit(task) ? ` (${positiveTaskLimit(task)}h max)` : ""}
                                         </option>
                                       ))}
                                       <option value="__custom__">Custom task</option>
@@ -820,6 +868,13 @@ export default function EmployeeTimesheetPage() {
                                   Choose a project first
                                 </div>
                               )}
+                              {selectedTaskLimit ? (
+                                <p className="text-[11px] text-muted-foreground">
+                                  Max this week: <span className="font-medium text-foreground">{selectedTaskLimit}h</span>
+                                  {" · "}
+                                  Claimed: <span className="font-medium text-foreground">{Number(selectedTaskClaimed.toFixed(1))}h</span>
+                                </p>
+                              ) : null}
                             </div>
                           </td>
                           {weekDates.map((day) => (

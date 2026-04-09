@@ -1,9 +1,18 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { BanknoteArrowDown, BanknoteArrowUp, Search, Wallet, X } from "lucide-react";
+import {
+  BanknoteArrowDown,
+  BanknoteArrowUp,
+  ChevronDown,
+  ChevronRight,
+  Search,
+  SlidersHorizontal,
+  Wallet,
+  X,
+} from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
-import { api, Transaction } from "@/lib/api";
+import { api, type Transaction } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,6 +41,13 @@ const TYPE_CONFIG = {
   },
 } as const;
 
+function formatCurrency(value: number) {
+  return value.toLocaleString("en-IN", {
+    style: "currency",
+    currency: "INR",
+  });
+}
+
 export default function Transactions() {
   const initialType =
     typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("type") : null;
@@ -43,6 +59,8 @@ export default function Transactions() {
   const [filterAmountMin, setFilterAmountMin] = useState("");
   const [filterAmountMax, setFilterAmountMax] = useState("");
   const [search, setSearch] = useState("");
+  const [showFilters, setShowFilters] = useState(false);
+  const [openMonthKey, setOpenMonthKey] = useState<string | null>(null);
 
   const { data: transactions = [], isLoading } = useQuery({
     queryKey: ["transactions"],
@@ -80,6 +98,41 @@ export default function Transactions() {
       return true;
     });
   }, [sorted, filterType, filterDateFrom, filterDateTo, filterAmountMin, filterAmountMax, search]);
+
+  const monthGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      { key: string; label: string; transactions: Transaction[]; inflow: number; outflow: number }
+    >();
+
+    for (const transaction of filtered) {
+      const key = format(new Date(transaction.date), "yyyy-MM");
+      const existing =
+        groups.get(key) ??
+        {
+          key,
+          label: format(new Date(transaction.date), "MMMM yyyy"),
+          transactions: [],
+          inflow: 0,
+          outflow: 0,
+        };
+
+      existing.transactions.push(transaction);
+      if (transaction.amount > 0) {
+        existing.inflow += transaction.amount;
+      } else {
+        existing.outflow += Math.abs(transaction.amount);
+      }
+      groups.set(key, existing);
+    }
+
+    return Array.from(groups.values()).sort((left, right) => right.key.localeCompare(left.key));
+  }, [filtered]);
+
+  const activeMonthKey =
+    openMonthKey && monthGroups.some((group) => group.key === openMonthKey)
+      ? openMonthKey
+      : monthGroups[0]?.key ?? null;
 
   const hasFilter =
     filterType !== "all" || filterDateFrom || filterDateTo || filterAmountMin || filterAmountMax || search;
@@ -125,7 +178,7 @@ export default function Transactions() {
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-          <Card className="border-emerald-500/10 bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.08),transparent_36%),hsl(var(--card))] shadow-[0_0_0_1px_rgba(16,185,129,0.05),0_6px_18px_rgba(0,0,0,0.08)]">
+          <Card className="border-emerald-500/10 bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.08),transparent_36%),hsl(var(--card))] shadow-[0_0_0_1px_rgba(16,185,129,0.04),0_4px_12px_rgba(0,0,0,0.04)]">
             <CardContent className="px-5 py-5">
               <div className="mb-3 flex items-center justify-between">
                 <p className="text-xs uppercase tracking-[0.14em] text-muted-foreground">Available Funds</p>
@@ -133,9 +186,7 @@ export default function Transactions() {
                   <Wallet className="h-4 w-4" />
                 </div>
               </div>
-              <p className="text-3xl font-bold tracking-tight">
-                {availableFunds.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
-              </p>
+              <p className="text-3xl font-bold tracking-tight">{formatCurrency(availableFunds)}</p>
               <p className="mt-2 text-xs text-muted-foreground">Live balance after approved expenses and paid salary.</p>
             </CardContent>
           </Card>
@@ -148,9 +199,7 @@ export default function Transactions() {
                   <BanknoteArrowUp className="h-4 w-4" />
                 </div>
               </div>
-              <p className="text-3xl font-bold tracking-tight text-primary">
-                +{totalInflow.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
-              </p>
+              <p className="text-3xl font-bold tracking-tight text-primary">+{formatCurrency(totalInflow)}</p>
               <p className="mt-2 text-xs text-muted-foreground">{filtered.length} records in the current view.</p>
             </CardContent>
           </Card>
@@ -163,87 +212,95 @@ export default function Transactions() {
                   <BanknoteArrowDown className="h-4 w-4" />
                 </div>
               </div>
-              <p className="text-3xl font-bold tracking-tight text-rose-300">
-                -{totalOutflow.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
-              </p>
+              <p className="text-3xl font-bold tracking-tight text-rose-300">-{formatCurrency(totalOutflow)}</p>
               <p className="mt-2 text-xs text-muted-foreground">Expenses, payroll, and approved operational deductions.</p>
             </CardContent>
           </Card>
         </div>
 
         <Card className="border-border/50">
-          <CardHeader className="pb-3">
+          <CardHeader className="flex flex-row items-center justify-between pb-3">
             <CardTitle className="text-base">Ledger Filters</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4 px-5 pb-5 pt-0">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
-              <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">Type</Label>
-                <Select value={filterType} onValueChange={setFilterType}>
-                  <SelectTrigger className="h-10 rounded-xl border-border/60 bg-card/70 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Types</SelectItem>
-                    <SelectItem value="fund">Fund Inflow</SelectItem>
-                    <SelectItem value="expense">Expenses</SelectItem>
-                    <SelectItem value="salary">Salary</SelectItem>
-                    <SelectItem value="purchase-order">Budget Sheets</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">From Date</Label>
-                <Input
-                  type="date"
-                  className="h-10 rounded-xl border-border/60 bg-card/70 text-xs"
-                  value={filterDateFrom}
-                  onChange={(event) => setFilterDateFrom(event.target.value)}
-                />
-              </div>
-
-              <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">To Date</Label>
-                <Input
-                  type="date"
-                  className="h-10 rounded-xl border-border/60 bg-card/70 text-xs"
-                  value={filterDateTo}
-                  onChange={(event) => setFilterDateTo(event.target.value)}
-                />
-              </div>
-
-              <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">Min Amount (₹)</Label>
-                <Input
-                  type="number"
-                  placeholder="0"
-                  className="h-10 rounded-xl border-border/60 bg-card/70 text-xs"
-                  value={filterAmountMin}
-                  onChange={(event) => setFilterAmountMin(event.target.value)}
-                />
-              </div>
-
-              <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">Max Amount (₹)</Label>
-                <Input
-                  type="number"
-                  placeholder="Any"
-                  className="h-10 rounded-xl border-border/60 bg-card/70 text-xs"
-                  value={filterAmountMax}
-                  onChange={(event) => setFilterAmountMax(event.target.value)}
-                />
-              </div>
-            </div>
-
-            {hasFilter ? (
-              <div className="flex justify-end border-t border-border/50 pt-3">
+            <div className="flex items-center gap-2">
+              {hasFilter ? (
                 <Button variant="ghost" size="sm" onClick={clearFilters} className="h-8 gap-1 text-xs">
-                  <X className="h-3 w-3" /> Clear filters
+                  <X className="h-3 w-3" /> Clear
                 </Button>
+              ) : null}
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 rounded-xl"
+                onClick={() => setShowFilters((current) => !current)}
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+                {showFilters ? "Hide Filters" : "Filters"}
+              </Button>
+            </div>
+          </CardHeader>
+          {showFilters ? (
+            <CardContent className="space-y-4 px-5 pb-5 pt-0">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Type</Label>
+                  <Select value={filterType} onValueChange={setFilterType}>
+                    <SelectTrigger className="h-10 rounded-xl border-border/60 bg-card/70 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Types</SelectItem>
+                      <SelectItem value="fund">Fund Inflow</SelectItem>
+                      <SelectItem value="expense">Expenses</SelectItem>
+                      <SelectItem value="salary">Salary</SelectItem>
+                      <SelectItem value="purchase-order">Budget Sheets</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">From Date</Label>
+                  <Input
+                    type="date"
+                    className="h-10 rounded-xl border-border/60 bg-card/70 text-xs"
+                    value={filterDateFrom}
+                    onChange={(event) => setFilterDateFrom(event.target.value)}
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">To Date</Label>
+                  <Input
+                    type="date"
+                    className="h-10 rounded-xl border-border/60 bg-card/70 text-xs"
+                    value={filterDateTo}
+                    onChange={(event) => setFilterDateTo(event.target.value)}
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Min Amount (INR)</Label>
+                  <Input
+                    type="number"
+                    placeholder="0"
+                    className="h-10 rounded-xl border-border/60 bg-card/70 text-xs"
+                    value={filterAmountMin}
+                    onChange={(event) => setFilterAmountMin(event.target.value)}
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Max Amount (INR)</Label>
+                  <Input
+                    type="number"
+                    placeholder="Any"
+                    className="h-10 rounded-xl border-border/60 bg-card/70 text-xs"
+                    value={filterAmountMax}
+                    onChange={(event) => setFilterAmountMax(event.target.value)}
+                  />
+                </div>
               </div>
-            ) : null}
-          </CardContent>
+            </CardContent>
+          ) : null}
         </Card>
 
         {isLoading ? (
@@ -251,66 +308,103 @@ export default function Transactions() {
         ) : filtered.length === 0 ? (
           <div className="py-12 text-center text-muted-foreground">No records match your filters.</div>
         ) : (
-          <Card className="border-border/50">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Transaction Ledger</CardTitle>
-            </CardHeader>
-            <CardContent className="px-5 pb-5 pt-0">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-border/50 hover:bg-transparent">
-                    <TableHead className="pl-0">Description</TableHead>
-                    <TableHead>Type</TableHead>
-                    <TableHead>Category</TableHead>
-                    <TableHead>Project</TableHead>
-                    <TableHead>Date</TableHead>
-                    <TableHead className="pr-0 text-right">Amount</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filtered.map((transaction) => {
-                    const config = TYPE_CONFIG[transaction.type];
-                    const isPositive = transaction.amount > 0;
+          <div className="space-y-4">
+            {monthGroups.map((group) => {
+              const isOpen = group.key === activeMonthKey;
 
-                    return (
-                      <TableRow key={transaction.id} className="border-border/50 hover:bg-card/40">
-                        <TableCell className="pl-0">
-                          <div className="space-y-1">
-                            <p className="font-medium text-foreground">{transaction.description}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {format(new Date(transaction.date), "MMM dd, yyyy • HH:mm")}
-                            </p>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant="outline" className={config.badge}>
-                            {config.label}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">{transaction.category}</TableCell>
-                        <TableCell className="text-muted-foreground">{transaction.project || "—"}</TableCell>
-                        <TableCell className="text-muted-foreground">
-                          {format(new Date(transaction.date), "dd MMM yyyy")}
-                        </TableCell>
-                        <TableCell
-                          className={cn(
-                            "pr-0 text-right font-semibold tabular-nums",
-                            isPositive ? "text-primary" : "text-foreground",
-                          )}
-                        >
-                          {isPositive ? "+" : ""}
-                          {transaction.amount.toLocaleString("en-IN", {
-                            style: "currency",
-                            currency: "INR",
+              return (
+                <Card key={group.key} className="border-border/50">
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between gap-4 px-5 py-4 text-left"
+                    onClick={() => setOpenMonthKey((current) => (current === group.key ? null : group.key))}
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        {isOpen ? (
+                          <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                        )}
+                        <p className="font-medium text-foreground">{group.label}</p>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {group.transactions.length} transaction{group.transactions.length !== 1 ? "s" : ""}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-5 text-sm">
+                      <div className="text-right">
+                        <p className="text-xs text-muted-foreground">Inflow</p>
+                        <p className="mt-1 font-medium text-primary">{formatCurrency(group.inflow)}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-xs text-muted-foreground">Outflow</p>
+                        <p className="mt-1 font-medium text-rose-300">{formatCurrency(group.outflow)}</p>
+                      </div>
+                    </div>
+                  </button>
+
+                  {isOpen ? (
+                    <CardContent className="px-5 pb-5 pt-0">
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="border-border/50 hover:bg-transparent">
+                            <TableHead className="pl-0">Description</TableHead>
+                            <TableHead>Type</TableHead>
+                            <TableHead>Category</TableHead>
+                            <TableHead>Project</TableHead>
+                            <TableHead>Date</TableHead>
+                            <TableHead className="pr-0 text-right">Amount</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {group.transactions.map((transaction) => {
+                            const config = TYPE_CONFIG[transaction.type];
+                            const isPositive = transaction.amount > 0;
+
+                            return (
+                              <TableRow key={transaction.id} className="border-border/50 hover:bg-card/40">
+                                <TableCell className="pl-0">
+                                  <div className="space-y-1">
+                                    <p className="font-medium text-foreground">{transaction.description}</p>
+                                    <p className="text-xs text-muted-foreground">
+                                      {format(new Date(transaction.date), "MMM dd, yyyy · HH:mm")}
+                                    </p>
+                                  </div>
+                                </TableCell>
+                                <TableCell>
+                                  <Badge variant="outline" className={config.badge}>
+                                    {config.label}
+                                  </Badge>
+                                </TableCell>
+                                <TableCell className="text-muted-foreground">{transaction.category}</TableCell>
+                                <TableCell className="text-muted-foreground">{transaction.project || "-"}</TableCell>
+                                <TableCell className="text-muted-foreground">
+                                  {format(new Date(transaction.date), "dd MMM yyyy")}
+                                </TableCell>
+                                <TableCell
+                                  className={cn(
+                                    "pr-0 text-right font-semibold tabular-nums",
+                                    isPositive ? "text-primary" : "text-foreground",
+                                  )}
+                                >
+                                  {isPositive ? "+" : ""}
+                                  {transaction.amount.toLocaleString("en-IN", {
+                                    style: "currency",
+                                    currency: "INR",
+                                  })}
+                                </TableCell>
+                              </TableRow>
+                            );
                           })}
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
+                        </TableBody>
+                      </Table>
+                    </CardContent>
+                  ) : null}
+                </Card>
+              );
+            })}
+          </div>
         )}
       </div>
     </DashboardLayout>

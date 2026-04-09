@@ -124,6 +124,7 @@ export default function PurchaseOrdersPage() {
   });
   const [taskRows, setTaskRows] = useState<TaskDraft[]>([createTaskDraft()]);
   const [taskForm, setTaskForm] = useState<TaskDraft>(createTaskDraft());
+  const [showSettledSheets, setShowSettledSheets] = useState(false);
 
   const { data: purchaseOrders = [] } = useQuery({
     queryKey: ["purchaseOrders"],
@@ -153,6 +154,24 @@ export default function PurchaseOrdersPage() {
       },
       { total: 0, used: 0, remaining: 0, active: 0 },
     );
+  }, [purchaseOrders]);
+
+  const { activePurchaseOrders, settledPurchaseOrders } = useMemo(() => {
+    const active: PurchaseOrder[] = [];
+    const settled: PurchaseOrder[] = [];
+
+    for (const order of purchaseOrders) {
+      if (order.tasks.length > 0 && order.tasks.every((task) => task.status === "paid")) {
+        settled.push(order);
+      } else {
+        active.push(order);
+      }
+    }
+
+    return {
+      activePurchaseOrders: active,
+      settledPurchaseOrders: settled,
+    };
   }, [purchaseOrders]);
 
   const createMutation = useMutation({
@@ -379,10 +398,10 @@ export default function PurchaseOrdersPage() {
             </Button>
           </CardHeader>
           <CardContent className="space-y-4">
-            {purchaseOrders.length === 0 ? (
+            {activePurchaseOrders.length === 0 ? (
               <div className="py-12 text-center text-sm text-muted-foreground">No purchase orders created yet.</div>
             ) : (
-              purchaseOrders.map((order) => {
+              activePurchaseOrders.map((order) => {
                 const { total, used, remaining } = getOrderTotals(order);
                 const planned = getPlannedAmount(order);
                 const planningHeadroom = Math.max(0, total - planned);
@@ -494,6 +513,101 @@ export default function PurchaseOrdersPage() {
             )}
           </CardContent>
         </Card>
+
+        {settledPurchaseOrders.length > 0 ? (
+          <div className="flex justify-end">
+            <Button
+              variant="outline"
+              className="rounded-xl"
+              onClick={() => setShowSettledSheets((current) => !current)}
+            >
+              {showSettledSheets ? "Hide Settled POs" : `Settled POs (${settledPurchaseOrders.length})`}
+            </Button>
+          </div>
+        ) : null}
+
+        {showSettledSheets && settledPurchaseOrders.length > 0 ? (
+          <Card className="border-border/50">
+            <CardHeader>
+              <CardTitle className="text-base">Settled PO Sheets</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {settledPurchaseOrders.map((order) => {
+                const { total, used, remaining } = getOrderTotals(order);
+                const planned = getPlannedAmount(order);
+
+                return (
+                  <div key={order.id} className="rounded-xl border border-border/50 bg-secondary/10 p-4">
+                    <div className="flex flex-col gap-4 border-b border-border/50 pb-4 md:flex-row md:items-start md:justify-between">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <h2 className="text-base font-semibold">{order.title}</h2>
+                          <Badge variant="outline" className="font-normal">
+                            Settled
+                          </Badge>
+                        </div>
+                        <p className="text-sm text-muted-foreground">
+                          {order.vendor ? `${order.vendor} - ` : ""}
+                          {format(new Date(order.date), "dd MMM yyyy")}
+                        </p>
+                      </div>
+
+                      <div className="grid grid-cols-4 gap-3 text-right text-sm">
+                        <div>
+                          <p className="text-xs text-muted-foreground">Cap</p>
+                          <p className="mt-1 font-medium">{formatCurrency(total)}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">Planned</p>
+                          <p className="mt-1 font-medium">{formatCurrency(planned)}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">Paid</p>
+                          <p className="mt-1 font-medium">{formatCurrency(used)}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-muted-foreground">Remaining</p>
+                          <p className="mt-1 font-medium">{formatCurrency(remaining)}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="border-border/50">
+                            <TableHead>Work Row</TableHead>
+                            <TableHead>Description</TableHead>
+                            <TableHead className="text-right">Hours</TableHead>
+                            <TableHead className="text-right">Rate / Hr</TableHead>
+                            <TableHead className="text-right">Total</TableHead>
+                            <TableHead>Status</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {order.tasks.map((task) => (
+                            <TableRow key={task.id} className="border-border/50">
+                              <TableCell className="font-medium">{task.taskName}</TableCell>
+                              <TableCell className="text-muted-foreground">{task.description || "-"}</TableCell>
+                              <TableCell className="text-right tabular-nums">{task.hours.toFixed(1)}</TableCell>
+                              <TableCell className="text-right tabular-nums">{formatCurrency(task.rate)}</TableCell>
+                              <TableCell className="text-right tabular-nums">{formatCurrency(task.amount)}</TableCell>
+                              <TableCell>
+                                <Badge variant="outline" className="font-normal capitalize">
+                                  {task.status}
+                                </Badge>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                );
+              })}
+            </CardContent>
+          </Card>
+        ) : null}
       </div>
 
       <Dialog open={sheetDialogOpen} onOpenChange={setSheetDialogOpen}>

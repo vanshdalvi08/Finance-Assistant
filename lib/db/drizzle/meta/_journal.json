@@ -64,6 +64,13 @@
       "when": 1775649479732,
       "tag": "0008_parallel_namorita",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1775718000000,
+      "tag": "0009_tidy_task_caps",
+      "breakpoints": true
     }
   ]
 }

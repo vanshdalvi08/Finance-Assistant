@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { addDays, format, startOfWeek } from "date-fns";
-import { BarChart3, Download, Receipt, Wallet, WalletCards, Clock3, CalendarDays } from "lucide-react";
+import { BarChart3, ChevronDown, ChevronRight, Download, Receipt, Wallet, WalletCards, Clock3, CalendarDays } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { DashboardCard } from "@/components/dashboard-card";
 import { api, type MonthCalendarDay } from "@/lib/api";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -21,6 +22,15 @@ function formatCurrency(value: number) {
 
 function isInMonth(date: string, month: string) {
   return date.slice(0, 7) === month;
+}
+
+function weekTouchesMonth(weekStart: string, month: string) {
+  const start = new Date(weekStart);
+  const end = addDays(start, 6);
+  const [year, monthNumber] = month.split("-").map(Number);
+  const monthStart = new Date(year, monthNumber - 1, 1);
+  const monthEnd = new Date(year, monthNumber, 0, 23, 59, 59, 999);
+  return start <= monthEnd && end >= monthStart;
 }
 
 function totalHours(days: MonthCalendarDay[] | undefined) {
@@ -70,6 +80,7 @@ function groupWeeks(days: MonthCalendarDay[] | undefined) {
 export default function AdminReportsPage() {
   const [selectedMonth, setSelectedMonth] = useState(() => format(new Date(), "yyyy-MM"));
   const [selectedEmployeeId, setSelectedEmployeeId] = useState("");
+  const [openWeekId, setOpenWeekId] = useState<string | null>(null);
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
   const { data: timesheets = [] } = useQuery({ queryKey: ["timesheets"], queryFn: () => api.getTimesheets() });
@@ -158,7 +169,49 @@ export default function AdminReportsPage() {
 
   const selectedEmployee = employees.find((employee) => employee.id === selectedEmployeeId) ?? null;
   const weeklyBreakdown = useMemo(() => groupWeeks(employeeMonthCalendar?.days), [employeeMonthCalendar?.days]);
+  const weeklyBreakdownMap = useMemo(
+    () =>
+      new Map(
+        weeklyBreakdown.map((week) => [week.start.toISOString().slice(0, 10), week] as const),
+      ),
+    [weeklyBreakdown],
+  );
   const monthLabel = employeeMonthCalendar?.monthLabel ?? format(new Date(`${selectedMonth}-01T00:00:00`), "MMMM yyyy");
+  const employeeWeekReports = useMemo(() => {
+    const relevantTimesheets = timesheets
+      .filter((entry) => entry.employeeId === selectedEmployeeId && weekTouchesMonth(entry.weekStart, selectedMonth))
+      .sort((left, right) => new Date(right.weekStart).getTime() - new Date(left.weekStart).getTime());
+
+    return relevantTimesheets.map((entry) => {
+      const taskRows = entry.lines.map((line) => {
+        const total = Object.values(line.hours).reduce((sum, value) => sum + Number(value ?? 0), 0);
+        return {
+          id: line.id,
+          project: line.project || "Custom project",
+          task: line.task || "Custom task",
+          notes: line.notes || "",
+          total,
+          hours: line.hours,
+        };
+      });
+
+      return {
+        id: entry.id,
+        weekStart: entry.weekStart,
+        weekLabel: `${format(new Date(entry.weekStart), "dd MMM")} - ${format(addDays(new Date(entry.weekStart), 6), "dd MMM yyyy")}`,
+        status: entry.status,
+        reviewedAt: entry.reviewedAt,
+        reviewNotes: entry.reviewNotes,
+        totalHours: taskRows.reduce((sum, row) => sum + row.total, 0),
+        totalTasks: taskRows.length,
+        taskRows,
+      };
+    });
+  }, [selectedEmployeeId, selectedMonth, timesheets]);
+  const activeWeekId =
+    openWeekId && employeeWeekReports.some((week) => week.id === openWeekId)
+      ? openWeekId
+      : employeeWeekReports[0]?.id ?? null;
 
   function exportPdf() {
     const popup = window.open("", "_blank", "width=1120,height=820");
@@ -319,7 +372,7 @@ export default function AdminReportsPage() {
           <CardHeader className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
             <div>
               <CardTitle className="text-base font-medium">Employee Monthly Detail</CardTitle>
-              <CardDescription>Hours, leave, holidays, and weekly breakdown for one employee.</CardDescription>
+              <CardDescription>Detailed employee performance for the selected month with expandable week-by-week task and hour breakdown.</CardDescription>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <Select value={selectedEmployeeId} onValueChange={setSelectedEmployeeId}>
@@ -347,7 +400,7 @@ export default function AdminReportsPage() {
               </div>
             ) : (
               <>
-                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
                   <div className="rounded-xl border border-border/60 bg-secondary/10 px-4 py-3">
                     <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Hours Logged</p>
                     <p className="mt-2 text-2xl font-semibold">{employeeMonthCalendar.summary.hoursLogged.toFixed(1)}h</p>
@@ -364,34 +417,131 @@ export default function AdminReportsPage() {
                     <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Holiday Days</p>
                     <p className="mt-2 text-2xl font-semibold">{employeeMonthCalendar.summary.holidayDays}</p>
                   </div>
+                  <div className="rounded-xl border border-border/60 bg-secondary/10 px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Pending Leave</p>
+                    <p className="mt-2 text-2xl font-semibold">{employeeMonthCalendar.summary.pendingLeaveDays}</p>
+                  </div>
                 </div>
 
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  {weeklyBreakdown.map((week) => (
-                    <div key={week.label} className="rounded-xl border border-border/60 bg-secondary/10 px-4 py-4">
-                      <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Week</p>
-                      <p className="mt-1 text-sm font-medium text-foreground">{week.label}</p>
-                      <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-                        <div>
-                          <p className="text-xs text-muted-foreground">Hours</p>
-                          <p className="mt-1 font-medium">{week.hours.toFixed(1)}h</p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-muted-foreground">Worked</p>
-                          <p className="mt-1 font-medium">{week.workedDays} days</p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-muted-foreground">Leave</p>
-                          <p className="mt-1 font-medium">{week.leaveDays} days</p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-muted-foreground">Holiday</p>
-                          <p className="mt-1 font-medium">{week.holidayDays} days</p>
-                        </div>
+                <Card className="border-border/60 bg-background/50 shadow-none">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-sm font-medium">Weekly Work Breakdown</CardTitle>
+                    <CardDescription>Open any week to inspect project tasks, day-wise hours, and review status.</CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {employeeWeekReports.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-border/60 px-4 py-10 text-center text-sm text-muted-foreground">
+                        No timesheet weeks found for this employee in {monthLabel}.
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ) : (
+                      employeeWeekReports.map((week) => {
+                        const isOpen = week.id === activeWeekId;
+                        const weekSummary = weeklyBreakdownMap.get(new Date(week.weekStart).toISOString().slice(0, 10));
+
+                        return (
+                          <Card key={week.id} className="border-border/60 shadow-none">
+                            <button
+                              type="button"
+                              className="flex w-full items-center justify-between gap-4 px-4 py-4 text-left"
+                              onClick={() => setOpenWeekId((current) => (current === week.id ? null : week.id))}
+                            >
+                              <div className="flex items-start gap-3">
+                                {isOpen ? (
+                                  <ChevronDown className="mt-0.5 h-4 w-4 text-muted-foreground" />
+                                ) : (
+                                  <ChevronRight className="mt-0.5 h-4 w-4 text-muted-foreground" />
+                                )}
+                                <div className="space-y-2">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="font-medium text-foreground">{week.weekLabel}</p>
+                                    <Badge
+                                      variant="outline"
+                                      className={
+                                        week.status === "approved"
+                                          ? "border-emerald-500/30 text-emerald-400"
+                                          : week.status === "rejected"
+                                            ? "border-amber-500/30 text-amber-400"
+                                            : week.status === "submitted"
+                                              ? "border-sky-500/30 text-sky-400"
+                                              : "border-border text-muted-foreground"
+                                      }
+                                    >
+                                      {week.status}
+                                    </Badge>
+                                  </div>
+                                  <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+                                    <span>{week.totalHours.toFixed(1)}h logged</span>
+                                    <span>{week.totalTasks} task row{week.totalTasks !== 1 ? "s" : ""}</span>
+                                    <span>{weekSummary?.workedDays ?? 0} worked days</span>
+                                    <span>{weekSummary?.leaveDays ?? 0} leave days</span>
+                                    <span>{weekSummary?.holidayDays ?? 0} holidays</span>
+                                  </div>
+                                </div>
+                              </div>
+                              {week.reviewedAt ? (
+                                <div className="text-right text-xs text-muted-foreground">
+                                  Reviewed {format(new Date(week.reviewedAt), "dd MMM yyyy")}
+                                </div>
+                              ) : null}
+                            </button>
+
+                            {isOpen ? (
+                              <CardContent className="space-y-4 border-t border-border/50 pt-4">
+                                {week.reviewNotes ? (
+                                  <div className="rounded-xl border border-border/60 bg-secondary/10 px-4 py-3 text-sm text-muted-foreground">
+                                    {week.reviewNotes}
+                                  </div>
+                                ) : null}
+
+                                <div className="overflow-hidden rounded-xl border border-border/60">
+                                  <Table>
+                                    <TableHeader>
+                                      <TableRow>
+                                        <TableHead>Project</TableHead>
+                                        <TableHead>Task</TableHead>
+                                        <TableHead className="text-right">Mon</TableHead>
+                                        <TableHead className="text-right">Tue</TableHead>
+                                        <TableHead className="text-right">Wed</TableHead>
+                                        <TableHead className="text-right">Thu</TableHead>
+                                        <TableHead className="text-right">Fri</TableHead>
+                                        <TableHead className="text-right">Sat</TableHead>
+                                        <TableHead className="text-right">Sun</TableHead>
+                                        <TableHead className="text-right">Total</TableHead>
+                                      </TableRow>
+                                    </TableHeader>
+                                    <TableBody>
+                                      {week.taskRows.map((row) => (
+                                        <TableRow key={row.id}>
+                                          <TableCell className="font-medium">{row.project}</TableCell>
+                                          <TableCell>
+                                            <div className="space-y-1">
+                                              <p>{row.task}</p>
+                                              {row.notes ? (
+                                                <p className="text-xs text-muted-foreground">{row.notes}</p>
+                                              ) : null}
+                                            </div>
+                                          </TableCell>
+                                          <TableCell className="text-right">{row.hours.mon || "—"}</TableCell>
+                                          <TableCell className="text-right">{row.hours.tue || "—"}</TableCell>
+                                          <TableCell className="text-right">{row.hours.wed || "—"}</TableCell>
+                                          <TableCell className="text-right">{row.hours.thu || "—"}</TableCell>
+                                          <TableCell className="text-right">{row.hours.fri || "—"}</TableCell>
+                                          <TableCell className="text-right">{row.hours.sat || "—"}</TableCell>
+                                          <TableCell className="text-right">{row.hours.sun || "—"}</TableCell>
+                                          <TableCell className="text-right font-medium">{row.total.toFixed(1)}h</TableCell>
+                                        </TableRow>
+                                      ))}
+                                    </TableBody>
+                                  </Table>
+                                </div>
+                              </CardContent>
+                            ) : null}
+                          </Card>
+                        );
+                      })
+                    )}
+                  </CardContent>
+                </Card>
 
                 <div className="overflow-hidden rounded-xl border border-border/60">
                   <Table>

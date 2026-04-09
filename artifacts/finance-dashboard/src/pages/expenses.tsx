@@ -133,6 +133,7 @@ function ExpenseTable({
   const [filterAmountMin, setFilterAmountMin] = useState("");
   const [filterAmountMax, setFilterAmountMax] = useState("");
   const [showFilters, setShowFilters] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
 
   const groupCats = categories.filter((c) => c.group === group);
   const groupExpenses = expenses.filter((e) => e.group === group);
@@ -148,6 +149,8 @@ function ExpenseTable({
     if (filterAmountMax && e.amount > Number(filterAmountMax)) return false;
     return true;
   });
+  const activeExpenses = onReview ? filtered.filter((expense) => expense.status === "submitted") : filtered;
+  const historyExpenses = onReview ? filtered.filter((expense) => expense.status !== "submitted") : [];
 
   const total = filtered.reduce((s, e) => s + e.amount, 0);
 
@@ -255,7 +258,7 @@ function ExpenseTable({
       <Card className="border-border/50">
         <CardHeader className="py-3 px-5 flex flex-row items-center justify-between">
           <CardTitle className="text-sm font-medium text-muted-foreground">
-            {filtered.length} record{filtered.length !== 1 ? "s" : ""}
+            {(onReview ? activeExpenses : filtered).length} active record{(onReview ? activeExpenses : filtered).length !== 1 ? "s" : ""}
           </CardTitle>
           <span className="text-sm font-semibold">
             Total:{" "}
@@ -275,14 +278,14 @@ function ExpenseTable({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filtered.length === 0 ? (
+              {(onReview ? activeExpenses : filtered).length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={6} className="text-center py-10 text-muted-foreground text-sm">
-                    No expenses found.
+                    {onReview ? "No active expense requests." : "No expenses found."}
                   </TableCell>
                 </TableRow>
               ) : (
-                filtered.map((e) => {
+                (onReview ? activeExpenses : filtered).map((e) => {
                   const color = getCatColor(e.category);
                   return (
                     <TableRow key={e.id} className="border-border/50 hover:bg-secondary/10">
@@ -384,6 +387,80 @@ function ExpenseTable({
           </Table>
         </CardContent>
       </Card>
+
+      {onReview && historyExpenses.length > 0 ? (
+        <div className="flex justify-end">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="rounded-full px-4 text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+            onClick={() => setShowHistory((current) => !current)}
+          >
+            {showHistory ? "Hide Processed Requests" : `Previous Expense History (${historyExpenses.length})`}
+          </Button>
+        </div>
+      ) : null}
+
+      {onReview && showHistory && historyExpenses.length > 0 ? (
+        <Card className="border-border/50">
+          <CardHeader className="py-3 px-5">
+            <CardTitle className="text-sm font-medium">Previous Expense History</CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <Table>
+              <TableHeader>
+                <TableRow className="border-border/50">
+                  <TableHead>Description</TableHead>
+                  <TableHead>Category</TableHead>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Amount</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {historyExpenses.map((e) => {
+                  const color = getCatColor(e.category);
+                  return (
+                    <TableRow key={e.id} className="border-border/50 hover:bg-secondary/10">
+                      <TableCell className="font-medium">
+                        <div>{e.description}</div>
+                        {e.employeeNameSnapshot ? (
+                          <div className="mt-0.5 text-xs font-normal text-muted-foreground">{e.employeeNameSnapshot}</div>
+                        ) : null}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="font-normal text-xs" style={{ borderColor: color + "66" }}>
+                          <span className="mr-1.5 h-1.5 w-1.5 rounded-full" style={{ backgroundColor: color }} />
+                          {e.category}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground text-sm">
+                        {format(new Date(e.date), "MMM dd, yyyy")}
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            "font-normal text-xs capitalize",
+                            e.status === "approved" && "border-emerald-500/30 text-emerald-400",
+                            e.status === "rejected" && "border-rose-500/30 text-rose-400",
+                            e.status === "draft" && "border-border text-muted-foreground",
+                          )}
+                        >
+                          {e.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-right font-medium">
+                        {e.amount.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      ) : null}
     </div>
   );
 }
@@ -474,17 +551,27 @@ export default function Expenses() {
   const reviewMutation = useMutation({
     mutationFn: ({ id, status }: { id: string; status: "approved" | "rejected" }) =>
       api.updateExpenseStatus(id, status),
-    onSuccess: (updatedExpense, variables) => {
-      const previousExpense = queryClient
-        .getQueryData<Expense[]>(["expenses"])
-        ?.find((expense) => expense.id === updatedExpense.id);
-
+    onSuccess: async (updatedExpense, variables) => {
       queryClient.setQueryData<Expense[]>(["expenses"], (current) => patchExpenseList(current, updatedExpense));
-      queryClient.setQueryData<AdminOverview>(["adminOverview"], (current) =>
-        patchOverviewForExpense(current, previousExpense, updatedExpense),
-      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["adminOverview"] }),
+        queryClient.invalidateQueries({ queryKey: ["chartData"] }),
+        queryClient.invalidateQueries({ queryKey: ["transactions"] }),
+        queryClient.invalidateQueries({ queryKey: ["notifications"] }),
+      ]);
       toast({
         title: variables.status === "approved" ? "Expense approved" : "Expense rejected",
+        description:
+          variables.status === "approved"
+            ? "The request was approved and the ledger was updated."
+            : "The request was rejected and the employee view was updated.",
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "Could not review expense",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
       });
     },
   });

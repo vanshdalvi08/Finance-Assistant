@@ -41,6 +41,7 @@ export default function AdminTimesheetValidationPage() {
   const [selectedEmployeeId, setSelectedEmployeeId] = useState("");
   const [selectedMonth, setSelectedMonth] = useState(() => format(new Date(), "yyyy-MM"));
   const [reviewNote, setReviewNote] = useState("");
+  const [showReviewedHistory, setShowReviewedHistory] = useState(false);
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
   const { data: timesheets = [] } = useQuery({ queryKey: ["timesheets"], queryFn: () => api.getTimesheets() });
@@ -53,6 +54,13 @@ export default function AdminTimesheetValidationPage() {
 
   const pendingTimesheets = useMemo(
     () => timesheets.filter((entry) => entry.status === "submitted").sort((a, b) => new Date(b.weekStart).getTime() - new Date(a.weekStart).getTime()),
+    [timesheets],
+  );
+  const reviewedTimesheets = useMemo(
+    () =>
+      timesheets
+        .filter((entry) => entry.status === "approved" || entry.status === "rejected")
+        .sort((a, b) => new Date(b.weekStart).getTime() - new Date(a.weekStart).getTime()),
     [timesheets],
   );
 
@@ -138,21 +146,7 @@ export default function AdminTimesheetValidationPage() {
               Review submitted work weeks, keep payroll moving, and use the month calendar for context only.
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <Input type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} className="w-[220px] rounded-xl" />
-            <Select value={selectedEmployeeId} onValueChange={setSelectedEmployeeId}>
-              <SelectTrigger className="w-[220px] rounded-xl">
-                <SelectValue placeholder="Select employee" />
-              </SelectTrigger>
-              <SelectContent>
-                {employees.map((employee) => (
-                  <SelectItem key={employee.id} value={employee.id}>
-                    {employee.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          <Input type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} className="w-[220px] rounded-xl" />
         </div>
 
         <div className="grid gap-4 md:grid-cols-3">
@@ -323,10 +317,29 @@ export default function AdminTimesheetValidationPage() {
 
         <Card className="border-border/60 bg-card/80 shadow-sm">
           <CardHeader>
-            <CardTitle className="text-base font-medium">Month Calendar</CardTitle>
-            <CardDescription>
-              Context for worked days, approved leave, pending leave, and holidays. Leave actions now live in Leave Management.
-            </CardDescription>
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+              <div className="space-y-1">
+                <CardTitle className="text-base font-medium">Month Calendar</CardTitle>
+                <CardDescription>
+                  Context for worked days, approved leave, pending leave, and holidays. Leave actions now live in Leave Management.
+                </CardDescription>
+              </div>
+              <div className="w-full max-w-[240px] space-y-1">
+                <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Calendar Employee</p>
+                <Select value={selectedEmployeeId} onValueChange={setSelectedEmployeeId}>
+                  <SelectTrigger className="rounded-xl">
+                    <SelectValue placeholder="Select employee" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {employees.map((employee) => (
+                      <SelectItem key={employee.id} value={employee.id}>
+                        {employee.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
             {!selectedEmployeeId || !monthCalendar ? (
@@ -381,6 +394,56 @@ export default function AdminTimesheetValidationPage() {
             )}
           </CardContent>
         </Card>
+
+        {reviewedTimesheets.length > 0 ? (
+          <div className="flex justify-end">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="rounded-full px-4 text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
+              onClick={() => setShowReviewedHistory((current) => !current)}
+            >
+              {showReviewedHistory ? "Hide Reviewed History" : `Previous Reviewed Sheets (${reviewedTimesheets.length})`}
+            </Button>
+          </div>
+        ) : null}
+
+        {showReviewedHistory && reviewedTimesheets.length > 0 ? (
+          <Card className="border-border/60 bg-card/80 shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-base font-medium">Reviewed Timesheet History</CardTitle>
+              <CardDescription>Previously approved or reverted sheets for audit and reference.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {reviewedTimesheets.map((entry) => (
+                <div key={entry.id} className="rounded-xl border border-border/60 bg-secondary/10 px-4 py-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-medium text-foreground">{entry.employeeNameSnapshot}</p>
+                        <Badge
+                          className={cn(
+                            "rounded-full border px-2.5 py-1 text-[11px] font-medium shadow-none",
+                            entry.status === "approved"
+                              ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
+                              : "border-amber-500/20 bg-amber-500/10 text-amber-300",
+                          )}
+                        >
+                          {entry.status === "approved" ? "Approved" : "Reverted"}
+                        </Badge>
+                      </div>
+                      <p className="text-sm text-muted-foreground">{weekLabel(entry.weekStart)}</p>
+                      {entry.reviewNotes ? <p className="text-sm text-muted-foreground">{entry.reviewNotes}</p> : null}
+                    </div>
+                    <div className="text-sm text-muted-foreground">
+                      {entry.reviewedAt ? format(new Date(entry.reviewedAt), "dd MMM yyyy") : "-"}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        ) : null}
       </div>
     </DashboardLayout>
   );
