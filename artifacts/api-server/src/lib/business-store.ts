@@ -30,7 +30,7 @@ import { DEFAULT_TENANT_ID } from "./tenants";
 
 export type ApprovalStatus = "draft" | "submitted" | "approved" | "rejected";
 export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
-export type ActorRole = "admin" | "employee" | "client" | "system";
+export type ActorRole = "admin" | "employee" | "client" | "platform_super_admin" | "system";
 export type LeaveRequestStatus = "pending" | "approved" | "rejected";
 export type LeaveRequestKind = "leave" | "holiday";
 
@@ -241,7 +241,7 @@ export interface UserProfile {
   tenantId?: string;
   name: string;
   email: string;
-  role: "admin" | "employee" | "client";
+  role: "admin" | "employee" | "client" | "platform_super_admin";
   employeeId: string | null;
   position: string | null;
   department: string | null;
@@ -607,7 +607,10 @@ function auditEntryFromRow(row: DbAuditTrailEntry): AuditTrailEntry {
     tenantId: row.tenantId ?? DEFAULT_TENANT_ID,
     actorName: row.actorName.trim(),
     actorRole:
-      row.actorRole === "employee" || row.actorRole === "client" || row.actorRole === "system"
+      row.actorRole === "employee" ||
+      row.actorRole === "client" ||
+      row.actorRole === "platform_super_admin" ||
+      row.actorRole === "system"
         ? row.actorRole
         : "admin",
     action: row.action,
@@ -1169,9 +1172,13 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
     },
     auditTrail: Array.isArray(input.auditTrail) ? input.auditTrail.map((entry) => ({
       id: entry.id ?? createId("audit"),
+      tenantId: entry.tenantId?.trim() || DEFAULT_TENANT_ID,
       actorName: String(entry.actorName ?? "System").trim(),
       actorRole:
-        entry.actorRole === "employee" || entry.actorRole === "client" || entry.actorRole === "system"
+        entry.actorRole === "employee" ||
+        entry.actorRole === "client" ||
+        entry.actorRole === "platform_super_admin" ||
+        entry.actorRole === "system"
           ? entry.actorRole
           : "admin",
       action: String(entry.action ?? "updated"),
@@ -1818,6 +1825,7 @@ export async function saveTimesheetFast(input: {
 
 export async function submitTimesheetFast(input: {
   id: string;
+  tenantId: string;
   actorName: string;
   actorRole: ActorRole;
 }): Promise<TimesheetEntry | null> {
@@ -1847,6 +1855,7 @@ export async function submitTimesheetFast(input: {
     assertTaskHourLimits(updatedEntry, current.projectBudgets);
 
     const auditEntry = createAuditEntry({
+      tenantId: input.tenantId,
       actorName: input.actorName,
       actorRole: input.actorRole,
       action: "submitted",
@@ -1874,6 +1883,7 @@ export async function submitTimesheetFast(input: {
 
 export async function submitTimesheetEntryFast(input: {
   entry: TimesheetEntry;
+  tenantId: string;
   actorName: string;
   actorRole: ActorRole;
 }): Promise<TimesheetEntry> {
@@ -1900,6 +1910,7 @@ export async function submitTimesheetEntryFast(input: {
     }).timesheets[0];
 
     const auditEntry = createAuditEntry({
+      tenantId: input.tenantId,
       actorName: input.actorName,
       actorRole: input.actorRole,
       action: "submitted",
@@ -1929,6 +1940,7 @@ export async function submitTimesheetEntryFast(input: {
 
 export async function reviewTimesheetFast(input: {
   id: string;
+  tenantId: string;
   status: "approved" | "rejected";
   actorName: string;
   note?: string;
@@ -1984,6 +1996,7 @@ export async function reviewTimesheetFast(input: {
     }
 
     const auditEntry = createAuditEntry({
+      tenantId: input.tenantId,
       actorName: input.actorName,
       actorRole: "admin",
       action: input.status === "approved" ? "approved" : "reverted",

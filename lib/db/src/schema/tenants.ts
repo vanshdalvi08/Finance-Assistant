@@ -4,6 +4,8 @@ export const tenantStatusEnum = pgEnum("tenant_status", ["active", "inactive"]);
 
 export const DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000101";
 export const DEFAULT_TENANT_SLUG = "yojak";
+export const PLATFORM_TENANT_ID = "00000000-0000-0000-0000-000000000102";
+export const PLATFORM_TENANT_SLUG = "platform";
 
 export const tenantsTable = pgTable(
   "tenants",

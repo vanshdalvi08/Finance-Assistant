@@ -127,6 +127,27 @@
       "when": 1775764889926,
       "tag": "0017_round_sumo",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1775769200000,
+      "tag": "0018_platform_super_admin",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1775770362991,
+      "tag": "0019_dashing_blonde_phantom",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1775799600000,
+      "tag": "0020_tenant_user_uniques",
+      "breakpoints": true
     }
   ]
 }

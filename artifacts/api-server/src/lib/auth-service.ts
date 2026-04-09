@@ -1,6 +1,6 @@
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "@workspace/db";
-import { passwordResetTokensTable, refreshSessionsTable, usersTable, type ClientBillingInfo, type User } from "@workspace/db/schema";
+import { passwordResetTokensTable, refreshSessionsTable, tenantsTable, usersTable, type ClientBillingInfo, type User } from "@workspace/db/schema";
 import { DEFAULT_TENANT_ID } from "./tenants";
 import { getAppUrl, getSmtpConfig, isProduction, optionalEnv } from "./env";
 import { generateRandomToken, generateTemporaryPassword, hashPassword, hashSha256, verifyPassword } from "./security";
@@ -16,7 +16,7 @@ export interface PublicUser {
   name: string;
   email: string;
   phone: string;
-  role: "admin" | "employee" | "client";
+  role: "admin" | "employee" | "client" | "platform_super_admin";
   employeeId: string | null;
   position: string | null;
   department: string | null;
@@ -163,6 +163,15 @@ async function findUserByEmail(email: string, tenantId?: string): Promise<User |
   return rows[0] ?? null;
 }
 
+async function findUserByPhone(phone: string, tenantId: string): Promise<User | null> {
+  const rows = await db
+    .select()
+    .from(usersTable)
+    .where(and(eq(usersTable.phone, normalizePhone(phone)), eq(usersTable.tenantId, tenantId.trim())))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 async function findUserById(userId: string, tenantId?: string): Promise<User | null> {
   const rows = await db
     .select()
@@ -228,6 +237,11 @@ async function getRefreshSession(jtiHash: string) {
   return rows[0] ?? null;
 }
 
+async function getTenantById(tenantId: string) {
+  const rows = await db.select().from(tenantsTable).where(eq(tenantsTable.id, tenantId.trim())).limit(1);
+  return rows[0] ?? null;
+}
+
 export async function loginWithPassword(email: string, password: string): Promise<LoginResult> {
   const user = await findUserByEmail(email);
 
@@ -242,6 +256,11 @@ export async function loginWithPassword(email: string, password: string): Promis
   const valid = await verifyPassword(password, user.hashedPassword);
   if (!valid) {
     throw new Error("Invalid email or password");
+  }
+
+  const tenant = await getTenantById(user.tenantId);
+  if (!tenant || tenant.status !== "active") {
+    throw new Error("This workspace is inactive");
   }
 
   const now = new Date();
@@ -284,6 +303,11 @@ export async function refreshLogin(refreshToken: string): Promise<LoginResult> {
     throw new Error("User not available");
   }
 
+  const tenant = await getTenantById(user.tenantId);
+  if (!tenant || tenant.status !== "active") {
+    throw new Error("Workspace is inactive");
+  }
+
   await revokeSessionByJtiHash(jtiHash);
   const nextSession = await createRefreshSession(user.id);
   const accessToken = signAccessToken({
@@ -319,6 +343,14 @@ export async function createEmployeeAccount(input: CreateEmployeeInput): Promise
   const email = normalizeEmail(input.email);
   const phone = normalizePhone(input.phone);
   const tenantId = input.tenantId?.trim() || DEFAULT_TENANT_ID;
+  const existingEmail = await findUserByEmail(email);
+  if (existingEmail) {
+    throw new Error("Employee email already exists");
+  }
+  const existingPhone = await findUserByPhone(phone, tenantId);
+  if (existingPhone) {
+    throw new Error("Employee phone already exists in this workspace");
+  }
   const temporaryPassword = generateTemporaryPassword();
   const employeeId = await getNextEmployeeId(tenantId);
   const hashedPassword = await hashPassword(temporaryPassword);
@@ -351,7 +383,7 @@ export async function createEmployeeAccount(input: CreateEmployeeInput): Promise
     user = rows[0]!;
   } catch (error) {
     if (isUniqueViolation(error)) {
-      throw new Error("Employee email or phone already exists");
+      throw new Error("Employee email already exists or phone is already used in this workspace");
     }
 
     throw error;
@@ -393,6 +425,14 @@ export async function createClientAccount(input: CreateClientInput): Promise<{ u
   const email = normalizeEmail(input.email);
   const phone = normalizePhone(input.phone);
   const tenantId = input.tenantId?.trim() || DEFAULT_TENANT_ID;
+  const existingEmail = await findUserByEmail(email);
+  if (existingEmail) {
+    throw new Error("Client email already exists");
+  }
+  const existingPhone = await findUserByPhone(phone, tenantId);
+  if (existingPhone) {
+    throw new Error("Client phone already exists in this workspace");
+  }
   const temporaryPassword = generateTemporaryPassword();
   const hashedPassword = await hashPassword(temporaryPassword);
   const now = new Date();
@@ -431,7 +471,7 @@ export async function createClientAccount(input: CreateClientInput): Promise<{ u
     user = rows[0]!;
   } catch (error) {
     if (isUniqueViolation(error)) {
-      throw new Error("Client email or phone already exists");
+      throw new Error("Client email already exists or phone is already used in this workspace");
     }
 
     throw error;
@@ -482,6 +522,15 @@ export async function updateEmployeeAccount(input: UpdateEmployeeInput): Promise
     throw new Error("Employee not found");
   }
 
+  const existingEmail = await findUserByEmail(email);
+  if (existingEmail && existingEmail.id !== existing.id) {
+    throw new Error("Employee email already exists");
+  }
+  const existingPhone = await findUserByPhone(phone, tenantId);
+  if (existingPhone && existingPhone.id !== existing.id) {
+    throw new Error("Employee phone already exists in this workspace");
+  }
+
   let rows: User[];
   try {
     const profilePhotoUrl =
@@ -508,7 +557,7 @@ export async function updateEmployeeAccount(input: UpdateEmployeeInput): Promise
       .returning();
   } catch (error) {
     if (isUniqueViolation(error)) {
-      throw new Error("Employee email or phone already exists");
+      throw new Error("Employee email already exists or phone is already used in this workspace");
     }
 
     throw error;
@@ -534,6 +583,15 @@ export async function updateClientAccount(input: UpdateClientInput): Promise<{ u
     throw new Error("Client not found");
   }
 
+  const existingEmail = await findUserByEmail(email);
+  if (existingEmail && existingEmail.id !== existing.id) {
+    throw new Error("Client email already exists");
+  }
+  const existingPhone = await findUserByPhone(phone, tenantId);
+  if (existingPhone && existingPhone.id !== existing.id) {
+    throw new Error("Client phone already exists in this workspace");
+  }
+
   let rows: User[];
   try {
     rows = await db
@@ -557,7 +615,7 @@ export async function updateClientAccount(input: UpdateClientInput): Promise<{ u
       .returning();
   } catch (error) {
     if (isUniqueViolation(error)) {
-      throw new Error("Client email or phone already exists");
+      throw new Error("Client email already exists or phone is already used in this workspace");
     }
 
     throw error;
@@ -626,6 +684,16 @@ export async function updateOwnProfile(userId: string, input: UpdateOwnProfileIn
   }
 
   const now = new Date();
+  const normalizedEmail = normalizeEmail(input.email);
+  const normalizedPhone = normalizePhone(input.phone);
+  const existingEmail = await findUserByEmail(normalizedEmail);
+  if (existingEmail && existingEmail.id !== existing.id) {
+    throw new Error("Email already exists");
+  }
+  const existingPhone = await findUserByPhone(normalizedPhone, existing.tenantId);
+  if (existingPhone && existingPhone.id !== existing.id) {
+    throw new Error("Phone already exists in this workspace");
+  }
 
   let rows: User[];
   try {
@@ -638,8 +706,8 @@ export async function updateOwnProfile(userId: string, input: UpdateOwnProfileIn
       .update(usersTable)
       .set({
         name: input.name.trim(),
-        email: normalizeEmail(input.email),
-        phone: normalizePhone(input.phone),
+        email: normalizedEmail,
+        phone: normalizedPhone,
         position: input.position?.trim() || existing.position,
         department: input.department?.trim() || existing.department,
         profilePhotoUrl,
@@ -649,7 +717,7 @@ export async function updateOwnProfile(userId: string, input: UpdateOwnProfileIn
       .returning();
   } catch (error) {
     if (isUniqueViolation(error)) {
-      throw new Error("Email or phone already exists");
+      throw new Error("Email already exists or phone is already used in this workspace");
     }
 
     throw error;

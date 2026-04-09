@@ -10,7 +10,7 @@ export const REFRESH_TOKEN_TTL = "14d";
 export interface AccessTokenPayload {
   sub: string;
   tenantId: string;
-  role: "admin" | "employee" | "client";
+  role: "admin" | "employee" | "client" | "platform_super_admin";
   email: string;
   name: string;
   sessionId: string;

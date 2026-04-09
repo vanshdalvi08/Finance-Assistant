@@ -2,7 +2,7 @@ import { createInsertSchema } from "drizzle-zod";
 import { index, integer, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { tenantsTable } from "./tenants";
 
-export const userRoleEnum = pgEnum("user_role", ["admin", "employee", "client"]);
+export const userRoleEnum = pgEnum("user_role", ["admin", "employee", "client", "platform_super_admin"]);
 export const userStatusEnum = pgEnum("user_status", ["active", "inactive"]);
 export const userPayTypeEnum = pgEnum("user_pay_type", ["monthly", "hourly"]);
 
@@ -40,8 +40,8 @@ export const usersTable = pgTable(
   (table) => ({
     tenantIndex: index("users_tenant_index").on(table.tenantId),
     emailUnique: uniqueIndex("users_email_unique").on(table.email),
-    phoneUnique: uniqueIndex("users_phone_unique").on(table.phone),
-    employeeIdUnique: uniqueIndex("users_employee_id_unique").on(table.employeeId),
+    phoneTenantUnique: uniqueIndex("users_tenant_phone_unique").on(table.tenantId, table.phone),
+    employeeIdTenantUnique: uniqueIndex("users_tenant_employee_id_unique").on(table.tenantId, table.employeeId),
     roleIndex: index("users_role_index").on(table.role),
     statusIndex: index("users_status_index").on(table.status),
   }),

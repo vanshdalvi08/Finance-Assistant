@@ -1,9 +1,13 @@
 import { type NextFunction, type Request, type Response } from "express";
 import { db } from "@workspace/db";
-import { usersTable } from "@workspace/db/schema";
+import { tenantsTable, usersTable } from "@workspace/db/schema";
 import { eq } from "drizzle-orm";
 import { verifyAccessToken } from "../lib/jwt";
 import { type PublicUser } from "../lib/auth-service";
+
+export type TenantRole = "admin" | "employee" | "client";
+export type PlatformRole = "platform_super_admin";
+export type AppRole = TenantRole | PlatformRole;
 
 function extractBearerToken(request: Request): string | null {
   const authorization = request.header("authorization");
@@ -43,6 +47,11 @@ async function loadUser(userId: string): Promise<PublicUser | null> {
   };
 }
 
+async function loadTenant(tenantId: string) {
+  const rows = await db.select().from(tenantsTable).where(eq(tenantsTable.id, tenantId)).limit(1);
+  return rows[0] ?? null;
+}
+
 export async function requireAuth(request: Request, response: Response, next: NextFunction) {
   const token = extractBearerToken(request);
   if (!token) {
@@ -53,7 +62,8 @@ export async function requireAuth(request: Request, response: Response, next: Ne
   try {
     const payload = verifyAccessToken(token);
     const user = await loadUser(payload.sub);
-    if (!user || user.status !== "active" || user.tenantId !== payload.tenantId) {
+    const tenant = user ? await loadTenant(user.tenantId) : null;
+    if (!user || user.status !== "active" || user.tenantId !== payload.tenantId || !tenant || tenant.status !== "active") {
       response.status(401).json({ message: "Unauthorized" });
       return;
     }
@@ -68,7 +78,7 @@ export async function requireAuth(request: Request, response: Response, next: Ne
   }
 }
 
-export function requireRole(...roles: Array<"admin" | "employee" | "client">) {
+export function requireRole(...roles: Array<AppRole>) {
   return (request: Request, response: Response, next: NextFunction) => {
     const role = request.auth?.user.role;
     if (!role || !roles.includes(role)) {
@@ -78,4 +88,12 @@ export function requireRole(...roles: Array<"admin" | "employee" | "client">) {
 
     next();
   };
+}
+
+export function requireTenantRole(...roles: TenantRole[]) {
+  return requireRole(...roles);
+}
+
+export function requirePlatformRole() {
+  return requireRole("platform_super_admin");
 }

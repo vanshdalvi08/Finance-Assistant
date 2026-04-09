@@ -10,7 +10,7 @@ import {
   updateClientAccount,
   updateEmployeeAccount,
 } from "../lib/auth-service";
-import { requireAuth, requireRole } from "../middlewares/auth";
+import { requireAuth, requireTenantRole } from "../middlewares/auth";
 import { rateLimit } from "../middlewares/rate-limit";
 import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../lib/notifications";
 
@@ -70,7 +70,7 @@ function deliverNotification(work: Promise<unknown>) {
   return Promise.resolve();
 }
 
-router.use(requireAuth, requireRole("admin"));
+router.use(requireAuth, requireTenantRole("admin"));
 router.use((request, response, next) => {
   if (["POST", "PATCH", "PUT", "DELETE"].includes(request.method)) {
     return mutationLimiter(request, response, next);

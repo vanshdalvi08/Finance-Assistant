@@ -423,6 +423,80 @@ export interface AdminOverview {
   yearToDateExpenses: number;
 }
 
+export interface PlatformTenantSummary {
+  id: string;
+  name: string;
+  slug: string;
+  status: "active" | "inactive";
+  createdAt: string;
+  updatedAt: string;
+  userCount: number;
+  adminCount: number;
+  employeeCount: number;
+  clientCount: number;
+  platformAdminCount: number;
+  lastActivityAt: string;
+  isPlatformTenant?: boolean;
+}
+
+export interface PlatformEvent {
+  id: string;
+  tenantId?: string;
+  actorUserId?: string;
+  severity: "info" | "warning" | "error";
+  category: "request" | "auth" | "database" | "upload" | "tenant" | "system";
+  title: string;
+  message: string;
+  path?: string;
+  method?: string;
+  statusCode?: number;
+  durationMs?: number;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface PlatformOverview {
+  totalTenants: number;
+  activeTenants: number;
+  inactiveTenants: number;
+  totalUsers: number;
+  platformAdmins: number;
+  tenantUsers: number;
+  errorCount: number;
+  slowRequestCount: number;
+  recentEvents: PlatformEvent[];
+  tenants: PlatformTenantSummary[];
+}
+
+export interface PlatformMonitoringResponse {
+  events: PlatformEvent[];
+  summary: Record<"info" | "warning" | "error", number>;
+}
+
+export interface PlatformAdminSummary {
+  id: string;
+  tenantId: string;
+  name: string;
+  email: string;
+  role: "platform_super_admin";
+  status: "active" | "inactive";
+  lastLoginAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlatformSettingsResponse {
+  platformTenant: {
+    id: string;
+    name: string;
+    slug: string;
+    status: "active" | "inactive";
+    createdAt: string;
+    updatedAt: string;
+  } | null;
+  platformAdmins: PlatformAdminSummary[];
+}
+
 interface NotificationsResponse {
   notifications: NotificationItem[];
   unreadCount?: number;
@@ -1458,6 +1532,36 @@ export const api = {
   getChartData: async () => (await businessGet<{ finance: ChartPoint[] }>("/charts")).finance,
 
   getAdminOverview: async () => businessGet<AdminOverview>("/overview"),
+
+  getPlatformOverview: async () => businessGet<PlatformOverview>("/platform/overview"),
+
+  getPlatformTenants: async () => (await businessGet<{ tenants: PlatformTenantSummary[] }>("/platform/tenants")).tenants,
+
+  createPlatformTenant: async (input: {
+    name: string;
+    slug: string;
+    ownerName: string;
+    ownerEmail: string;
+    ownerPhone: string;
+    ownerPosition?: string;
+    ownerDepartment?: string;
+    ownerPassword?: string;
+  }) =>
+    businessPost<{
+      tenant: { id: string; name: string; slug: string; status: "active" | "inactive"; createdAt: string; updatedAt: string };
+      owner: AuthUser;
+      temporaryPassword: string;
+    }>("/platform/tenants", input),
+
+  updatePlatformTenantStatus: async (tenantId: string, status: "active" | "inactive") =>
+    (await businessPost<{ tenant: PlatformTenantSummary }>(`/platform/tenants/${tenantId}/status`, { status }, "PATCH")).tenant,
+
+  getPlatformMonitoring: async (limit?: number) => {
+    const path = withQuery("/platform/monitoring", { limit: limit ? String(limit) : undefined });
+    return businessGet<PlatformMonitoringResponse>(path);
+  },
+
+  getPlatformSettings: async () => businessGet<PlatformSettingsResponse>("/platform/settings"),
 
   getAuditTrail: async () => (await businessGet<{ auditTrail: AuditTrailEntry[] }>("/audit-trail")).auditTrail,
 

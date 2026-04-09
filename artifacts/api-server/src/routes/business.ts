@@ -11,7 +11,7 @@ import {
   type CompanySettingsRecord,
   type PreApproval as DbPreApproval,
 } from "@workspace/db/schema";
-import { requireAuth, requireRole } from "../middlewares/auth";
+import { requireAuth, requireRole, requireTenantRole } from "../middlewares/auth";
 import { rateLimit } from "../middlewares/rate-limit";
 import {
   DAY_KEYS,
@@ -351,7 +351,7 @@ function serializePreApproval(row: DbPreApproval) {
 async function insertBusinessAudit(input: {
   tenantId: string;
   actorName: string;
-  actorRole: "admin" | "employee" | "client" | "system";
+  actorRole: ActorRole;
   action: string;
   entityType: "pre-approval" | "pre-approval-comment";
   entityId: string;
@@ -410,8 +410,9 @@ function timesheetHasContent(entry: TimesheetEntry) {
   });
 }
 
-function recordActor(request: Request): { actorName: string; actorRole: ActorRole } {
+function recordActor(request: Request): { tenantId: string; actorName: string; actorRole: ActorRole } {
   return {
+    tenantId: request.auth?.user.tenantId ?? DEFAULT_TENANT_ID,
     actorName: request.auth?.user.name ?? "System",
     actorRole: request.auth?.user.role ?? "system",
   };
@@ -692,7 +693,7 @@ router.use((request, response, next) => {
   next();
 });
 
-router.get("/overview", requireRole("admin"), async (_request, response) => {
+router.get("/overview", requireTenantRole("admin"), async (_request, response) => {
   const store = await readStore();
   const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const employees = await loadEmployees(tenantId);
@@ -724,7 +725,7 @@ router.get("/overview", requireRole("admin"), async (_request, response) => {
   });
 });
 
-router.get("/charts", requireRole("admin"), async (_request, response) => {
+router.get("/charts", requireTenantRole("admin"), async (_request, response) => {
   const store = await readStore();
   const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const tenantEmployees = await loadEmployees(tenantId);
@@ -775,7 +776,7 @@ router.get("/charts", requireRole("admin"), async (_request, response) => {
   });
 });
 
-router.get("/transactions", requireRole("admin"), async (_request, response) => {
+router.get("/transactions", requireTenantRole("admin"), async (_request, response) => {
   const store = await readStore();
   const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const employees = await loadEmployees(tenantId);
@@ -813,7 +814,7 @@ router.get("/transactions", requireRole("admin"), async (_request, response) => 
   response.json({ transactions });
 });
 
-router.get("/audit-trail", requireRole("admin"), async (_request, response) => {
+router.get("/audit-trail", requireTenantRole("admin"), async (_request, response) => {
   const store = await readStore();
   const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   response.json({
@@ -833,7 +834,7 @@ router.get("/holidays", async (request, response) => {
   response.json({ holidays: [...holidays].sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime()) });
 });
 
-router.post("/holidays", requireRole("admin"), async (request, response) => {
+router.post("/holidays", requireTenantRole("admin"), async (request, response) => {
   const parsed = holidaySchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid holiday payload" });
@@ -865,7 +866,7 @@ router.post("/holidays", requireRole("admin"), async (request, response) => {
   response.status(existing ? 200 : 201).json({ holiday });
 });
 
-router.delete("/holidays/:id", requireRole("admin"), async (request, response) => {
+router.delete("/holidays/:id", requireTenantRole("admin"), async (request, response) => {
   const store = await readStore();
   const existing = store.holidays.find((holiday) => holiday.id === request.params.id);
   if (!existing) {
@@ -900,7 +901,7 @@ router.get("/leave-settings", async (_request, response) => {
   response.json({ leavePolicy: store.leavePolicy });
 });
 
-router.patch("/leave-settings", requireRole("admin"), async (request, response) => {
+router.patch("/leave-settings", requireTenantRole("admin"), async (request, response) => {
   const parsed = leaveSettingsSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid leave policy payload" });
@@ -942,7 +943,7 @@ router.patch("/leave-settings", requireRole("admin"), async (request, response) 
   response.json({ leavePolicy: (updated[0]?.data as { leavePolicy?: LeavePolicyRecord } | undefined)?.leavePolicy ?? leavePolicy });
 });
 
-router.get("/company-settings", requireRole("admin"), async (_request, response) => {
+router.get("/company-settings", requireTenantRole("admin"), async (_request, response) => {
   const tenantId = _request.auth?.user.tenantId;
   const rows = tenantId
     ? await db.select().from(companySettingsTable).where(eq(companySettingsTable.tenantId, tenantId)).limit(1)
@@ -950,7 +951,7 @@ router.get("/company-settings", requireRole("admin"), async (_request, response)
   response.json({ companyInfo: rows[0]?.data ?? {} });
 });
 
-router.patch("/company-settings", requireRole("admin"), async (request, response) => {
+router.patch("/company-settings", requireTenantRole("admin"), async (request, response) => {
   const parsed = partyInfoSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid company information." });
@@ -1128,7 +1129,7 @@ router.delete("/leave-requests/:id", async (request, response) => {
   response.status(204).end();
 });
 
-router.patch("/leave-requests/:id/status", requireRole("admin"), async (request, response) => {
+router.patch("/leave-requests/:id/status", requireTenantRole("admin"), async (request, response) => {
   const parsed = leaveDecisionSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid leave decision payload" });
@@ -1184,12 +1185,12 @@ router.get("/month-calendar", async (request, response) => {
   response.json({ monthCalendar: buildMonthCalendar(store, employeeId, month, tenantId) });
 });
 
-router.route("/funds").get(requireRole("admin"), async (_request, response) => {
+router.route("/funds").get(requireTenantRole("admin"), async (_request, response) => {
   const store = await readStore();
   const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const funds = store.funds.filter((fund) => tenantFundFilter(fund, tenantId));
   response.json({ funds: [...funds].sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime()) });
-}).post(requireRole("admin"), async (request, response) => {
+}).post(requireTenantRole("admin"), async (request, response) => {
   const parsed = fundSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid fund payload" });
@@ -1263,7 +1264,7 @@ router.route("/funds").get(requireRole("admin"), async (_request, response) => {
   response.status(existing ? 200 : 201).json({ fund });
 });
 
-router.route("/funds/:id").get(requireRole("admin"), async (request, response) => {
+router.route("/funds/:id").get(requireTenantRole("admin"), async (request, response) => {
   const store = await readStore();
   const fund = store.funds.find((item) => item.id === request.params.id);
   if (!fund) {
@@ -1277,7 +1278,7 @@ router.route("/funds/:id").get(requireRole("admin"), async (request, response) =
   }
 
   response.json({ fund });
-}).patch(requireRole("admin"), async (request, response) => {
+}).patch(requireTenantRole("admin"), async (request, response) => {
   const parsed = fundSchema.safeParse({ ...request.body, id: request.params.id });
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid fund payload" });
@@ -1352,7 +1353,7 @@ router.route("/funds/:id").get(requireRole("admin"), async (request, response) =
     );
   }
   response.json({ fund });
-}).delete(requireRole("admin"), async (request, response) => {
+}).delete(requireTenantRole("admin"), async (request, response) => {
   const store = await readStore();
   const target = store.funds.find((fund) => fund.id === request.params.id);
   if (!target) {
@@ -1417,7 +1418,7 @@ router.route("/funds/:id").get(requireRole("admin"), async (request, response) =
 router.route("/categories").get(async (_request, response) => {
   const store = await readStore();
   response.json({ categories: [...store.categories] });
-}).post(requireRole("admin"), async (request, response) => {
+}).post(requireTenantRole("admin"), async (request, response) => {
   const parsed = categorySchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid category payload" });
@@ -1460,7 +1461,7 @@ router.route("/categories").get(async (_request, response) => {
   response.status(existing ? 200 : 201).json({ category });
 });
 
-router.route("/categories/:id").get(requireRole("admin"), async (request, response) => {
+router.route("/categories/:id").get(requireTenantRole("admin"), async (request, response) => {
   const store = await readStore();
   const category = store.categories.find((item) => item.id === request.params.id);
   if (!category) {
@@ -1469,7 +1470,7 @@ router.route("/categories/:id").get(requireRole("admin"), async (request, respon
   }
 
   response.json({ category });
-}).patch(requireRole("admin"), async (request, response) => {
+}).patch(requireTenantRole("admin"), async (request, response) => {
   const parsed = categorySchema.safeParse({ ...request.body, id: request.params.id });
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid category payload" });
@@ -1512,7 +1513,7 @@ router.route("/categories/:id").get(requireRole("admin"), async (request, respon
 
   await updateStore(() => next);
   response.json({ category });
-}).delete(requireRole("admin"), async (request, response) => {
+}).delete(requireTenantRole("admin"), async (request, response) => {
   const store = await readStore();
   const target = store.categories.find((category) => category.id === request.params.id);
   if (!target) {
@@ -1617,8 +1618,7 @@ router.post("/expenses", async (request, response) => {
       expenses: existing ? store.expenses.map((item) => (item.id === expense.id ? expense : item)) : [expense, ...store.expenses],
     },
     {
-      actorName: actor.actorName,
-      actorRole: request.auth?.user.role ?? "system",
+      ...actor,
       action: existing ? "updated" : "created",
       entityType: "expense",
       entityId: expense.id,
@@ -1786,7 +1786,7 @@ router.route("/expenses/:id").get(async (request, response) => {
   response.status(204).send();
 });
 
-router.patch("/expenses/:id/status", requireRole("admin"), async (request, response) => {
+router.patch("/expenses/:id/status", requireTenantRole("admin"), async (request, response) => {
   const parsed = z.object({
     status: approvalStatusSchema,
     reviewerNote: z.string().trim().optional(),
@@ -1885,7 +1885,7 @@ router.get("/salaries", async (request, response) => {
   response.json({ salaries });
 });
 
-router.post("/salaries", requireRole("admin"), async (request, response) => {
+router.post("/salaries", requireTenantRole("admin"), async (request, response) => {
   const parsed = salarySchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid salary payload" });
@@ -1967,7 +1967,7 @@ router.route("/salaries/:id").get(async (request, response) => {
   }
 
   response.json({ salary });
-}).patch(requireRole("admin"), async (request, response) => {
+}).patch(requireTenantRole("admin"), async (request, response) => {
   const parsed = salarySchema.safeParse({ ...request.body, id: request.params.id });
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid salary payload" });
@@ -2062,7 +2062,7 @@ router.route("/salaries/:id").get(async (request, response) => {
     );
   }
   response.json({ salary });
-}).delete(requireRole("admin"), async (request, response) => {
+}).delete(requireTenantRole("admin"), async (request, response) => {
   const store = await readStore();
   const salary = store.salaries.find((item) => item.id === request.params.id);
   if (!salary) {
@@ -2094,7 +2094,7 @@ router.route("/salaries/:id").get(async (request, response) => {
   response.status(204).send();
 });
 
-router.post("/salaries/:id/pay", requireRole("admin"), async (request, response) => {
+router.post("/salaries/:id/pay", requireTenantRole("admin"), async (request, response) => {
   const parsed = z.object({ note: z.string().trim().optional() }).safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid salary payment payload" });
@@ -2361,8 +2361,7 @@ router.post("/timesheets", async (request, response) => {
   const savedEntry = await saveTimesheetFast({
     entry,
     audit: {
-      actorName: actor.actorName,
-      actorRole: request.auth?.user.role ?? "system",
+      ...actor,
       action: existing ? "saved" : "created",
       entityType: "timesheet",
       entityId: entry.id,
@@ -2510,6 +2509,7 @@ router.post("/timesheets/submit", async (request, response) => {
 
   const submittedEntry = await submitTimesheetEntryFast({
     entry,
+    tenantId,
     actorName: request.auth?.user.name ?? "System",
     actorRole: request.auth?.user.role ?? "system",
   });
@@ -2579,6 +2579,7 @@ router.post("/timesheets/:id/submit", async (request, response) => {
 
   const submittedEntry = await submitTimesheetFast({
     id: request.params.id,
+    tenantId,
     actorName: request.auth?.user.name ?? "System",
     actorRole: request.auth?.user.role ?? "system",
   });
@@ -2624,7 +2625,7 @@ router.post("/timesheets/:id/submit", async (request, response) => {
   response.json({ timesheet: submittedEntry ?? existing });
 });
 
-router.post("/timesheets/:id/approve", requireRole("admin"), async (request, response) => {
+router.post("/timesheets/:id/approve", requireTenantRole("admin"), async (request, response) => {
   const parsed = z.object({ note: z.string().trim().optional() }).safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid approval payload" });
@@ -2649,6 +2650,7 @@ router.post("/timesheets/:id/approve", requireRole("admin"), async (request, res
   const employee = await loadEmployeeProfile(existing.employeeId, tenantId);
   const reviewResult = await reviewTimesheetFast({
     id: String(request.params.id),
+    tenantId,
     status: "approved",
     actorName: request.auth?.user.name ?? "Admin",
     note: parsed.data.note?.trim() || undefined,
@@ -2696,7 +2698,7 @@ router.post("/timesheets/:id/approve", requireRole("admin"), async (request, res
   response.json({ timesheet: reviewResult.timesheet });
 });
 
-router.post("/timesheets/:id/reject", requireRole("admin"), async (request, response) => {
+router.post("/timesheets/:id/reject", requireTenantRole("admin"), async (request, response) => {
   const parsed = z.object({ note: z.string().trim().min(1) }).safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid rejection payload" });
@@ -2720,6 +2722,7 @@ router.post("/timesheets/:id/reject", requireRole("admin"), async (request, resp
 
   const reviewResult = await reviewTimesheetFast({
     id: String(request.params.id),
+    tenantId,
     status: "rejected",
     actorName: request.auth?.user.name ?? "Admin",
     note: parsed.data.note,
@@ -2805,7 +2808,7 @@ router.delete("/timesheets/:id", async (request, response) => {
   response.status(204).send();
 });
 
-router.get("/projects", requireRole("admin"), async (_request, response) => {
+router.get("/projects", requireTenantRole("admin"), async (_request, response) => {
   const store = await readStore();
   const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const projectBudgets = store.projectBudgets.filter((budget) => tenantProjectFilter(budget, tenantId));
@@ -2954,7 +2957,7 @@ router.get("/projects/names", async (_request, response) => {
   response.json({ projectNames: Array.from(names).sort((left, right) => left.localeCompare(right)) });
 });
 
-router.post("/projects", requireRole("admin"), async (request, response) => {
+router.post("/projects", requireTenantRole("admin"), async (request, response) => {
   const parsed = projectSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid project payload" });
@@ -3019,7 +3022,7 @@ router.route("/projects/:id").get(async (request, response) => {
   }
 
   response.json({ projectBudget: project, project });
-}).patch(requireRole("admin"), async (request, response) => {
+}).patch(requireTenantRole("admin"), async (request, response) => {
   const parsed = projectSchema.safeParse({ ...request.body, id: request.params.id });
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid project payload" });
@@ -3072,7 +3075,7 @@ router.route("/projects/:id").get(async (request, response) => {
 
   await updateStore(() => next);
   response.json({ projectBudget: budget, project: budget });
-}).delete(requireRole("admin"), async (request, response) => {
+}).delete(requireTenantRole("admin"), async (request, response) => {
   const store = await readStore();
   const existing = store.projectBudgets.find((budget) => budget.id === request.params.id);
   if (!existing) {
@@ -3104,7 +3107,7 @@ router.route("/projects/:id").get(async (request, response) => {
   response.status(204).send();
 });
 
-router.post("/projects/:id/tasks", requireRole("admin"), async (request, response) => {
+router.post("/projects/:id/tasks", requireTenantRole("admin"), async (request, response) => {
   const parsed = projectTaskSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid project task payload" });
@@ -3151,7 +3154,7 @@ router.post("/projects/:id/tasks", requireRole("admin"), async (request, respons
   response.status(201).json({ task });
 });
 
-router.get("/purchase-orders", requireRole("admin"), async (_request, response) => {
+router.get("/purchase-orders", requireTenantRole("admin"), async (_request, response) => {
   const store = await readStore();
   const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   response.json({
@@ -3161,7 +3164,7 @@ router.get("/purchase-orders", requireRole("admin"), async (_request, response) 
   });
 });
 
-router.post("/purchase-orders", requireRole("admin"), async (request, response) => {
+router.post("/purchase-orders", requireTenantRole("admin"), async (request, response) => {
   const parsed = poSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid purchase order payload" });
@@ -3244,7 +3247,7 @@ router.route("/purchase-orders/:id").get(async (request, response) => {
   }
 
   response.json({ purchaseOrder });
-}).patch(requireRole("admin"), async (request, response) => {
+}).patch(requireTenantRole("admin"), async (request, response) => {
   const parsed = poSchema.safeParse({ ...request.body, id: request.params.id });
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid purchase order payload" });
@@ -3304,7 +3307,7 @@ router.route("/purchase-orders/:id").get(async (request, response) => {
 
   await updateStore(() => next);
   response.json({ purchaseOrder });
-}).delete(requireRole("admin"), async (request, response) => {
+}).delete(requireTenantRole("admin"), async (request, response) => {
   const store = await readStore();
   const existing = store.purchaseOrders.find((order) => order.id === request.params.id);
   if (!existing) {
@@ -3341,7 +3344,7 @@ router.route("/purchase-orders/:id").get(async (request, response) => {
   response.status(204).send();
 });
 
-router.post("/purchase-orders/:id/tasks", requireRole("admin"), async (request, response) => {
+router.post("/purchase-orders/:id/tasks", requireTenantRole("admin"), async (request, response) => {
   const parsed = poTaskSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid purchase order task payload" });
@@ -3404,7 +3407,7 @@ router.post("/purchase-orders/:id/tasks", requireRole("admin"), async (request, 
   response.status(201).json({ task });
 });
 
-router.post("/purchase-orders/:id/tasks/:taskId/pay", requireRole("admin"), async (request, response) => {
+router.post("/purchase-orders/:id/tasks/:taskId/pay", requireTenantRole("admin"), async (request, response) => {
   const store = await readStore();
   const order = store.purchaseOrders.find((item) => item.id === request.params.id);
   const task = order?.tasks.find((item) => item.id === request.params.taskId);
@@ -3507,7 +3510,7 @@ router.post("/purchase-orders/:id/tasks/:taskId/pay", requireRole("admin"), asyn
   response.json({ purchaseOrder: next.purchaseOrders.find((item) => item.id === order.id) ?? order });
 });
 
-router.get("/pre-approvals", requireRole("admin", "client"), async (request, response) => {
+router.get("/pre-approvals", requireTenantRole("admin", "client"), async (request, response) => {
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const rows = await db
     .select()
@@ -3522,7 +3525,7 @@ router.get("/pre-approvals", requireRole("admin", "client"), async (request, res
   response.json({ preApprovals: rows.map(serializePreApproval) });
 });
 
-router.post("/pre-approvals", requireRole("admin"), async (request, response) => {
+router.post("/pre-approvals", requireTenantRole("admin"), async (request, response) => {
   const parsed = preApprovalSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid pre-approval payload" });
@@ -3569,7 +3572,6 @@ router.post("/pre-approvals", requireRole("admin"), async (request, response) =>
     .returning();
 
   await insertBusinessAudit({
-    tenantId,
     ...recordActor(request),
     action: "created",
     entityType: "pre-approval",
@@ -3580,7 +3582,7 @@ router.post("/pre-approvals", requireRole("admin"), async (request, response) =>
   response.status(201).json({ preApproval: serializePreApproval(rows[0]!) });
 });
 
-router.route("/pre-approvals/:id").get(requireRole("admin", "client"), async (request, response) => {
+router.route("/pre-approvals/:id").get(requireTenantRole("admin", "client"), async (request, response) => {
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const preApprovalId = routeParam(request.params.id);
   const rows = await db.select().from(preApprovalsTable).where(eq(preApprovalsTable.id, preApprovalId)).limit(1);
@@ -3600,7 +3602,7 @@ router.route("/pre-approvals/:id").get(requireRole("admin", "client"), async (re
   }
 
   response.json({ preApproval: serializePreApproval(preApproval) });
-}).patch(requireRole("admin"), async (request, response) => {
+}).patch(requireTenantRole("admin"), async (request, response) => {
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const preApprovalId = routeParam(request.params.id);
   const parsed = preApprovalSchema.safeParse({ ...request.body, id: preApprovalId });
@@ -3661,7 +3663,6 @@ router.route("/pre-approvals/:id").get(requireRole("admin", "client"), async (re
     .returning();
 
   await insertBusinessAudit({
-    tenantId,
     ...recordActor(request),
     action: "updated",
     entityType: "pre-approval",
@@ -3670,7 +3671,7 @@ router.route("/pre-approvals/:id").get(requireRole("admin", "client"), async (re
   });
 
   response.json({ preApproval: serializePreApproval(rows[0]!) });
-}).delete(requireRole("admin"), async (request, response) => {
+}).delete(requireTenantRole("admin"), async (request, response) => {
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const preApprovalId = routeParam(request.params.id);
   const existingRows = await db.select().from(preApprovalsTable).where(eq(preApprovalsTable.id, preApprovalId)).limit(1);
@@ -3692,7 +3693,6 @@ router.route("/pre-approvals/:id").get(requireRole("admin", "client"), async (re
 
   await db.delete(preApprovalsTable).where(eq(preApprovalsTable.id, existing.id));
   await insertBusinessAudit({
-    tenantId,
     ...recordActor(request),
     action: "deleted",
     entityType: "pre-approval",
@@ -3703,7 +3703,7 @@ router.route("/pre-approvals/:id").get(requireRole("admin", "client"), async (re
   response.status(204).send();
 });
 
-router.post("/pre-approvals/:id/submit", requireRole("admin"), async (request, response) => {
+router.post("/pre-approvals/:id/submit", requireTenantRole("admin"), async (request, response) => {
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const preApprovalId = routeParam(request.params.id);
   const rows = await db.select().from(preApprovalsTable).where(eq(preApprovalsTable.id, preApprovalId)).limit(1);
@@ -3739,7 +3739,6 @@ router.post("/pre-approvals/:id/submit", requireRole("admin"), async (request, r
     .returning();
 
   await insertBusinessAudit({
-    tenantId,
     ...recordActor(request),
     action: "submitted",
     entityType: "pre-approval",
@@ -3760,7 +3759,7 @@ router.post("/pre-approvals/:id/submit", requireRole("admin"), async (request, r
   response.json({ preApproval: serializePreApproval(updatedRows[0]!) });
 });
 
-router.post("/pre-approvals/:id/comments", requireRole("admin", "client"), async (request, response) => {
+router.post("/pre-approvals/:id/comments", requireTenantRole("admin", "client"), async (request, response) => {
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const parsed = preApprovalCommentSchema.safeParse(request.body);
   if (!parsed.success) {
@@ -3810,7 +3809,6 @@ router.post("/pre-approvals/:id/comments", requireRole("admin", "client"), async
     .returning();
 
   await insertBusinessAudit({
-    tenantId,
     ...recordActor(request),
     action: "commented",
     entityType: "pre-approval-comment",
@@ -3821,7 +3819,7 @@ router.post("/pre-approvals/:id/comments", requireRole("admin", "client"), async
   response.status(201).json({ preApproval: serializePreApproval(updatedRows[0]!), comment });
 });
 
-router.post("/pre-approvals/:id/approve", requireRole("client"), async (request, response) => {
+router.post("/pre-approvals/:id/approve", requireTenantRole("client"), async (request, response) => {
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const preApprovalId = routeParam(request.params.id);
   const rows = await db.select().from(preApprovalsTable).where(eq(preApprovalsTable.id, preApprovalId)).limit(1);
@@ -3856,7 +3854,6 @@ router.post("/pre-approvals/:id/approve", requireRole("client"), async (request,
     .returning();
 
   await insertBusinessAudit({
-    tenantId,
     ...recordActor(request),
     action: "approved",
     entityType: "pre-approval",
@@ -3877,7 +3874,7 @@ router.post("/pre-approvals/:id/approve", requireRole("client"), async (request,
   response.json({ preApproval: serializePreApproval(updatedRows[0]!) });
 });
 
-router.post("/pre-approvals/:id/receive-funds", requireRole("admin"), async (request, response) => {
+router.post("/pre-approvals/:id/receive-funds", requireTenantRole("admin"), async (request, response) => {
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const preApprovalId = routeParam(request.params.id);
   const rows = await db.select().from(preApprovalsTable).where(eq(preApprovalsTable.id, preApprovalId)).limit(1);
@@ -3936,7 +3933,6 @@ router.post("/pre-approvals/:id/receive-funds", requireRole("admin"), async (req
   invalidateBusinessStoreCache();
 
   await insertBusinessAudit({
-    tenantId,
     ...recordActor(request),
     action: "funds_received",
     entityType: "pre-approval",
@@ -3947,7 +3943,7 @@ router.post("/pre-approvals/:id/receive-funds", requireRole("admin"), async (req
   response.json({ preApproval: serializePreApproval(updatedPreApproval!) });
 });
 
-router.post("/pre-approvals/:id/request-changes", requireRole("client"), async (request, response) => {
+router.post("/pre-approvals/:id/request-changes", requireTenantRole("client"), async (request, response) => {
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const parsed = preApprovalCommentSchema.safeParse(request.body);
   if (!parsed.success) {
@@ -3997,7 +3993,6 @@ router.post("/pre-approvals/:id/request-changes", requireRole("client"), async (
     .returning();
 
   await insertBusinessAudit({
-    tenantId,
     ...recordActor(request),
     action: "changes_requested",
     entityType: "pre-approval",

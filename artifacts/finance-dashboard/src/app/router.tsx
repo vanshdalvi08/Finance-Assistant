@@ -25,6 +25,11 @@ import AdminTimesheetValidationPage from "@/pages/admin/timesheet-validation";
 import AdminLeaveManagementPage from "@/pages/admin/leave-management";
 import AdminReportsPage from "@/pages/admin/reports";
 import AdminAuditTrailPage from "@/pages/admin/audit-trail";
+import PlatformDashboardPage from "@/pages/platform/dashboard";
+import PlatformTenantsPage from "@/pages/platform/tenants";
+import PlatformMonitoringPage from "@/pages/platform/monitoring";
+import PlatformRecoveryPage from "@/pages/platform/recovery";
+import PlatformSettingsPage from "@/pages/platform/settings";
 import EmployeeTimesheetPage from "@/pages/employee/timesheet";
 import EmployeeLeavesPage from "@/pages/employee/leaves";
 import EmployeeExpensesPage from "@/pages/employee/expenses";
@@ -55,6 +60,10 @@ function RootRedirect() {
 
   if (role === "client") {
     return <Redirect to={routes.clientPreApprovals} />;
+  }
+
+  if (role === "platform_super_admin") {
+    return <Redirect to={routes.platformDashboard} />;
   }
 
   return <Redirect to={routes.employeeTimesheet} />;
@@ -104,6 +113,19 @@ function ClientRoutes() {
   );
 }
 
+function PlatformRoutes() {
+  return (
+    <Switch>
+      <Route path={routes.platformDashboard}><PlatformDashboardPage /></Route>
+      <Route path={routes.platformTenants}><PlatformTenantsPage /></Route>
+      <Route path={routes.platformMonitoring}><PlatformMonitoringPage /></Route>
+      <Route path={routes.platformRecovery}><PlatformRecoveryPage /></Route>
+      <Route path={routes.platformSettings}><PlatformSettingsPage /></Route>
+      <Route><Redirect to={routes.platformDashboard} /></Route>
+    </Switch>
+  );
+}
+
 export function AppRouter() {
   return (
     <WouterRouter base={import.meta.env.BASE_URL?.replace(/\/$/, "") || ""}>
@@ -144,6 +166,13 @@ export function AppRouter() {
           <AuthGuard>
             <RoleGuard allow={["client"]}>
               <ClientRoutes />
+            </RoleGuard>
+          </AuthGuard>
+        </Route>
+        <Route path="/platform/:rest*">
+          <AuthGuard>
+            <RoleGuard allow={["platform_super_admin"]}>
+              <PlatformRoutes />
             </RoleGuard>
           </AuthGuard>
         </Route>

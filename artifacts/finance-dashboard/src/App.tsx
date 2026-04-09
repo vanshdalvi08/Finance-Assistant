@@ -24,6 +24,11 @@ import EmployeeExpensesPage from "@/pages/employee/expenses";
 import EmployeeSalarySlipsPage from "@/pages/employee/salary-slips";
 import EmployeeProfilePage from "@/pages/employee/profile";
 import ClientPreApprovalsPage from "@/pages/client/pre-approvals";
+import PlatformDashboardPage from "@/pages/platform/dashboard";
+import PlatformTenantsPage from "@/pages/platform/tenants";
+import PlatformMonitoringPage from "@/pages/platform/monitoring";
+import PlatformRecoveryPage from "@/pages/platform/recovery";
+import PlatformSettingsPage from "@/pages/platform/settings";
 import NotFoundPage from "@/pages/not-found";
 import type { UserRole } from "@/auth/types";
 
@@ -46,6 +51,10 @@ function redirectForSession(isAuthenticated: boolean, role: UserRole | null) {
 
   if (role === "client") {
     return <Redirect to="/client/pre-approvals" />;
+  }
+
+  if (role === "platform_super_admin") {
+    return <Redirect to="/platform/dashboard" />;
   }
 
   return <Redirect to="/" />;
@@ -73,6 +82,14 @@ function renderClientRoute(
   element: React.ReactNode,
 ) {
   return isAuthenticated && role === "client" ? element : redirectForSession(isAuthenticated, role);
+}
+
+function renderPlatformRoute(
+  isAuthenticated: boolean,
+  role: UserRole | null,
+  element: React.ReactNode,
+) {
+  return isAuthenticated && role === "platform_super_admin" ? element : redirectForSession(isAuthenticated, role);
 }
 
 function LegacyRouter() {
@@ -176,6 +193,21 @@ function LegacyRouter() {
         </Route>
         <Route path="/client/pre-approvals">
           {renderClientRoute(isAuthenticated, role, <ClientPreApprovalsPage />)}
+        </Route>
+        <Route path="/platform/dashboard">
+          {renderPlatformRoute(isAuthenticated, role, <PlatformDashboardPage />)}
+        </Route>
+        <Route path="/platform/tenants">
+          {renderPlatformRoute(isAuthenticated, role, <PlatformTenantsPage />)}
+        </Route>
+        <Route path="/platform/monitoring">
+          {renderPlatformRoute(isAuthenticated, role, <PlatformMonitoringPage />)}
+        </Route>
+        <Route path="/platform/recovery">
+          {renderPlatformRoute(isAuthenticated, role, <PlatformRecoveryPage />)}
+        </Route>
+        <Route path="/platform/settings">
+          {renderPlatformRoute(isAuthenticated, role, <PlatformSettingsPage />)}
         </Route>
         <Route>
           {isAuthenticated ? <NotFoundPage /> : <Redirect to="/login" />}

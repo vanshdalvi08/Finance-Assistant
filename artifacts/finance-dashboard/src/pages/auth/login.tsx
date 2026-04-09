@@ -16,7 +16,11 @@ const loginSchema = z.object({
   password: z.string().min(8),
 });
 
-function resolveWorkspace(role: "admin" | "employee" | "client") {
+function resolveWorkspace(role: "admin" | "employee" | "client" | "platform_super_admin") {
+  if (role === "platform_super_admin") {
+    return "/platform/dashboard";
+  }
+
   if (role === "client") {
     return "/client/pre-approvals";
   }

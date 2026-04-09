@@ -5,6 +5,7 @@ import pinoHttp from "pino-http";
 import router from "./routes";
 import { logger } from "./lib/logger";
 import { getApiOriginCandidates, isProduction } from "./lib/env";
+import { recordPlatformEvent } from "./lib/platform";
 
 const app: Express = express();
 const REQUEST_BODY_LIMIT = "4mb";
@@ -45,6 +46,40 @@ app.use((_request, response, next) => {
   response.setHeader("X-Frame-Options", "DENY");
   response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
   response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  next();
+});
+app.use((request, response, next) => {
+  const startedAt = Date.now();
+  response.on("finish", () => {
+    const durationMs = Date.now() - startedAt;
+    const tenantId = request.auth?.user.tenantId ?? null;
+    const actorUserId = request.auth?.user.id ?? null;
+    const statusCode = response.statusCode;
+    const severity = statusCode >= 500 ? "error" : durationMs >= 1500 ? "warning" : null;
+
+    if (!severity) {
+      return;
+    }
+
+    void recordPlatformEvent({
+      severity,
+      category: statusCode >= 500 ? "system" : "request",
+      title: statusCode >= 500 ? "Request failed" : "Slow request",
+      message: `${request.method} ${request.originalUrl?.split("?")[0] ?? request.url} finished with ${statusCode} in ${durationMs}ms.`,
+      path: request.originalUrl?.split("?")[0] ?? request.url,
+      method: request.method,
+      statusCode,
+      durationMs,
+      tenantId,
+      actorUserId,
+      metadata: {
+        requestId: request.id,
+      },
+    }).catch((error) => {
+      logger.error({ err: error }, "Failed to record platform event");
+    });
+  });
+
   next();
 });
 app.use(cookieParser());
