@@ -1,10 +1,21 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { AlertTriangle, CheckCircle2, LifeBuoy, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
+import { Link } from "wouter";
+import { AlertTriangle, CheckCircle2, ExternalLink, LifeBuoy, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
 import { PlatformShell } from "@/layouts/platform-shell";
 import { PageHeader } from "@/components/app/page-header";
 import { MetricCard } from "@/components/app/metric-card";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,6 +27,12 @@ import { cn } from "@/lib/utils";
 export default function PlatformRecoveryPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const [tenantToRestore, setTenantToRestore] = useState<{
+    id: string;
+    name: string;
+    slug: string;
+    status: "active" | "inactive";
+  } | null>(null);
 
   const { data: tenantsData } = useQuery({
     queryKey: ["platform-tenants"],
@@ -31,11 +48,16 @@ export default function PlatformRecoveryPage() {
     queryKey: ["platform-monitoring"],
     queryFn: () => api.getPlatformMonitoring(24),
   });
+  const { data: settings } = useQuery({
+    queryKey: ["platform-settings"],
+    queryFn: api.getPlatformSettings,
+  });
 
   const restoreMutation = useMutation({
     mutationFn: (tenantId: string) => api.updatePlatformTenantStatus(tenantId, "active"),
     onSuccess: async () => {
       toast({ title: "Tenant restored", description: "The workspace is active again." });
+      setTenantToRestore(null);
       await queryClient.invalidateQueries({ queryKey: ["platform-tenants"] });
       await queryClient.invalidateQueries({ queryKey: ["platform-overview"] });
     },
@@ -116,7 +138,14 @@ export default function PlatformRecoveryPage() {
                           size="sm"
                           variant="outline"
                           className="border-white/10 bg-white/[0.03]"
-                          onClick={() => restoreMutation.mutate(tenant.id)}
+                          onClick={() =>
+                            setTenantToRestore({
+                              id: tenant.id,
+                              name: tenant.name,
+                              slug: tenant.slug,
+                              status: tenant.status,
+                            })
+                          }
                           disabled={restoreMutation.isPending}
                         >
                           Restore
@@ -142,7 +171,15 @@ export default function PlatformRecoveryPage() {
                 <RecoveryLine label="Tenant health" value={`${overview?.activeTenants ?? 0} active / ${overview?.inactiveTenants ?? 0} inactive`} />
                 <RecoveryLine label="Recent incidents" value={`${incidents.length} events in the latest telemetry window`} />
                 <RecoveryLine label="Critical issues" value={`${criticalCount} errors need attention`} />
+                <RecoveryLine
+                  label="Backup retention"
+                  value={`${settings?.operationalDefaults.backupRecovery.retentionDays ?? 30} days (${settings?.operationalDefaults.backupRecovery.frequency ?? "daily + wal/pitr"})`}
+                />
                 <RecoveryLine label="Support state" value={restoreMutation.isPending ? "Restoration in progress" : "Ready for action"} />
+                <RecoveryLine
+                  label="Last recovery drill"
+                  value={settings?.operationalDefaults.backupRecovery.lastRecoveryDrillDate ?? "Not recorded"}
+                />
               </CardContent>
             </Card>
 
@@ -209,20 +246,73 @@ export default function PlatformRecoveryPage() {
                 <p className="text-sm text-muted-foreground">Use these when you need to jump between recovery, monitoring, and tenant controls.</p>
               </CardHeader>
               <CardContent className="grid gap-3 sm:grid-cols-2">
-                {[
-                  "Open Monitoring",
-                  "Review Tenants",
-                  "Inspect Platform Settings",
-                  "Refresh Recovery State",
-                ].map((item) => (
-                  <div key={item} className="rounded-2xl border border-white/8 bg-black/15 px-4 py-3 text-sm text-muted-foreground">
-                    {item}
-                  </div>
-                ))}
+                <Link href="/platform/monitoring">
+                  <span className="rounded-2xl border border-white/8 bg-black/15 px-4 py-3 text-sm text-muted-foreground transition hover:border-cyan-400/20 hover:text-foreground">
+                    Open Monitoring
+                  </span>
+                </Link>
+                <Link href="/platform/tenants">
+                  <span className="rounded-2xl border border-white/8 bg-black/15 px-4 py-3 text-sm text-muted-foreground transition hover:border-cyan-400/20 hover:text-foreground">
+                    Review Tenants
+                  </span>
+                </Link>
+                <Link href="/platform/settings">
+                  <span className="rounded-2xl border border-white/8 bg-black/15 px-4 py-3 text-sm text-muted-foreground transition hover:border-cyan-400/20 hover:text-foreground">
+                    Inspect Platform Settings
+                  </span>
+                </Link>
+                <a
+                  href={settings?.operationalDefaults.backupRecovery.runbookUrl ?? "/platform/recovery"}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center justify-between rounded-2xl border border-white/8 bg-black/15 px-4 py-3 text-left text-sm text-muted-foreground transition hover:border-cyan-400/20 hover:text-foreground"
+                >
+                  Open Recovery Runbook
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await queryClient.invalidateQueries({ queryKey: ["platform-tenants"] });
+                    await queryClient.invalidateQueries({ queryKey: ["platform-overview"] });
+                    await queryClient.invalidateQueries({ queryKey: ["platform-monitoring"] });
+                    toast({ title: "Recovery state refreshed" });
+                  }}
+                  className="rounded-2xl border border-white/8 bg-black/15 px-4 py-3 text-left text-sm text-muted-foreground transition hover:border-cyan-400/20 hover:text-foreground"
+                >
+                  Refresh Recovery State
+                </button>
               </CardContent>
             </Card>
           </div>
         </div>
+
+        <AlertDialog open={Boolean(tenantToRestore)} onOpenChange={(open) => !open && setTenantToRestore(null)}>
+          <AlertDialogContent className="border-white/10 bg-[#111111] text-white">
+            <AlertDialogHeader>
+              <AlertDialogTitle>Restore tenant workspace?</AlertDialogTitle>
+              <AlertDialogDescription className="text-muted-foreground">
+                This will re-enable the tenant from the platform console without changing any tenant data.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            {tenantToRestore ? (
+              <div className="grid gap-3">
+                <RecoveryLine label="Tenant" value={tenantToRestore.name} />
+                <RecoveryLine label="Slug" value={tenantToRestore.slug} />
+                <RecoveryLine label="Current status" value={tenantToRestore.status} />
+              </div>
+            ) : null}
+            <AlertDialogFooter>
+              <AlertDialogCancel className="border-white/10 bg-white/[0.03] text-foreground">Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => tenantToRestore && restoreMutation.mutate(tenantToRestore.id)}
+                className="bg-emerald-600 text-white hover:bg-emerald-500"
+              >
+                {restoreMutation.isPending ? "Restoring..." : "Restore tenant"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </PlatformShell>
   );

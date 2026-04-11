@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Copy, Shield, Sparkles, Users } from "lucide-react";
+import { Copy, ExternalLink, Shield, Sparkles } from "lucide-react";
 import { PlatformShell } from "@/layouts/platform-shell";
 import { PageHeader } from "@/components/app/page-header";
 import { MetricCard } from "@/components/app/metric-card";
@@ -28,6 +28,8 @@ export default function PlatformSettingsPage() {
 
   const platformTenant = settings?.platformTenant;
   const admins = settings?.platformAdmins ?? [];
+  const externalMonitoring = settings?.operationalDefaults.externalMonitoring;
+  const backupRecovery = settings?.operationalDefaults.backupRecovery;
 
   const healthHighlights = useMemo(
     () => [
@@ -118,6 +120,82 @@ export default function PlatformSettingsPage() {
           </Card>
 
           <div className="space-y-6">
+            <Card className="border-white/8 bg-white/[0.03]">
+              <CardHeader>
+                <CardTitle className="font-serif text-2xl">Operational defaults</CardTitle>
+                <p className="text-sm text-muted-foreground">Read-only platform defaults that shape monitoring and operator response expectations.</p>
+              </CardHeader>
+              <CardContent className="grid gap-3">
+                <SettingTile
+                  label="Support contact"
+                  value={settings?.operationalDefaults.supportEmail ?? "platform@yojak.in"}
+                  detail="Primary support identity used for platform operations."
+                />
+                <SettingTile
+                  label="Slow request threshold"
+                  value={`${settings?.operationalDefaults.incidentLatencyThresholdMs ?? 1500} ms`}
+                  detail="Requests slower than this are recorded as warnings in the telemetry feed."
+                />
+                <SettingTile
+                  label="Monitoring window"
+                  value={`${settings?.operationalDefaults.monitoringWindowSize ?? 80} events`}
+                  detail="Default operator view returned from the platform monitoring endpoint."
+                />
+                <SettingTile
+                  label="Hardening tier"
+                  value={settings?.operationalDefaults.hardeningTier ?? "baseline"}
+                  detail={settings?.operationalDefaults.auditRetention ?? "Database-backed platform event history"}
+                />
+                <SettingTile
+                  label="External monitoring"
+                  value={externalMonitoring?.enabled ? "Enabled" : "Disabled"}
+                  detail={
+                    externalMonitoring?.enabled
+                      ? `${externalMonitoring.provider} • min ${externalMonitoring.minSeverity} • cooldown ${externalMonitoring.cooldownMs}ms`
+                      : "Configure webhook env variables to enable external alert dispatch."
+                  }
+                />
+                <SettingTile
+                  label="Monitoring destination"
+                  value={externalMonitoring?.endpoint ?? "Not configured"}
+                  detail="Masked endpoint shown for security."
+                />
+              </CardContent>
+            </Card>
+
+            <Card className="border-white/8 bg-white/[0.03]">
+              <CardHeader>
+                <CardTitle className="font-serif text-2xl">Backup & recovery</CardTitle>
+                <p className="text-sm text-muted-foreground">Runbook-facing settings for restore readiness and operational recovery drills.</p>
+              </CardHeader>
+              <CardContent className="grid gap-3">
+                <SettingTile
+                  label="Strategy"
+                  value={backupRecovery?.strategy ?? "managed-postgres-pitr"}
+                  detail={`Frequency: ${backupRecovery?.frequency ?? "daily + wal/pitr"}`}
+                />
+                <SettingTile
+                  label="Retention"
+                  value={`${backupRecovery?.retentionDays ?? 30} days`}
+                  detail={`Storage: ${backupRecovery?.storage ?? "managed-provider"}`}
+                />
+                <SettingTile
+                  label="Last recovery drill"
+                  value={backupRecovery?.lastRecoveryDrillDate ?? "Not recorded"}
+                  detail="Track this after each restore rehearsal."
+                />
+                <a
+                  href={backupRecovery?.runbookUrl ?? "/docs/operations/backup-recovery-runbook.md"}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center justify-between rounded-2xl border border-white/10 bg-black/15 px-4 py-3 text-sm text-muted-foreground transition hover:border-cyan-400/25 hover:text-foreground"
+                >
+                  Open backup runbook
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+              </CardContent>
+            </Card>
+
             <Card className="border-white/8 bg-white/[0.03]">
               <CardHeader>
                 <CardTitle className="font-serif text-2xl">Security posture</CardTitle>

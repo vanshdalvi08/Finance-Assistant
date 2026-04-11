@@ -1,6 +1,6 @@
 export function AuthShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(216,178,106,0.15),transparent_22%),radial-gradient(circle_at_right,rgba(90,105,180,0.12),transparent_24%),#0b0908] px-4 py-10 text-foreground">
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(240,182,92,0.2),transparent_18%),radial-gradient(circle_at_right,rgba(15,90,150,0.22),transparent_28%),linear-gradient(180deg,#f7fbff_0%,#eef4f9_48%,#f5f7fb_100%)] text-foreground">
       {children}
     </div>
   );

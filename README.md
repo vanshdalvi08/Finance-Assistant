@@ -73,6 +73,26 @@ Recommended bucket setup:
 Profile photos are now uploaded to Supabase Storage and stored as URLs.
 Expense attachments are now uploaded to Supabase Storage and stored as bucket paths, with signed URLs returned by the backend when expenses are read.
 
+## Platform operations
+
+Backup/recovery runbook:
+
+- `docs/operations/backup-recovery-runbook.md`
+
+Optional platform monitoring + recovery env vars:
+
+- `PLATFORM_MONITORING_WEBHOOK_URL`
+- `PLATFORM_MONITORING_WEBHOOK_TOKEN`
+- `PLATFORM_MONITORING_MIN_SEVERITY`
+- `PLATFORM_MONITORING_ALERT_COOLDOWN_MS`
+- `PLATFORM_MONITORING_WEBHOOK_TIMEOUT_MS`
+- `PLATFORM_BACKUP_STRATEGY`
+- `PLATFORM_BACKUP_FREQUENCY`
+- `PLATFORM_BACKUP_RETENTION_DAYS`
+- `PLATFORM_BACKUP_STORAGE`
+- `PLATFORM_RECOVERY_RUNBOOK_URL`
+- `PLATFORM_LAST_RECOVERY_DRILL_DATE`
+
 ## Upload storage
 
 The backend now includes Supabase Storage helpers for:

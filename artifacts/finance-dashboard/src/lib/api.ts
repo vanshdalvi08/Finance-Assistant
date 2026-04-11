@@ -160,8 +160,10 @@ export interface LeavePolicy {
 
 export interface AuditTrailEntry {
   id: string;
+  tenantId?: string;
+  actorUserId?: string;
   actorName: string;
-  actorRole: "admin" | "employee" | "system";
+  actorRole: "admin" | "employee" | "client" | "platform_super_admin" | "system";
   action: string;
   entityType:
     | "employee"
@@ -173,10 +175,21 @@ export interface AuditTrailEntry {
     | "project-budget"
     | "purchase-order"
     | "purchase-order-task"
+    | "pre-approval"
+    | "pre-approval-comment"
     | "holiday"
     | "leave-request";
   entityId: string;
   summary: string;
+  requestId?: string;
+  details?: {
+    entityLabel?: string;
+    requestId?: string;
+    changedFields?: string[];
+    before?: Record<string, unknown> | null;
+    after?: Record<string, unknown> | null;
+    context?: Record<string, unknown> | null;
+  };
   createdAt: string;
 }
 
@@ -451,6 +464,11 @@ export interface PlatformEvent {
   method?: string;
   statusCode?: number;
   durationMs?: number;
+  fingerprint?: string;
+  acknowledgedAt?: string;
+  acknowledgedByUserId?: string;
+  resolvedAt?: string;
+  resolvedByUserId?: string;
   metadata?: Record<string, unknown>;
   createdAt: string;
 }
@@ -464,6 +482,7 @@ export interface PlatformOverview {
   tenantUsers: number;
   errorCount: number;
   slowRequestCount: number;
+  incidentWorkflowSupported?: boolean;
   recentEvents: PlatformEvent[];
   tenants: PlatformTenantSummary[];
 }
@@ -471,6 +490,18 @@ export interface PlatformOverview {
 export interface PlatformMonitoringResponse {
   events: PlatformEvent[];
   summary: Record<"info" | "warning" | "error", number>;
+  categorySummary: Record<"request" | "auth" | "database" | "upload" | "tenant" | "system", number>;
+  workflowSupported?: boolean;
+  appliedFilters: {
+    severity: PlatformEvent["severity"] | null;
+    category: PlatformEvent["category"] | null;
+    tenantId: string | null;
+    state: "open" | "acknowledged" | "resolved" | "all";
+    search: string | null;
+    from: string | null;
+    to: string | null;
+    limit: number;
+  };
 }
 
 export interface PlatformAdminSummary {
@@ -495,6 +526,28 @@ export interface PlatformSettingsResponse {
     updatedAt: string;
   } | null;
   platformAdmins: PlatformAdminSummary[];
+  operationalDefaults: {
+    supportEmail: string;
+    incidentLatencyThresholdMs: number;
+    monitoringWindowSize: number;
+    hardeningTier: string;
+    auditRetention: string;
+    externalMonitoring: {
+      enabled: boolean;
+      provider: "webhook";
+      endpoint: string | null;
+      minSeverity: "info" | "warning" | "error";
+      cooldownMs: number;
+    };
+    backupRecovery: {
+      strategy: string;
+      frequency: string;
+      retentionDays: number;
+      storage: string;
+      runbookUrl: string;
+      lastRecoveryDrillDate: string | null;
+    };
+  };
 }
 
 interface NotificationsResponse {
@@ -1550,7 +1603,8 @@ export const api = {
     businessPost<{
       tenant: { id: string; name: string; slug: string; status: "active" | "inactive"; createdAt: string; updatedAt: string };
       owner: AuthUser;
-      temporaryPassword: string;
+      temporaryPassword: string | null;
+      passwordWasGenerated: boolean;
     }>("/platform/tenants", input),
 
   updatePlatformTenantStatus: async (tenantId: string, status: "active" | "inactive") =>
@@ -1560,6 +1614,48 @@ export const api = {
     const path = withQuery("/platform/monitoring", { limit: limit ? String(limit) : undefined });
     return businessGet<PlatformMonitoringResponse>(path);
   },
+
+  getFilteredPlatformMonitoring: async (filters: {
+    limit?: number;
+    severity?: PlatformEvent["severity"];
+    category?: PlatformEvent["category"];
+    tenantId?: string;
+    state?: "open" | "acknowledged" | "resolved" | "all";
+    search?: string;
+  }) => {
+    const path = withQuery("/platform/monitoring", {
+      limit: filters.limit ? String(filters.limit) : undefined,
+      severity: filters.severity,
+      category: filters.category,
+      tenantId: filters.tenantId,
+      state: filters.state,
+      search: filters.search,
+    });
+    return businessGet<PlatformMonitoringResponse>(path);
+  },
+
+  acknowledgePlatformEvent: async (eventId: string) =>
+    (await businessPost<{ event: PlatformEvent }>(`/platform/monitoring/${eventId}/acknowledge`, {}, "PATCH")).event,
+
+  resolvePlatformEvent: async (eventId: string) =>
+    (await businessPost<{ event: PlatformEvent }>(`/platform/monitoring/${eventId}/resolve`, {}, "PATCH")).event,
+
+  triggerPlatformTestAlert: async (input?: {
+    severity?: PlatformEvent["severity"];
+    category?: PlatformEvent["category"];
+    title?: string;
+    message?: string;
+  }) =>
+    businessPost<{
+      queued: boolean;
+      testAlert: {
+        severity: "info" | "warning" | "error";
+        category: "request" | "auth" | "database" | "upload" | "tenant" | "system";
+        title: string;
+        requestId: string;
+        triggeredAt: string;
+      };
+    }>("/platform/monitoring/test-alert", input ?? {}),
 
   getPlatformSettings: async () => businessGet<PlatformSettingsResponse>("/platform/settings"),
 

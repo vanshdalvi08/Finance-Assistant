@@ -1,0 +1,11 @@
+
+> @workspace/api-server@0.0.0 dev C:\Users\vansh\Desktop\Finance-Assistant\artifacts\api-server
+> cross-env NODE_ENV=development node ./build.mjs && cross-env NODE_ENV=development node --enable-source-maps ./dist/index.mjs
+
+{"level":30,"time":1775889751758,"pid":23404,"hostname":"DESKTOP-VUMLN6S","port":3011,"msg":"Server listening"}
+{"level":30,"time":1775889769120,"pid":23404,"hostname":"DESKTOP-VUMLN6S","req":{"id":1,"method":"POST","url":"/api/auth/login"},"res":{"statusCode":200},"responseTime":1337,"msg":"request completed"}
+{"level":30,"time":1775889769653,"pid":23404,"hostname":"DESKTOP-VUMLN6S","req":{"id":2,"method":"POST","url":"/api/platform/monitoring/test-alert"},"res":{"statusCode":202},"responseTime":527,"msg":"request completed"}
+{"level":30,"time":1775889772796,"pid":23404,"hostname":"DESKTOP-VUMLN6S","req":{"id":3,"method":"GET","url":"/api/platform/monitoring"},"res":{"statusCode":200},"responseTime":1126,"msg":"request completed"}
+C:\Users\vansh\Desktop\Finance-Assistant\artifacts\api-server:
+ ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/api-server@0.0.0 dev: `cross-env NODE_ENV=development node ./build.mjs && cross-env NODE_ENV=development node --enable-source-maps ./dist/index.mjs`
+Exit status 4294967295

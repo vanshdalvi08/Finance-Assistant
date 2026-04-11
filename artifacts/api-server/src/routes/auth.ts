@@ -3,7 +3,8 @@ import { z } from "zod";
 import { loginWithPassword, logoutRefreshToken, refreshLogin, requestPasswordReset, resetPassword, updateOwnProfile } from "../lib/auth-service";
 import { requireAuth } from "../middlewares/auth";
 import { REFRESH_COOKIE_NAME, refreshCookieOptions } from "../lib/cookies";
-import { rateLimit } from "../middlewares/rate-limit";
+import { rateLimit, rateLimitKeyByRemoteAddress, rateLimitKeyByRemoteAddressAndField } from "../middlewares/rate-limit";
+import { recordPlatformEventSafe } from "../lib/platform";
 
 const router: IRouter = Router();
 
@@ -12,6 +13,7 @@ const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
   message: "Too many login attempts. Please try again later.",
+  keyFn: rateLimitKeyByRemoteAddressAndField("email"),
 });
 
 const resetRequestLimiter = rateLimit({
@@ -19,6 +21,7 @@ const resetRequestLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 5,
   message: "Too many password reset requests. Please try again later.",
+  keyFn: rateLimitKeyByRemoteAddressAndField("email"),
 });
 
 const resetLimiter = rateLimit({
@@ -26,6 +29,23 @@ const resetLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 10,
   message: "Too many password reset attempts. Please try again later.",
+  keyFn: rateLimitKeyByRemoteAddressAndField("token"),
+});
+
+const refreshLimiter = rateLimit({
+  name: "auth-refresh",
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  message: "Too many session refresh attempts. Please try again later.",
+  keyFn: rateLimitKeyByRemoteAddress,
+});
+
+const logoutLimiter = rateLimit({
+  name: "auth-logout",
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  message: "Too many logout attempts. Please try again later.",
+  keyFn: rateLimitKeyByRemoteAddress,
 });
 
 const profileUpdateLimiter = rateLimit({
@@ -72,14 +92,35 @@ router.post("/login", loginLimiter, async (request, response) => {
       accessToken: result.accessToken,
       user: result.user,
     });
-  } catch (error) {
-    response.status(401).json({ message: error instanceof Error ? error.message : "Login failed" });
+  } catch {
+    await recordPlatformEventSafe({
+      severity: "warning",
+      category: "auth",
+      title: "Login rejected",
+      message: `Rejected login attempt for ${parsed.data.email.trim().toLowerCase()}.`,
+      path: "/api/auth/login",
+      method: "POST",
+      statusCode: 401,
+      metadata: {
+        email: parsed.data.email.trim().toLowerCase(),
+      },
+    });
+    response.status(401).json({ message: "Invalid email or password" });
   }
 });
 
-router.post("/refresh", async (request, response) => {
+router.post("/refresh", refreshLimiter, async (request, response) => {
   const refreshToken = request.cookies?.[REFRESH_COOKIE_NAME];
   if (typeof refreshToken !== "string" || !refreshToken) {
+    await recordPlatformEventSafe({
+      severity: "warning",
+      category: "auth",
+      title: "Refresh denied",
+      message: "Session refresh attempted without a refresh token cookie.",
+      path: "/api/auth/refresh",
+      method: "POST",
+      statusCode: 401,
+    });
     response.status(401).json({ message: "Missing refresh token" });
     return;
   }
@@ -93,11 +134,20 @@ router.post("/refresh", async (request, response) => {
     });
   } catch {
     response.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions());
+    await recordPlatformEventSafe({
+      severity: "warning",
+      category: "auth",
+      title: "Refresh rejected",
+      message: "Session refresh token was rejected or expired.",
+      path: "/api/auth/refresh",
+      method: "POST",
+      statusCode: 401,
+    });
     response.status(401).json({ message: "Session expired" });
   }
 });
 
-router.post("/logout", async (request, response) => {
+router.post("/logout", logoutLimiter, async (request, response) => {
   const refreshToken = request.cookies?.[REFRESH_COOKIE_NAME];
   if (typeof refreshToken === "string" && refreshToken) {
     try {
@@ -127,6 +177,15 @@ router.post("/request-reset", resetRequestLimiter, async (request, response) => 
 router.post("/reset", resetLimiter, async (request, response) => {
   const parsed = resetSchema.safeParse(request.body);
   if (!parsed.success) {
+    await recordPlatformEventSafe({
+      severity: "warning",
+      category: "auth",
+      title: "Password reset rejected",
+      message: "Password reset payload failed validation.",
+      path: "/api/auth/reset",
+      method: "POST",
+      statusCode: 400,
+    });
     response.status(400).json({ message: "Invalid reset payload" });
     return;
   }
@@ -135,6 +194,15 @@ router.post("/reset", resetLimiter, async (request, response) => {
     await resetPassword(parsed.data.token, parsed.data.password);
     response.json({ message: "Password reset successfully" });
   } catch (error) {
+    await recordPlatformEventSafe({
+      severity: "warning",
+      category: "auth",
+      title: "Password reset failed",
+      message: error instanceof Error ? error.message : "Reset failed",
+      path: "/api/auth/reset",
+      method: "POST",
+      statusCode: 400,
+    });
     response.status(400).json({ message: error instanceof Error ? error.message : "Reset failed" });
   }
 });

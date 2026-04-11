@@ -40,6 +40,15 @@ const emptyForm = {
   ownerPassword: "",
 };
 
+function slugify(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-{2,}/g, "-");
+}
+
 function summarizeDate(value: string) {
   return format(new Date(value), "dd MMM, HH:mm");
 }
@@ -57,7 +66,12 @@ export default function PlatformTenantsPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [form, setForm] = useState(emptyForm);
-  const [temporaryPassword, setTemporaryPassword] = useState("");
+  const [handoff, setHandoff] = useState<{
+    tenantName: string;
+    ownerEmail: string;
+    temporaryPassword: string | null;
+    passwordWasGenerated: boolean;
+  } | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<TenantStatusFilter>("all");
   const [activeOpen, setActiveOpen] = useState(true);
@@ -90,11 +104,17 @@ export default function PlatformTenantsPage() {
   const activeTenants = useMemo(() => filteredTenants.filter((tenant) => tenant.status === "active"), [filteredTenants]);
   const inactiveTenants = useMemo(() => filteredTenants.filter((tenant) => tenant.status !== "active"), [filteredTenants]);
   const ownerAccounts = useMemo(() => filteredTenants.reduce((sum, tenant) => sum + tenant.adminCount, 0), [filteredTenants]);
+  const slugPreview = useMemo(() => slugify(form.slug || form.name), [form.slug, form.name]);
 
   const createMutation = useMutation({
     mutationFn: api.createPlatformTenant,
     onSuccess: async (result) => {
-      setTemporaryPassword(result.temporaryPassword);
+      setHandoff({
+        tenantName: result.tenant.name,
+        ownerEmail: result.owner.email,
+        temporaryPassword: result.temporaryPassword,
+        passwordWasGenerated: result.passwordWasGenerated,
+      });
       toast({ title: "Tenant created", description: `${result.tenant.name} is ready to onboard.` });
       setForm(emptyForm);
       await queryClient.invalidateQueries({ queryKey: ["platform-tenants"] });
@@ -138,7 +158,7 @@ export default function PlatformTenantsPage() {
           <MetricCard label="Total Tenants" value={`${overview?.totalTenants ?? tenants.length}`} icon={<Shield className="h-5 w-5" />} />
           <MetricCard label="Active" value={`${overview?.activeTenants ?? activeTenants.length}`} icon={<CheckCircle2 className="h-5 w-5" />} />
           <MetricCard label="Inactive" value={`${overview?.inactiveTenants ?? inactiveTenants.length}`} icon={<Ban className="h-5 w-5" />} />
-          <MetricCard label="Owner Accounts" value={`${overview?.platformAdmins ?? ownerAccounts}`} icon={<Users className="h-5 w-5" />} />
+          <MetricCard label="Owner Accounts" value={`${ownerAccounts}`} icon={<Users className="h-5 w-5" />} />
         </div>
 
         <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
@@ -163,7 +183,8 @@ export default function PlatformTenantsPage() {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="tenant-slug">Slug</Label>
-                  <Input id="tenant-slug" value={form.slug} onChange={(event) => setForm((current) => ({ ...current, slug: event.target.value }))} placeholder="acme-studio" />
+                  <Input id="tenant-slug" value={form.slug} onChange={(event) => setForm((current) => ({ ...current, slug: slugify(event.target.value) }))} placeholder="acme-studio" />
+                  <p className="text-xs text-muted-foreground">Preview: {slugPreview || "tenant-slug"}</p>
                 </div>
               </div>
 
@@ -213,7 +234,7 @@ export default function PlatformTenantsPage() {
                   onClick={() =>
                     createMutation.mutate({
                       name: form.name,
-                      slug: form.slug,
+                      slug: slugPreview,
                       ownerName: form.ownerName,
                       ownerEmail: form.ownerEmail,
                       ownerPhone: form.ownerPhone,
@@ -231,20 +252,29 @@ export default function PlatformTenantsPage() {
                 </div>
               </div>
 
-              {temporaryPassword ? (
+              {handoff ? (
                 <div className="rounded-3xl border border-cyan-400/20 bg-cyan-400/10 p-4 text-sm text-cyan-50">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <p className="text-xs uppercase tracking-[0.2em] text-cyan-200/80">Temporary password</p>
-                      <code className="mt-2 block rounded-xl border border-white/10 bg-black/20 px-3 py-2 font-mono text-sm">{temporaryPassword}</code>
+                      <p className="text-xs uppercase tracking-[0.2em] text-cyan-200/80">Handoff summary</p>
+                      <p className="mt-2 text-sm text-cyan-50">{handoff.tenantName} is ready for {handoff.ownerEmail}.</p>
+                      {handoff.passwordWasGenerated && handoff.temporaryPassword ? (
+                        <code className="mt-2 block rounded-xl border border-white/10 bg-black/20 px-3 py-2 font-mono text-sm">{handoff.temporaryPassword}</code>
+                      ) : (
+                        <p className="mt-2 text-sm text-cyan-100/85">
+                          The owner password was supplied manually, so it is not echoed back by the platform.
+                        </p>
+                      )}
                     </div>
-                    <button
-                      className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-xs font-medium text-cyan-100 transition hover:bg-cyan-400/15"
-                      onClick={async () => await navigator.clipboard.writeText(temporaryPassword)}
-                    >
-                      <ClipboardCopy className="h-3.5 w-3.5" />
-                      Copy
-                    </button>
+                    {handoff.temporaryPassword ? (
+                      <button
+                        className="inline-flex items-center gap-2 rounded-xl border border-cyan-400/20 bg-cyan-400/10 px-3 py-2 text-xs font-medium text-cyan-100 transition hover:bg-cyan-400/15"
+                        onClick={async () => await navigator.clipboard.writeText(handoff.temporaryPassword ?? "")}
+                      >
+                        <ClipboardCopy className="h-3.5 w-3.5" />
+                        Copy
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               ) : null}

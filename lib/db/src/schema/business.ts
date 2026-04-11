@@ -1,6 +1,6 @@
 import { createInsertSchema } from "drizzle-zod";
 import { relations, sql } from "drizzle-orm";
-import { boolean, index, integer, jsonb, pgEnum, pgTable, real, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, index, integer, jsonb, pgEnum, pgTable, real, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { usersTable } from "./users";
 import { tenantsTable } from "./tenants";
 
@@ -11,8 +11,10 @@ export type ExpenseGroup = "personal" | "office";
 export type ActorRole = "admin" | "employee" | "client" | "platform_super_admin" | "system";
 export type ProjectStatus = "active" | "archived";
 export type ProjectTaskStatus = "active" | "archived";
+export type PurchaseOrderStatus = "active" | "archived";
 export type PurchaseOrderTaskStatus = "pending" | "paid";
 export type PreApprovalStatus = "draft" | "submitted" | "changes_requested" | "approved";
+export type IdempotencyRequestStatus = "processing" | "completed";
 export type AuditEntityType =
   | "employee"
   | "expense"
@@ -112,6 +114,15 @@ export interface CompanySettingsRecord extends PreApprovalPartyInfoRecord {
   };
 }
 
+export interface AuditTrailDetailsRecord {
+  entityLabel?: string;
+  requestId?: string;
+  changedFields?: string[];
+  before?: Record<string, unknown> | null;
+  after?: Record<string, unknown> | null;
+  context?: Record<string, unknown> | null;
+}
+
 export const approvalStatusEnum = pgEnum("approval_status", ["draft", "submitted", "approved", "rejected"]);
 export const salaryStatusEnum = pgEnum("salary_status", ["pending", "paid"]);
 export const salarySourceEnum = pgEnum("salary_source", ["manual", "timesheet"]);
@@ -119,8 +130,10 @@ export const expenseGroupEnum = pgEnum("expense_group", ["personal", "office"]);
 export const actorRoleEnum = pgEnum("audit_actor_role", ["admin", "employee", "client", "platform_super_admin", "system"]);
 export const projectStatusEnum = pgEnum("project_status", ["active", "archived"]);
 export const projectTaskStatusEnum = pgEnum("project_task_status", ["active", "archived"]);
+export const purchaseOrderStatusEnum = pgEnum("purchase_order_status", ["active", "archived"]);
 export const purchaseOrderTaskStatusEnum = pgEnum("purchase_order_task_status", ["pending", "paid"]);
 export const preApprovalStatusEnum = pgEnum("pre_approval_status", ["draft", "submitted", "changes_requested", "approved"]);
+export const idempotencyRequestStatusEnum = pgEnum("idempotency_request_status", ["processing", "completed"]);
 export const auditEntityTypeEnum = pgEnum("audit_entity_type", [
   "employee",
   "expense",
@@ -175,6 +188,29 @@ export const fundsTable = pgTable(
     tenantIndex: index("funds_tenant_index").on(table.tenantId),
     sourceIndex: index("funds_source_index").on(table.source),
     dateIndex: index("funds_date_index").on(table.date),
+    positiveAmount: check("funds_amount_positive_check", sql`${table.amount} > 0`),
+  }),
+);
+
+export const idempotencyKeysTable = pgTable(
+  "idempotency_keys",
+  {
+    id: text("id").primaryKey(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenantsTable.id, { onDelete: "cascade" }),
+    scope: text("scope").notNull(),
+    keyHash: text("key_hash").notNull(),
+    requestHash: text("request_hash").notNull(),
+    status: idempotencyRequestStatusEnum("status").notNull().default("processing"),
+    responseEntityId: text("response_entity_id"),
+    createdById: uuid("created_by_id").references(() => usersTable.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    tenantScopeKeyUnique: uniqueIndex("idempotency_keys_tenant_scope_key_unique").on(table.tenantId, table.scope, table.keyHash),
+    tenantIndex: index("idempotency_keys_tenant_index").on(table.tenantId),
+    scopeStatusIndex: index("idempotency_keys_scope_status_index").on(table.scope, table.status),
+    responseEntityIndex: index("idempotency_keys_response_entity_index").on(table.responseEntityId),
   }),
 );
 
@@ -235,6 +271,7 @@ export const expensesTable = pgTable(
     dateIndex: index("expenses_date_index").on(table.date),
     categoryIndex: index("expenses_category_index").on(table.category),
     projectIndex: index("expenses_project_index").on(table.project),
+    positiveAmount: check("expenses_amount_positive_check", sql`${table.amount} > 0`),
   }),
 );
 
@@ -271,6 +308,9 @@ export const salariesTable = pgTable(
     dateIndex: index("salaries_date_index").on(table.date),
     paidAtIndex: index("salaries_paid_at_index").on(table.paidAt),
     timesheetUnique: uniqueIndex("salaries_timesheet_unique").on(table.timesheetId),
+    positiveAmount: check("salaries_amount_positive_check", sql`${table.amount} > 0`),
+    nonNegativeHours: check("salaries_hours_nonnegative_check", sql`${table.hours} IS NULL OR ${table.hours} >= 0`),
+    nonNegativeRate: check("salaries_rate_nonnegative_check", sql`${table.rate} IS NULL OR ${table.rate} >= 0`),
   }),
 );
 
@@ -347,6 +387,7 @@ export const purchaseOrdersTable = pgTable(
     usedAmount: integer("used_amount").notNull().default(0),
     remainingAmount: integer("remaining_amount").notNull().default(0),
     vendor: text("vendor"),
+    status: purchaseOrderStatusEnum("status").notNull().default("active"),
     date: timestamp("date", { withTimezone: true }).notNull(),
     notes: text("notes").notNull().default(""),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -357,8 +398,14 @@ export const purchaseOrdersTable = pgTable(
     tenantIndex: index("purchase_orders_tenant_index").on(table.tenantId),
     titleIndex: index("purchase_orders_title_index").on(table.title),
     vendorIndex: index("purchase_orders_vendor_index").on(table.vendor),
+    statusIndex: index("purchase_orders_status_index").on(table.status),
     dateIndex: index("purchase_orders_date_index").on(table.date),
     updatedIndex: index("purchase_orders_updated_index").on(table.updatedAt),
+    nonNegativeTotalAmount: check("purchase_orders_total_amount_nonnegative_check", sql`${table.totalAmount} >= 0`),
+    nonNegativeUsedAmount: check("purchase_orders_used_amount_nonnegative_check", sql`${table.usedAmount} >= 0`),
+    nonNegativeRemainingAmount: check("purchase_orders_remaining_amount_nonnegative_check", sql`${table.remainingAmount} >= 0`),
+    usedNotOverTotal: check("purchase_orders_used_not_over_total_check", sql`${table.usedAmount} <= ${table.totalAmount}`),
+    remainingNotOverTotal: check("purchase_orders_remaining_not_over_total_check", sql`${table.remainingAmount} <= ${table.totalAmount}`),
   }),
 );
 
@@ -414,18 +461,23 @@ export const auditTrailTable = pgTable(
   {
     id: text("id").primaryKey(),
     tenantId: uuid("tenant_id").notNull().references(() => tenantsTable.id, { onDelete: "cascade" }),
+    actorUserId: uuid("actor_user_id").references(() => usersTable.id, { onDelete: "set null" }),
     actorName: text("actor_name").notNull(),
     actorRole: actorRoleEnum("actor_role").notNull(),
     action: text("action").notNull(),
     entityType: auditEntityTypeEnum("entity_type").notNull(),
     entityId: text("entity_id").notNull(),
     summary: text("summary").notNull(),
+    requestId: text("request_id"),
+    details: jsonb("details").$type<AuditTrailDetailsRecord>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     tenantIndex: index("audit_trail_tenant_index").on(table.tenantId),
     actorIndex: index("audit_trail_actor_index").on(table.actorName),
+    actorUserIndex: index("audit_trail_actor_user_index").on(table.actorUserId),
     entityIndex: index("audit_trail_entity_index").on(table.entityType, table.entityId),
+    requestIndex: index("audit_trail_request_index").on(table.requestId),
     createdIndex: index("audit_trail_created_index").on(table.createdAt),
   }),
 );
@@ -485,6 +537,7 @@ export const projectTasksTable = pgTable(
     statusIndex: index("project_tasks_status_index").on(table.status),
     sortOrderIndex: index("project_tasks_sort_order_index").on(table.sortOrder),
     createdByIndex: index("project_tasks_created_by_index").on(table.createdById),
+    nonNegativeMaxHours: check("project_tasks_max_hours_nonnegative_check", sql`${table.maxHours} IS NULL OR ${table.maxHours} >= 0`),
   }),
 );
 
@@ -520,6 +573,10 @@ export const timesheetLinesTable = pgTable(
     projectIndex: index("timesheet_lines_project_index").on(table.projectId),
     projectTaskIndex: index("timesheet_lines_project_task_index").on(table.projectTaskId),
     sortOrderIndex: index("timesheet_lines_sort_order_index").on(table.sortOrder),
+    nonNegativeHours: check(
+      "timesheet_lines_hours_nonnegative_check",
+      sql`${table.mon} >= 0 AND ${table.tue} >= 0 AND ${table.wed} >= 0 AND ${table.thu} >= 0 AND ${table.fri} >= 0 AND ${table.sat} >= 0 AND ${table.sun} >= 0`,
+    ),
   }),
 );
 

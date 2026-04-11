@@ -148,6 +148,41 @@
       "when": 1775799600000,
       "tag": "0020_tenant_user_uniques",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1775847938280,
+      "tag": "0021_next_thundra",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1775888400000,
+      "tag": "0021_platform_event_workflow",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1775890200000,
+      "tag": "0022_finance_constraints",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1775892000000,
+      "tag": "0023_audit_trail_details",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1775894400000,
+      "tag": "0024_purchase_order_archival",
+      "breakpoints": true
     }
   ]
 }

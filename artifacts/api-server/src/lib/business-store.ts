@@ -27,12 +27,22 @@ import {
   type TimesheetLine as DbTimesheetLine,
 } from "@workspace/db/schema";
 import { DEFAULT_TENANT_ID } from "./tenants";
+import { assertWorkflowTransition } from "./workflow-state";
 
 export type ApprovalStatus = "draft" | "submitted" | "approved" | "rejected";
 export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type ActorRole = "admin" | "employee" | "client" | "platform_super_admin" | "system";
 export type LeaveRequestStatus = "pending" | "approved" | "rejected";
 export type LeaveRequestKind = "leave" | "holiday";
+
+export interface AuditTrailDetailsRecord {
+  entityLabel?: string;
+  requestId?: string;
+  changedFields?: string[];
+  before?: Record<string, unknown> | null;
+  after?: Record<string, unknown> | null;
+  context?: Record<string, unknown> | null;
+}
 
 export interface FundRecord {
   id: string;
@@ -131,6 +141,7 @@ export interface ProjectBudget {
   id: string;
   tenantId: string;
   project: string;
+  status: "active" | "archived";
   totalBudget: number;
   client?: string;
   note?: string;
@@ -153,6 +164,7 @@ export interface PurchaseOrderTask {
 export interface PurchaseOrder {
   id: string;
   tenantId: string;
+  status: "active" | "archived";
   title: string;
   totalAmount: number;
   usedAmount: number;
@@ -200,6 +212,7 @@ export interface LeavePolicyRecord {
 export interface AuditTrailEntry {
   id: string;
   tenantId?: string;
+  actorUserId?: string;
   actorName: string;
   actorRole: ActorRole;
   action: string;
@@ -217,6 +230,8 @@ export interface AuditTrailEntry {
     | "pre-approval-comment";
   entityId: string;
   summary: string;
+  requestId?: string;
+  details?: AuditTrailDetailsRecord;
   createdAt: string;
 }
 
@@ -548,9 +563,11 @@ function salaryToRow(salary: SalaryRecord) {
 }
 
 function purchaseOrderFromRow(row: DbPurchaseOrder): PurchaseOrder {
+  const rowStatus = (row as DbPurchaseOrder & { status?: string }).status;
   return {
     id: row.id,
     tenantId: String((row as DbPurchaseOrder & { tenantId?: string }).tenantId ?? DEFAULT_TENANT_ID),
+    status: rowStatus === "archived" ? "archived" : "active",
     title: row.title.trim(),
     totalAmount: Math.abs(Number(row.totalAmount ?? 0)),
     usedAmount: Math.abs(Number(row.usedAmount ?? 0)),
@@ -579,6 +596,7 @@ function purchaseOrderToRow(order: PurchaseOrder) {
   return {
     id: order.id,
     tenantId: order.tenantId?.trim() || DEFAULT_TENANT_ID,
+    status: order.status === "archived" ? "archived" : "active",
     title: order.title.trim(),
     totalAmount: Math.abs(Number(order.totalAmount ?? 0)),
     usedAmount: Math.abs(Number(order.usedAmount ?? 0)),
@@ -601,10 +619,65 @@ function purchaseOrderToRow(order: PurchaseOrder) {
   };
 }
 
+function normalizeAuditTrailDetails(
+  details: unknown,
+  requestId?: string | null,
+): AuditTrailDetailsRecord | undefined {
+  if (!details || typeof details !== "object" || Array.isArray(details)) {
+    const normalizedRequestId = requestId?.trim();
+    return normalizedRequestId ? { requestId: normalizedRequestId } : undefined;
+  }
+
+  const source = details as Record<string, unknown>;
+  const normalized: AuditTrailDetailsRecord = {};
+  const normalizedRequestId = requestId?.trim() || (typeof source.requestId === "string" ? source.requestId.trim() : "");
+
+  if (normalizedRequestId) {
+    normalized.requestId = normalizedRequestId;
+  }
+
+  if (typeof source.entityLabel === "string" && source.entityLabel.trim()) {
+    normalized.entityLabel = source.entityLabel.trim();
+  }
+
+  if (Array.isArray(source.changedFields)) {
+    const changedFields = source.changedFields
+      .map((field) => (typeof field === "string" ? field.trim() : ""))
+      .filter(Boolean);
+    if (changedFields.length > 0) {
+      normalized.changedFields = changedFields;
+    }
+  }
+
+  if ("before" in source) {
+    normalized.before =
+      source.before && typeof source.before === "object" && !Array.isArray(source.before)
+        ? (source.before as Record<string, unknown>)
+        : null;
+  }
+
+  if ("after" in source) {
+    normalized.after =
+      source.after && typeof source.after === "object" && !Array.isArray(source.after)
+        ? (source.after as Record<string, unknown>)
+        : null;
+  }
+
+  if ("context" in source) {
+    normalized.context =
+      source.context && typeof source.context === "object" && !Array.isArray(source.context)
+        ? (source.context as Record<string, unknown>)
+        : null;
+  }
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
 function auditEntryFromRow(row: DbAuditTrailEntry): AuditTrailEntry {
   return {
     id: row.id,
     tenantId: row.tenantId ?? DEFAULT_TENANT_ID,
+    actorUserId: row.actorUserId ?? undefined,
     actorName: row.actorName.trim(),
     actorRole:
       row.actorRole === "employee" ||
@@ -630,6 +703,8 @@ function auditEntryFromRow(row: DbAuditTrailEntry): AuditTrailEntry {
         : "timesheet",
     entityId: row.entityId,
     summary: row.summary,
+    requestId: row.requestId ?? undefined,
+    details: normalizeAuditTrailDetails(row.details, row.requestId ?? undefined),
     createdAt: toIso(row.createdAt),
   };
 }
@@ -638,12 +713,15 @@ function auditEntryToRow(entry: AuditTrailEntry) {
   return {
     id: entry.id,
     tenantId: entry.tenantId?.trim() || DEFAULT_TENANT_ID,
+    actorUserId: entry.actorUserId?.trim() || null,
     actorName: entry.actorName.trim(),
     actorRole: entry.actorRole,
     action: entry.action,
     entityType: entry.entityType,
     entityId: entry.entityId,
     summary: entry.summary,
+    requestId: entry.requestId?.trim() || null,
+    details: normalizeAuditTrailDetails(entry.details, entry.requestId) ?? null,
     createdAt: toDate(entry.createdAt),
   };
 }
@@ -652,6 +730,7 @@ function projectBudgetFromRow(row: DbProjectBudget): ProjectBudget {
   return {
     id: row.id,
     tenantId: String((row as DbProjectBudget & { tenantId?: string }).tenantId ?? DEFAULT_TENANT_ID),
+    status: "active",
     project: row.project,
     totalBudget: Number(row.totalBudget ?? 0),
     client: row.client?.trim() || undefined,
@@ -684,6 +763,7 @@ function projectBudgetFromNormalizedRow(
   return {
     id: row.id,
     tenantId: String((row as DbProject & { tenantId?: string }).tenantId ?? legacyTenantId ?? DEFAULT_TENANT_ID),
+    status: row.status === "archived" ? "archived" : "active",
     project: row.name,
     totalBudget: Number(legacyBudget?.totalBudget ?? 0),
     client: row.client?.trim() || legacyBudget?.client?.trim() || undefined,
@@ -848,7 +928,7 @@ function projectBudgetToNormalizedRow(budget: ProjectBudget, createdById: string
     name: budget.project.trim(),
     client: budget.client?.trim() || null,
     note: budget.note?.trim() || "",
-    status: "active" as const,
+    status: budget.status === "archived" ? ("archived" as const) : ("active" as const),
     createdById,
     createdAt: toDate(budget.createdAt),
     updatedAt: toDate(budget.updatedAt),
@@ -1104,6 +1184,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
     projectBudgets: Array.isArray(input.projectBudgets) ? input.projectBudgets.map((budget) => ({
       id: budget.id ?? createId("pb"),
       tenantId: String((budget as ProjectBudget).tenantId ?? DEFAULT_TENANT_ID).trim() || DEFAULT_TENANT_ID,
+      status: (budget as ProjectBudget).status === "archived" ? "archived" : "active",
       project: String(budget.project ?? "").trim(),
       totalBudget: Math.abs(Number(budget.totalBudget ?? 0)),
       client: budget.client?.trim() || undefined,
@@ -1121,6 +1202,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
     purchaseOrders: Array.isArray(input.purchaseOrders) ? input.purchaseOrders.map((order) => ({
       id: order.id ?? createId("po"),
       tenantId: String((order as PurchaseOrder).tenantId ?? DEFAULT_TENANT_ID).trim() || DEFAULT_TENANT_ID,
+      status: (order as PurchaseOrder).status === "archived" ? "archived" : "active",
       title: String(order.title ?? "").trim(),
       totalAmount: Math.abs(Number(order.totalAmount ?? 0)),
       usedAmount: Math.abs(Number(order.usedAmount ?? 0)),
@@ -1173,6 +1255,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
     auditTrail: Array.isArray(input.auditTrail) ? input.auditTrail.map((entry) => ({
       id: entry.id ?? createId("audit"),
       tenantId: entry.tenantId?.trim() || DEFAULT_TENANT_ID,
+      actorUserId: entry.actorUserId?.trim() || undefined,
       actorName: String(entry.actorName ?? "System").trim(),
       actorRole:
         entry.actorRole === "employee" ||
@@ -1185,6 +1268,8 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
       entityType: entry.entityType,
       entityId: String(entry.entityId ?? "").trim(),
       summary: String(entry.summary ?? ""),
+      requestId: entry.requestId?.trim() || undefined,
+      details: normalizeAuditTrailDetails(entry.details, entry.requestId),
       createdAt: normalizeDate(String(entry.createdAt ?? nowIso())),
     })) : [],
   };
@@ -1634,12 +1719,29 @@ function hasPersistedTimesheetContent(entry: TimesheetEntry): boolean {
   });
 }
 
+function summarizeTimesheetAudit(entry: TimesheetEntry) {
+  return {
+    employeeId: entry.employeeId,
+    employeeNameSnapshot: entry.employeeNameSnapshot ?? null,
+    weekStart: entry.weekStart,
+    status: entry.status,
+    totalHours: sumTimesheetHours(entry),
+    submittedAt: entry.submittedAt ?? null,
+    reviewedAt: entry.reviewedAt ?? null,
+    reviewedBy: entry.reviewedBy ?? null,
+    reviewNotes: entry.reviewNotes ?? null,
+  };
+}
+
 function createAuditEntry(input: Omit<AuditTrailEntry, "id" | "createdAt">): AuditTrailEntry {
   return {
     id: createId("audit"),
     createdAt: nowIso(),
-    tenantId: input.tenantId?.trim() || DEFAULT_TENANT_ID,
     ...input,
+    tenantId: input.tenantId?.trim() || DEFAULT_TENANT_ID,
+    actorUserId: input.actorUserId?.trim() || undefined,
+    requestId: input.requestId?.trim() || undefined,
+    details: normalizeAuditTrailDetails(input.details, input.requestId),
   };
 }
 
@@ -1781,6 +1883,14 @@ export async function saveTimesheetFast(input: {
         ? createAuditEntry({
             ...input.audit,
             entityId: existing.id,
+            details: {
+              entityLabel: existing.employeeNameSnapshot,
+              requestId: input.audit.requestId,
+              changedFields: ["deleted"],
+              before: summarizeTimesheetAudit(existing),
+              after: null,
+              context: { operation: "timesheet_delete_draft" },
+            },
           })
         : null;
 
@@ -1806,7 +1916,21 @@ export async function saveTimesheetFast(input: {
         ? current.timesheets.map((timesheet) => (timesheet.id === normalizedEntry.id ? normalizedEntry : timesheet))
         : [normalizedEntry, ...current.timesheets],
       auditTrail: input.audit
-        ? [createAuditEntry({ ...input.audit, entityId: normalizedEntry.id }), ...current.auditTrail].slice(0, 250)
+        ? [
+            createAuditEntry({
+              ...input.audit,
+              entityId: normalizedEntry.id,
+              details: {
+                entityLabel: normalizedEntry.employeeNameSnapshot,
+                requestId: input.audit.requestId,
+                changedFields: existing ? ["entry"] : ["created"],
+                before: existing ? summarizeTimesheetAudit(existing) : null,
+                after: summarizeTimesheetAudit(normalizedEntry),
+                context: { operation: existing ? "timesheet_save" : "timesheet_create" },
+              },
+            }),
+            ...current.auditTrail,
+          ].slice(0, 250)
         : current.auditTrail,
     });
 
@@ -1828,6 +1952,7 @@ export async function submitTimesheetFast(input: {
   tenantId: string;
   actorName: string;
   actorRole: ActorRole;
+  requestId?: string;
 }): Promise<TimesheetEntry | null> {
   await ensureSchema();
   return withStoreWriteLock(async () => {
@@ -1838,6 +1963,8 @@ export async function submitTimesheetFast(input: {
     if (!existing) {
       return null;
     }
+
+    assertWorkflowTransition("timesheetSubmission", existing.status, "submitted");
 
     const updatedEntry = normalizeStore({
       timesheets: [
@@ -1862,6 +1989,15 @@ export async function submitTimesheetFast(input: {
       entityType: "timesheet",
       entityId: existing.id,
       summary: "Submitted a timesheet for review.",
+      requestId: input.requestId,
+      details: {
+        entityLabel: existing.employeeNameSnapshot,
+        requestId: input.requestId,
+        changedFields: ["status", "submittedAt"],
+        before: summarizeTimesheetAudit(existing),
+        after: summarizeTimesheetAudit(updatedEntry),
+        context: { operation: "timesheet_submit" },
+      },
     });
 
     const nextStore = normalizeStore({
@@ -1886,6 +2022,7 @@ export async function submitTimesheetEntryFast(input: {
   tenantId: string;
   actorName: string;
   actorRole: ActorRole;
+  requestId?: string;
 }): Promise<TimesheetEntry> {
   await ensureSchema();
   return withStoreWriteLock(async () => {
@@ -1894,6 +2031,7 @@ export async function submitTimesheetEntryFast(input: {
     const normalizedEntry = normalizeStore({ timesheets: [input.entry] }).timesheets[0];
     assertTaskHourLimits(normalizedEntry, current.projectBudgets);
     const existing = current.timesheets.find((timesheet) => timesheet.id === normalizedEntry.id);
+    assertWorkflowTransition("timesheetSubmission", existing?.status ?? "draft", "submitted");
     const submittedEntry = normalizeStore({
       timesheets: [
         {
@@ -1917,6 +2055,15 @@ export async function submitTimesheetEntryFast(input: {
       entityType: "timesheet",
       entityId: submittedEntry.id,
       summary: "Submitted a timesheet for review.",
+      requestId: input.requestId,
+      details: {
+        entityLabel: submittedEntry.employeeNameSnapshot,
+        requestId: input.requestId,
+        changedFields: ["status", "submittedAt"],
+        before: existing ? summarizeTimesheetAudit(existing) : null,
+        after: summarizeTimesheetAudit(submittedEntry),
+        context: { operation: "timesheet_submit" },
+      },
     });
 
     const nextStore = normalizeStore({
@@ -1943,6 +2090,7 @@ export async function reviewTimesheetFast(input: {
   tenantId: string;
   status: "approved" | "rejected";
   actorName: string;
+  requestId?: string;
   note?: string;
   employee?: UserProfile | null;
 }): Promise<{ timesheet: TimesheetEntry; salary?: SalaryRecord }> {
@@ -1955,6 +2103,8 @@ export async function reviewTimesheetFast(input: {
     if (!existing) {
       throw new Error("Timesheet not found");
     }
+
+    assertWorkflowTransition("timesheetReview", existing.status, input.status);
 
     const now = nowIso();
     const reviewedEntry = normalizeStore({
@@ -2006,6 +2156,15 @@ export async function reviewTimesheetFast(input: {
         input.status === "approved"
           ? `Approved timesheet for ${existing.employeeNameSnapshot}.`
           : "Returned a timesheet for changes.",
+      requestId: input.requestId,
+      details: {
+        entityLabel: existing.employeeNameSnapshot,
+        requestId: input.requestId,
+        changedFields: ["status", "reviewedAt", "reviewedBy", "reviewNotes"],
+        before: summarizeTimesheetAudit(existing),
+        after: summarizeTimesheetAudit(reviewedEntry),
+        context: { operation: input.status === "approved" ? "timesheet_approve" : "timesheet_reject" },
+      },
     });
 
     const nextStore = normalizeStore({
@@ -2035,12 +2194,13 @@ export async function reviewTimesheetFast(input: {
 }
 
 export function pushAuditEvent(store: BusinessStore, input: Omit<AuditTrailEntry, "id" | "createdAt">): BusinessStore {
+  const auditEntry = createAuditEntry(input);
   return {
     ...store,
     auditTrail: [
-      { id: createId("audit"), createdAt: nowIso(), ...input },
-      ...store.auditTrail,
-    ].slice(0, 250),
+        auditEntry,
+        ...store.auditTrail,
+      ].slice(0, 250),
   };
 }
 

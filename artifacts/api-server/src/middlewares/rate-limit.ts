@@ -27,7 +27,25 @@ const cleanupInterval = setInterval(() => {
 cleanupInterval.unref?.();
 
 function defaultKey(request: Request) {
-  return request.auth?.user.id ?? request.ip ?? request.socket.remoteAddress ?? "unknown";
+  const forwardedFor = request.header("x-forwarded-for")?.split(",")[0]?.trim();
+  return request.auth?.user.id ?? forwardedFor ?? request.ip ?? request.socket.remoteAddress ?? "unknown";
+}
+
+export function rateLimitKeyByRemoteAddress(request: Request) {
+  return defaultKey(request);
+}
+
+export function rateLimitKeyByRemoteAddressAndField(field: string) {
+  return (request: Request) => {
+    const base = defaultKey(request);
+    const rawValue =
+      typeof request.body?.[field] === "string"
+        ? request.body[field]
+        : typeof request.query?.[field] === "string"
+          ? request.query[field]
+          : "";
+    return `${base}:${rawValue.trim().toLowerCase() || "unknown"}`;
+  };
 }
 
 export function rateLimit(options: RateLimitOptions) {
@@ -42,10 +60,15 @@ export function rateLimit(options: RateLimitOptions) {
             count: 0,
             resetAt: now + options.windowMs,
           };
+    const remaining = Math.max(0, options.max - bucket.count - 1);
+    response.setHeader("X-RateLimit-Limit", String(options.max));
+    response.setHeader("X-RateLimit-Remaining", String(Math.max(0, remaining)));
+    response.setHeader("X-RateLimit-Reset", String(Math.ceil(bucket.resetAt / 1000)));
 
     if (bucket.count >= options.max) {
       const retryAfter = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
       response.setHeader("Retry-After", String(retryAfter));
+      response.setHeader("X-RateLimit-Remaining", "0");
       response.status(429).json({
         message: options.message,
       });

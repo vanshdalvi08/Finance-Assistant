@@ -82,14 +82,42 @@ export function getAppUrl(): string {
   return optionalEnv("FRONTEND_URL") ?? optionalEnv("APP_URL") ?? "http://localhost:5173";
 }
 
+function normalizeOrigin(origin: string): string | null {
+  const trimmed = origin.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+}
+
+function readOriginListEnv(name: string): string[] {
+  const value = optionalEnv(name);
+  if (!value) {
+    return [];
+  }
+
+  return value
+    .split(",")
+    .map((item) => normalizeOrigin(item))
+    .filter((item): item is string => Boolean(item));
+}
+
 export function getApiOriginCandidates(): string[] {
   return Array.from(
     new Set([
+      ...readOriginListEnv("CORS_ALLOWED_ORIGINS"),
       optionalEnv("FRONTEND_URL"),
       optionalEnv("APP_URL"),
-      "http://localhost:5173",
-      "http://localhost:3000",
-    ].filter((value): value is string => Boolean(value))),
+      ...(!isProduction() ? ["http://localhost:5173", "http://localhost:3000"] : []),
+    ]
+      .map((value) => (typeof value === "string" ? normalizeOrigin(value) : null))
+      .filter((value): value is string => Boolean(value))),
   );
 }
 

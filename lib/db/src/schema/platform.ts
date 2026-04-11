@@ -27,6 +27,11 @@ export const platformEventsTable = pgTable(
     method: text("method"),
     statusCode: integer("status_code"),
     durationMs: integer("duration_ms"),
+    fingerprint: text("fingerprint"),
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+    acknowledgedByUserId: uuid("acknowledged_by_user_id").references(() => usersTable.id, { onDelete: "set null" }),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    resolvedByUserId: uuid("resolved_by_user_id").references(() => usersTable.id, { onDelete: "set null" }),
     metadata: text("metadata"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -35,6 +40,8 @@ export const platformEventsTable = pgTable(
     severityIndex: index("platform_events_severity_index").on(table.severity),
     categoryIndex: index("platform_events_category_index").on(table.category),
     createdIndex: index("platform_events_created_index").on(table.createdAt),
+    fingerprintIndex: index("platform_events_fingerprint_index").on(table.fingerprint),
+    unresolvedIndex: index("platform_events_unresolved_index").on(table.resolvedAt, table.createdAt),
   }),
 );
 

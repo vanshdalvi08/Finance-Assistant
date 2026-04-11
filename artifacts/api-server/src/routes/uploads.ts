@@ -1,7 +1,9 @@
+import path from "node:path";
 import express, { Router, type IRouter, type Request } from "express";
 import { requireAuth } from "../middlewares/auth";
-import { rateLimit } from "../middlewares/rate-limit";
+import { rateLimit, rateLimitKeyByRemoteAddress } from "../middlewares/rate-limit";
 import { uploadExpenseAttachment, uploadProfilePhoto } from "../lib/storage";
+import { recordPlatformEventSafe } from "../lib/platform";
 
 const router: IRouter = Router();
 
@@ -20,7 +22,10 @@ const uploadLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
   message: "Too many uploads. Please try again later.",
+  keyFn: rateLimitKeyByRemoteAddress,
 });
+
+class UploadRequestError extends Error {}
 
 function isAllowedImageSignature(body: Uint8Array) {
   if (body.length >= 12) {
@@ -62,15 +67,28 @@ function isAllowedPdfSignature(body: Uint8Array) {
 
 function readUploadRequestMeta(request: Request) {
   const fileNameHeader = request.header("x-file-name");
-  const fileName = fileNameHeader ? decodeURIComponent(fileNameHeader) : "upload.bin";
+  let fileName = "upload.bin";
+  if (fileNameHeader) {
+    try {
+      fileName = decodeURIComponent(fileNameHeader);
+    } catch {
+      throw new UploadRequestError("Upload file name is invalid.");
+    }
+  }
+
+  const normalizedFileName = path.basename(fileName).replace(/[\u0000-\u001f\u007f]/g, "").trim() || "upload.bin";
+  if (normalizedFileName.length > 180) {
+    throw new UploadRequestError("Upload file name is too long.");
+  }
+
   const contentType = request.header("content-type")?.split(";")[0]?.trim() || "application/octet-stream";
   const body = request.body;
 
   if (!Buffer.isBuffer(body) || body.length === 0) {
-    throw new Error("Upload body is empty.");
+    throw new UploadRequestError("Upload body is empty.");
   }
 
-  return { fileName, contentType, body: new Uint8Array(body) };
+  return { fileName: normalizedFileName, contentType, body: new Uint8Array(body) };
 }
 
 router.use(requireAuth);
@@ -81,6 +99,17 @@ router.post("/profile-photo", uploadLimiter, profileUpload, async (request, resp
 
     const allowedType = ["image/jpeg", "image/png", "image/gif", "image/webp"].includes(contentType);
     if (!allowedType || !isAllowedImageSignature(body)) {
+      await recordPlatformEventSafe({
+        severity: "warning",
+        category: "upload",
+        title: "Profile photo rejected",
+        message: `Rejected profile photo upload with content type ${contentType}.`,
+        path: "/api/uploads/profile-photo",
+        method: "POST",
+        statusCode: 400,
+        tenantId: request.auth?.user.tenantId ?? null,
+        actorUserId: request.auth?.user.id ?? null,
+      });
       response.status(400).json({ message: "Profile photos must be image files." });
       return;
     }
@@ -94,7 +123,25 @@ router.post("/profile-photo", uploadLimiter, profileUpload, async (request, resp
 
     response.status(201).json(uploaded);
   } catch (error) {
-    response.status(503).json({ message: error instanceof Error ? error.message : "Profile photo upload failed." });
+    await recordPlatformEventSafe({
+      severity: error instanceof UploadRequestError ? "warning" : "error",
+      category: "upload",
+      title: "Profile photo upload failed",
+      message: error instanceof Error ? error.message : "Profile photo upload failed.",
+      path: "/api/uploads/profile-photo",
+      method: "POST",
+      statusCode: error instanceof UploadRequestError ? 400 : 503,
+      tenantId: request.auth?.user.tenantId ?? null,
+      actorUserId: request.auth?.user.id ?? null,
+    });
+    response.status(error instanceof UploadRequestError ? 400 : 503).json({
+      message:
+        error instanceof UploadRequestError
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : "Profile photo upload failed.",
+    });
   }
 });
 
@@ -110,11 +157,33 @@ router.post("/expense-attachment", uploadLimiter, expenseUpload, async (request,
       contentType === "image/webp";
 
     if ((contentType === "application/pdf" && !isAllowedPdfSignature(body)) || (contentType !== "application/pdf" && !isAllowedImageSignature(body))) {
+      await recordPlatformEventSafe({
+        severity: "warning",
+        category: "upload",
+        title: "Expense attachment rejected",
+        message: `Rejected expense attachment with invalid file signature for ${contentType}.`,
+        path: "/api/uploads/expense-attachment",
+        method: "POST",
+        statusCode: 400,
+        tenantId: request.auth?.user.tenantId ?? null,
+        actorUserId: request.auth?.user.id ?? null,
+      });
       response.status(400).json({ message: "Expense attachments must be a valid image or PDF file." });
       return;
     }
 
     if (!allowed) {
+      await recordPlatformEventSafe({
+        severity: "warning",
+        category: "upload",
+        title: "Expense attachment rejected",
+        message: `Rejected expense attachment with unsupported content type ${contentType}.`,
+        path: "/api/uploads/expense-attachment",
+        method: "POST",
+        statusCode: 400,
+        tenantId: request.auth?.user.tenantId ?? null,
+        actorUserId: request.auth?.user.id ?? null,
+      });
       response.status(400).json({ message: "Expense attachments must be an image or PDF file." });
       return;
     }
@@ -128,7 +197,25 @@ router.post("/expense-attachment", uploadLimiter, expenseUpload, async (request,
 
     response.status(201).json(uploaded);
   } catch (error) {
-    response.status(503).json({ message: error instanceof Error ? error.message : "Expense attachment upload failed." });
+    await recordPlatformEventSafe({
+      severity: error instanceof UploadRequestError ? "warning" : "error",
+      category: "upload",
+      title: "Expense attachment upload failed",
+      message: error instanceof Error ? error.message : "Expense attachment upload failed.",
+      path: "/api/uploads/expense-attachment",
+      method: "POST",
+      statusCode: error instanceof UploadRequestError ? 400 : 503,
+      tenantId: request.auth?.user.tenantId ?? null,
+      actorUserId: request.auth?.user.id ?? null,
+    });
+    response.status(error instanceof UploadRequestError ? 400 : 503).json({
+      message:
+        error instanceof UploadRequestError
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : "Expense attachment upload failed.",
+    });
   }
 });
 
