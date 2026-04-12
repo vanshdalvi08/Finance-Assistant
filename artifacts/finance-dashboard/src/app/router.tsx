@@ -1,4 +1,5 @@
 import { Redirect, Route, Switch, Router as WouterRouter } from "wouter";
+import { useHashLocation } from "wouter/use-hash-location";
 import { routes } from "@/app/route-map";
 import { AuthGuard } from "@/guards/auth-guard";
 import { GuestGuard } from "@/guards/guest-guard";
@@ -128,7 +129,7 @@ function PlatformRoutes() {
 
 export function AppRouter() {
   return (
-    <WouterRouter base={import.meta.env.BASE_URL?.replace(/\/$/, "") || ""}>
+    <WouterRouter hook={useHashLocation}>
       <Switch>
         <Route path={routes.login}>
           <GuestGuard>
