@@ -22,6 +22,7 @@ import {
   type ProjectBudget as DbProjectBudget,
   type ProjectTask as DbProjectTask,
   type PurchaseOrder as DbPurchaseOrder,
+  type InsertPurchaseOrder as DbInsertPurchaseOrder,
   type Salary as DbSalary,
   type Timesheet as DbTimesheet,
   type TimesheetLine as DbTimesheetLine,
@@ -592,7 +593,7 @@ function purchaseOrderFromRow(row: DbPurchaseOrder): PurchaseOrder {
   };
 }
 
-function purchaseOrderToRow(order: PurchaseOrder) {
+function purchaseOrderToRow(order: PurchaseOrder): DbInsertPurchaseOrder {
   return {
     id: order.id,
     tenantId: order.tenantId?.trim() || DEFAULT_TENANT_ID,

@@ -2,11 +2,17 @@ import axios, { AxiosError, type AxiosRequestConfig, type InternalAxiosRequestCo
 import { clearAccessToken, getAccessToken, setAccessToken } from "./session";
 import type { AuthSession } from "./types";
 
-const DEFAULT_API_BASE_URL = "http://localhost:3001/api";
+const DEFAULT_DEV_API_BASE_URL = "http://localhost:3001/api";
+const DEFAULT_PROD_API_BASE_URL = "https://finance-assistant-api-nmc7.onrender.com/api";
 const TAB_SESSION_USER_KEY = "yojak.auth.tab.user";
 
 function getApiBaseUrl() {
-  return (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? DEFAULT_API_BASE_URL;
+  const configuredBaseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "");
+  if (configuredBaseUrl) {
+    return configuredBaseUrl;
+  }
+
+  return import.meta.env.PROD ? DEFAULT_PROD_API_BASE_URL : DEFAULT_DEV_API_BASE_URL;
 }
 
 function toErrorMessage(error: unknown, fallback: string) {

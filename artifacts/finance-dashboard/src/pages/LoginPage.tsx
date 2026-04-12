@@ -1,250 +1,210 @@
-import { useState } from "react";
-import { useLocation } from "wouter";
-import rigImage from "@/assets/images/rig.png";
-import { requestPasswordReset } from "@/auth/auth-service";
-import { useToast } from "@/hooks/use-toast";
-import { useAuthStore } from "@/store/auth";
+import React, { useState } from "react";
+import { motion } from "framer-motion";
+import RigVector from "@/assets/images/login-rig.png";
+import RigVectorTwo from "@/assets/images/2 image.png";
+import RigVectorThree from "@/assets/images/3 image.png";
 
-function resolveWorkspace(role: "admin" | "employee" | "client" | "platform_super_admin") {
-  if (role === "platform_super_admin") return "/platform/dashboard";
-  if (role === "client") return "/client/pre-approvals";
-  return role === "admin" ? "/" : "/employee/timesheet";
+const heroVectors = [RigVector, RigVectorTwo, RigVectorThree];
+const heroVectorClasses = [
+  "left-[-3%] w-[130%] max-w-[950px]",
+  "left-[-0%] w-[100%] max-w-[1050px]",
+  "left-[-6%] w-[112%] max-w-[1050px]",
+];
+
+const heroCopy = [
+  "Smarter workforce management starts here.",
+  "Hope you're having a great day, let’s get started.",
+];
+
+const VECTOR_STORAGE_KEY = "login.hero.vector.index";
+const COPY_STORAGE_KEY = "login.hero.copy.index";
+
+function getInitialVectorIndex() {
+  if (typeof window === "undefined") {
+    return 0;
+  }
+
+  try {
+    const previous = window.localStorage.getItem(VECTOR_STORAGE_KEY);
+    const previousIndex = previous ? Number(previous) : -1;
+    const candidates = heroVectors.map((_, index) => index).filter((index) => index !== previousIndex);
+    const nextIndex = candidates[Math.floor(Math.random() * candidates.length)] ?? 0;
+    window.localStorage.setItem(VECTOR_STORAGE_KEY, String(nextIndex));
+    return nextIndex;
+  } catch {
+    return Math.floor(Math.random() * heroVectors.length);
+  }
 }
 
-export default function LoginPage() {
-  const [, setLocation] = useLocation();
-  const { toast } = useToast();
-  const login = useAuthStore((state) => state.login);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+function getInitialCopyIndex() {
+  if (typeof window === "undefined") {
+    return 0;
+  }
+
+  try {
+    const previous = window.localStorage.getItem(COPY_STORAGE_KEY);
+    const previousIndex = previous ? Number(previous) : -1;
+    const candidates = heroCopy.map((_, index) => index).filter((index) => index !== previousIndex);
+    const nextIndex = candidates[Math.floor(Math.random() * candidates.length)] ?? 0;
+    window.localStorage.setItem(COPY_STORAGE_KEY, String(nextIndex));
+    return nextIndex;
+  } catch {
+    return Math.floor(Math.random() * heroCopy.length);
+  }
+}
+
+const LoginPage = () => {
   const [showPassword, setShowPassword] = useState(false);
-  const [rememberMe, setRememberMe] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isResetting, setIsResetting] = useState(false);
-
-  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setIsLoading(true);
-
-    try {
-      const session = await login({ email, password });
-      toast({
-        title: "Session established",
-        description: `Welcome back, ${session.user.name ?? session.user.email}.`,
-      });
-      setLocation(resolveWorkspace(session.user.role));
-    } catch (error) {
-      toast({
-        title: "Sign in failed",
-        description: error instanceof Error ? error.message : "Please try again.",
-        variant: "destructive",
-      });
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
-  async function handleForgotPassword() {
-    const trimmedEmail = email.trim();
-
-    if (!trimmedEmail) {
-      toast({
-        title: "Enter your email first",
-        description: "We need the account email to send a reset link.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setIsResetting(true);
-
-    try {
-      await requestPasswordReset({ email: trimmedEmail });
-      toast({
-        title: "Reset email sent",
-        description: "Check your inbox for the password reset link.",
-      });
-    } catch (error) {
-      toast({
-        title: "Could not send reset email",
-        description: error instanceof Error ? error.message : "Please try again.",
-        variant: "destructive",
-      });
-    } finally {
-      setIsResetting(false);
-    }
-  }
-
-  function handleCreateAccount() {
-    toast({
-      title: "Account creation is admin-managed",
-      description: "Ask your tenant administrator or platform team to create your account.",
-    });
-  }
-
-  function handleComingSoonAuth(provider: string) {
-    toast({
-      title: `${provider} sign in is not configured`,
-      description: "Use your work email and password for now. We can wire SSO later.",
-    });
-  }
+  const [selectedVectorIndex] = useState(getInitialVectorIndex);
+  const [selectedCopyIndex] = useState(getInitialCopyIndex);
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-white font-sans">
-      <section className="relative h-screen w-[70%] overflow-hidden bg-[#34404d] text-white">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_16%_15%,rgba(255,255,255,0.05),transparent_20%),linear-gradient(180deg,rgba(255,255,255,0.015),rgba(255,255,255,0)_20%)]" />
-        <div className="absolute inset-x-0 bottom-0 h-[27%] bg-[#0a2960]" />
-        <div className="absolute inset-x-0 bottom-[27%] h-px bg-white/6" />
-
-        <div className="relative z-10 h-full pb-[360px] pl-20 pt-20">
-          <div className="leading-none">
-            <div className="flex items-start gap-1">
-              <span className="text-[100px] font-black tracking-[-0.085em]">REFORIX</span>
-              <span className="pt-2 text-[28px] font-semibold tracking-[-0.02em]">TM</span>
-            </div>
-            <p className="mt-2 text-[66px] font-semibold tracking-[-0.055em]">Payroll</p>
-          </div>
-
-          <div className="mt-[168px] max-w-[480px]">
-            <h1 className="text-[84px] font-black leading-[0.95] tracking-[-0.075em]">Welcome Back!</h1>
-            <p className="mt-5 text-[34px] font-semibold leading-[1.05] tracking-[-0.055em]">
-              Manage payroll and workforce with confidence.
-            </p>
-          </div>
+    <div className="flex min-h-screen w-full overflow-hidden bg-white font-sans">
+      <section className="relative hidden w-[60%] flex-col justify-between overflow-hidden bg-[#2c353f] pt-12 pl-12 lg:flex">
+        <div className="relative z-10">
+          <h2 className="text-[28px] font-bold leading-none tracking-wide text-white">
+            REFORIX<span className="ml-0.5 align-text-top text-[12px] font-normal">TM</span>
+          </h2>
+          <p className="mt-1 text-[22px] font-semibold text-white">Payroll</p>
         </div>
 
-        <img
-          src={rigImage}
-          alt=""
-          className="pointer-events-none absolute bottom-0 left-0 w-full object-contain object-left-bottom"
-        />
+        <div className="relative z-10 mb-auto mt-24">
+          <h1 className="mb-3 text-[42px] font-bold leading-tight text-white">Welcome Back!</h1>
+          <p className="max-w-[400px] text-[28px] font-bold leading-snug text-white">
+            {heroCopy[selectedCopyIndex]}
+          </p>
+        </div>
+
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-[72%] overflow-hidden">
+          <motion.img
+            key={selectedVectorIndex}
+            src={heroVectors[selectedVectorIndex]}
+            alt="Rig vector"
+            aria-hidden="true"
+            initial={{ y: 120, opacity: 0, scale: 0.98 }}
+            animate={{ y: 0, opacity: 1, scale: 1 }}
+            transition={{ duration: 0.9, ease: [0.16, 1, 0.3, 1] }}
+            className={`absolute bottom-0 object-contain object-left-bottom ${heroVectorClasses[selectedVectorIndex]}`}
+          />
+        </div>
       </section>
 
-      <section className="flex h-screen w-[30%] items-center justify-center bg-white px-10">
-        <div className="w-[380px]">
-          <div className="mb-10 text-center">
-            <h2 className="text-[58px] font-black leading-[0.95] tracking-[-0.06em] text-black">
-              Enter Your Credentials
-            </h2>
-            <p className="mt-4 text-[16px] font-medium text-[#7b8591]">
-              Don&apos;t have an account?{" "}
-              <button
-                type="button"
-                onClick={handleCreateAccount}
-                className="font-semibold text-black underline decoration-black/40 underline-offset-4"
-              >
-                Create now
-              </button>
-            </p>
+      <section className="flex w-full flex-col items-center justify-center bg-[#f7f8fa] p-8 lg:w-[40%]">
+        <div className="w-full max-w-[372px]">
+          <div className="mb-8">
+            <h2 className="mb-1 text-[28px] font-bold text-black">Enter Your Credentials</h2>
+            <div className="flex justify-end">
+              <p className="text-[10px] text-gray-500">
+                Don&apos;t have an account?{" "}
+                <button
+                  type="button"
+                  className="ml-0.5 border-b border-black font-bold leading-none text-black hover:underline"
+                >
+                  Create now
+                </button>
+              </p>
+            </div>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-6">
+          <form className="space-y-5" onSubmit={(event) => event.preventDefault()}>
             <div>
-              <label htmlFor="email" className="mb-3 block text-[18px] font-semibold text-black">
+              <label className="mb-2 block text-[13px] font-bold text-black" htmlFor="email">
                 E-mail
               </label>
               <input
                 id="email"
                 type="email"
-                autoComplete="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
                 placeholder="example@gmail.com"
-                className="h-14 w-full rounded-[16px] border border-[#d7dde6] bg-white px-5 text-[16px] font-medium text-black outline-none placeholder:text-[#8e97a3]"
-                required
+                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm placeholder:text-gray-400 transition-colors focus:border-[#2c353f] focus:outline-none"
               />
             </div>
 
             <div>
-              <label htmlFor="password" className="mb-3 block text-[18px] font-semibold text-black">
+              <label className="mb-2 block text-[13px] font-bold text-black" htmlFor="password">
                 Password
               </label>
               <div className="relative">
                 <input
                   id="password"
                   type={showPassword ? "text" : "password"}
-                  autoComplete="current-password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  placeholder="******"
-                  className="h-14 w-full rounded-[16px] border border-[#d7dde6] bg-white px-5 pr-14 text-[16px] font-medium text-black outline-none placeholder:text-[#8e97a3]"
-                  required
+                  placeholder="••••••••"
+                  className="w-full rounded-lg border border-gray-300 px-4 py-2.5 pr-12 text-sm tracking-widest placeholder:text-gray-400 transition-colors focus:border-[#2c353f] focus:outline-none"
                 />
                 <button
                   type="button"
-                  onClick={() => setShowPassword((current) => !current)}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-[#8e97a3]"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400"
                   aria-label={showPassword ? "Hide password" : "Show password"}
                 >
-                  {showPassword ? (
-                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                      <path d="M3 3L21 21" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                      <path d="M10.58 10.58A2 2 0 0 0 13.41 13.41" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                      <path d="M9.88 5.09A10.94 10.94 0 0 1 12 4.91C17 4.91 21 12 21 12A20.8 20.8 0 0 1 16.84 17.19" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                      <path d="M6.71 6.7A20.66 20.66 0 0 0 3 12S7 19.09 12 19.09A10.94 10.94 0 0 0 14.12 18.91" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  ) : (
-                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                      <path d="M1 12S5 4.91 12 4.91 23 12 23 12 19 19.09 12 19.09 1 12 1 12Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                      <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2" />
-                    </svg>
-                  )}
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    strokeWidth={1.5}
+                    stroke="currentColor"
+                    className="h-4 w-4"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z"
+                    />
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                    />
+                  </svg>
                 </button>
               </div>
             </div>
 
-            <div className="flex items-center justify-between text-[16px] text-[#7b8591]">
-              <label className="flex items-center gap-3 font-medium">
-                <input
-                  type="checkbox"
-                  checked={rememberMe}
-                  onChange={(event) => setRememberMe(event.target.checked)}
-                  className="h-[18px] w-[18px] rounded-[4px] border border-[#cfd6de]"
-                />
-                <span>Remember me</span>
+            <div className="flex items-center justify-between pb-2 pt-1">
+              <label className="flex cursor-pointer items-center text-[11px] text-gray-500">
+                <input type="checkbox" className="mr-2 h-3 w-3 rounded border-gray-300" />
+                Remember me
               </label>
-
-              <button
-                type="button"
-                onClick={handleForgotPassword}
-                disabled={isResetting}
-                className="font-medium text-black disabled:text-[#9aa3ae]"
-              >
-                {isResetting ? "Sending reset link..." : "Forgot Password?"}
+              <button type="button" className="text-[11px] font-medium text-black hover:underline">
+                Forgot Password?
               </button>
             </div>
 
             <button
               type="submit"
-              disabled={isLoading}
-              className="h-12 w-full rounded-[16px] bg-[#34404d] text-[18px] font-semibold text-white"
+              className="w-full rounded-lg bg-[#2c353f] py-3 text-[13px] font-bold text-white transition-colors hover:bg-[#1f262d]"
             >
-              {isLoading ? "Signing in..." : "Sign in"}
+              Sign in
             </button>
 
-            <div className="flex items-center gap-4 text-[13px] font-medium uppercase tracking-[0.22em] text-[#98a1ac]">
-              <span className="h-px flex-1 bg-[#d9dfe6]" />
-              <span>OR</span>
-              <span className="h-px flex-1 bg-[#d9dfe6]" />
+            <div className="relative flex items-center py-3">
+              <div className="flex-grow border-t border-gray-200" />
+              <span className="mx-4 text-[9px] font-medium text-gray-400">OR</span>
+              <div className="flex-grow border-t border-gray-200" />
             </div>
 
-            <div className="space-y-4">
+            <div className="space-y-3">
               <button
                 type="button"
-                onClick={() => handleComingSoonAuth("Google")}
-                className="flex h-14 w-full items-center justify-center gap-3 rounded-full border border-[#d7dde6] bg-white text-[18px] font-medium text-[#697280]"
+                className="flex w-full items-center justify-center gap-2 rounded-full border border-gray-200 py-2.5 transition-colors hover:bg-gray-50"
               >
-                <span className="text-[22px] font-semibold text-[#ea4335]">G</span>
-                <span>Continue with Google</span>
+                <img
+                  src="https://www.svgrepo.com/show/475656/google-color.svg"
+                  className="h-4 w-4"
+                  alt="Google"
+                />
+                <span className="text-[12px] font-bold text-gray-600">Continue with Google</span>
               </button>
 
               <button
                 type="button"
-                onClick={() => handleComingSoonAuth("Facebook")}
-                className="flex h-14 w-full items-center justify-center gap-3 rounded-full border border-[#d7dde6] bg-white text-[18px] font-medium text-[#697280]"
+                className="flex w-full items-center justify-center gap-2 rounded-full border border-gray-200 py-2.5 transition-colors hover:bg-gray-50"
               >
-                <span className="text-[24px] font-semibold text-[#1877f2]">f</span>
-                <span>Continue with Facebook</span>
+                <img
+                  src="https://www.svgrepo.com/show/475647/facebook-color.svg"
+                  className="h-4 w-4"
+                  alt="Facebook"
+                />
+                <span className="text-[12px] font-bold text-gray-600">Continue with Facebook</span>
               </button>
             </div>
           </form>
@@ -252,4 +212,6 @@ export default function LoginPage() {
       </section>
     </div>
   );
-}
+};
+
+export default LoginPage;
