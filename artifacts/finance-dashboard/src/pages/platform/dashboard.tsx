@@ -36,17 +36,17 @@ export default function PlatformDashboardPage() {
         </div>
 
         <div className="grid gap-6 xl:grid-cols-[1.55fr_1fr]">
-          <Card className="border-white/8 bg-white/[0.03]">
+          <Card className="border-border/50 bg-card">
             <CardHeader className="flex flex-row items-center justify-between space-y-0">
               <div>
-                <CardTitle className="font-serif text-2xl">Tenant registry</CardTitle>
+                <CardTitle className="text-lg font-semibold">Tenant registry</CardTitle>
                 <p className="mt-1 text-sm text-muted-foreground">Recent tenants and ownership split.</p>
               </div>
             </CardHeader>
             <CardContent>
               <Table>
                 <TableHeader>
-                  <TableRow className="border-white/5">
+                  <TableRow className="border-border/50">
                     <TableHead>Name</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="text-right">Users</TableHead>
@@ -56,7 +56,7 @@ export default function PlatformDashboardPage() {
                 </TableHeader>
                 <TableBody>
                   {tenants.slice(0, 8).map((tenant) => (
-                    <TableRow key={tenant.id} className="border-white/5">
+                    <TableRow key={tenant.id} className="border-border/50">
                       <TableCell>
                         <div className="space-y-1">
                           <p className="font-medium text-foreground">{tenant.name}</p>
@@ -69,7 +69,7 @@ export default function PlatformDashboardPage() {
                           className={
                             tenant.status === "active"
                               ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-200"
-                              : "border-white/10 bg-white/5 text-muted-foreground"
+                              : "border-border/50 bg-muted/20 text-muted-foreground"
                           }
                         >
                           {tenant.status}
@@ -87,14 +87,14 @@ export default function PlatformDashboardPage() {
             </CardContent>
           </Card>
 
-          <Card className="border-white/8 bg-white/[0.03]">
+          <Card className="border-border/50 bg-card">
             <CardHeader>
-              <CardTitle className="font-serif text-2xl">System pulse</CardTitle>
+              <CardTitle className="text-lg font-semibold">System pulse</CardTitle>
               <p className="text-sm text-muted-foreground">Events recorded by the runtime monitor.</p>
             </CardHeader>
             <CardContent className="space-y-3">
               {events.slice(0, 6).map((event) => (
-                <div key={event.id} className="rounded-2xl border border-white/8 bg-black/20 p-4">
+                <div key={event.id} className="rounded-2xl border border-border/50 bg-muted/20 p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
@@ -105,7 +105,7 @@ export default function PlatformDashboardPage() {
                               ? "border-rose-400/20 bg-rose-400/10 text-rose-200"
                               : event.severity === "warning"
                                 ? "border-amber-400/20 bg-amber-400/10 text-amber-200"
-                                : "border-cyan-400/20 bg-cyan-400/10 text-cyan-200"
+                                : "border-border/50 bg-muted/20 text-foreground"
                           }
                         >
                           {event.severity}

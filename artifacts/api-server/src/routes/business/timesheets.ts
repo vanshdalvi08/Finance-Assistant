@@ -1,6 +1,8 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { z } from "zod";
-import { type ActorRole } from "@workspace/db/schema";
+import { and, eq } from "drizzle-orm";
+import { db } from "@workspace/db";
+import { idempotencyKeysTable, type ActorRole } from "@workspace/db/schema";
 import { requireTenantRole } from "../../middlewares/auth";
 import {
   DAY_KEYS,
@@ -29,7 +31,9 @@ import {
 } from "../../lib/business-store";
 import { DEFAULT_TENANT_ID } from "../../lib/tenants";
 import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../../lib/notifications";
+import { logger } from "../../lib/logger";
 import { assertTenantEmployeeAccess } from "../../lib/policies";
+import { hashSha256 } from "../../lib/security";
 import { WorkflowStateError } from "../../lib/workflow-state";
 
 const router: IRouter = Router();
@@ -73,6 +77,19 @@ function respondNotFound(response: Response, message: string) {
   response.status(404).json({ message });
 }
 
+function routeParam(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] ?? "" : value ?? "";
+}
+
+class TimesheetIdempotencyError extends Error {
+  code: "conflict";
+
+  constructor(message: string) {
+    super(message);
+    this.code = "conflict";
+  }
+}
+
 function handleWorkflowStateError(error: unknown, response: Response) {
   if (!(error instanceof WorkflowStateError)) {
     throw error;
@@ -82,11 +99,187 @@ function handleWorkflowStateError(error: unknown, response: Response) {
   return true;
 }
 
+function handleTimesheetIdempotencyError(error: unknown, response: Response) {
+  const conflictError =
+    error instanceof TimesheetIdempotencyError
+      ? error
+      : error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "conflict"
+        ? (error as { message?: string })
+        : null;
+
+  if (!conflictError) {
+    throw error;
+  }
+
+  response.status(409).json({ message: conflictError.message ?? "Conflicting idempotency request." });
+  return true;
+}
+
 function deliverNotification(work: Promise<unknown>) {
   void work.catch((error) => {
-    console.error("Failed to deliver notification", error);
+    logger.warn({ err: error }, "Failed to deliver notification");
   });
   return Promise.resolve();
+}
+
+function idempotencyKeyFrom(request: Request) {
+  const header = request.get("Idempotency-Key") ?? request.get("X-Idempotency-Key");
+  return header?.trim() || undefined;
+}
+
+function requestHashForTimesheetReview(input: { timesheetId: string; status: "approved" | "rejected"; note?: string }) {
+  return hashSha256(
+    JSON.stringify({
+      timesheetId: input.timesheetId.trim(),
+      status: input.status,
+      note: input.note?.trim() ?? "",
+    }),
+  );
+}
+
+async function claimTimesheetReviewIdempotency(
+  actor: { tenantId: string; userId?: string },
+  scope: "timesheet_review" | "timesheet_submit" | "timesheet_create" | "timesheet_update" | "timesheet_delete",
+  key: string,
+  requestHash: string,
+) {
+  const keyHash = hashSha256(key);
+  const createdAt = new Date();
+  const insertedRows = await db
+    .insert(idempotencyKeysTable)
+    .values({
+      id: createId("idem"),
+      tenantId: actor.tenantId,
+      scope,
+      keyHash,
+      requestHash,
+      status: "processing",
+      createdById: actor.userId ?? null,
+      createdAt,
+      updatedAt: createdAt,
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  if (insertedRows[0]) {
+    return { row: insertedRows[0], created: true };
+  }
+
+  const existingRows = await db
+    .select()
+    .from(idempotencyKeysTable)
+    .where(
+      and(
+        eq(idempotencyKeysTable.tenantId, actor.tenantId),
+        eq(idempotencyKeysTable.scope, scope),
+        eq(idempotencyKeysTable.keyHash, keyHash),
+      ),
+    )
+    .limit(1);
+
+  const row = existingRows[0];
+  if (!row) {
+    throw new TimesheetIdempotencyError("Unable to acquire idempotency lock for this timesheet review request.");
+  }
+  if (row.requestHash !== requestHash) {
+    throw new TimesheetIdempotencyError("This idempotency key is already used for a different timesheet review payload.");
+  }
+
+  return { row, created: false };
+}
+
+function requestHashForTimesheetMutation(input: {
+  id?: string;
+  employeeId: string;
+  employeeNameSnapshot?: string;
+  weekStart: string;
+  lines: Array<{
+    id?: string;
+    project?: string;
+    task?: string;
+    notes?: string;
+    projectBudgetId?: string;
+    projectTaskId?: string;
+    hours: Partial<Record<DayKey, number>>;
+  }>;
+}) {
+  const normalizedLines = input.lines.map((line) => ({
+    id: line.id?.trim() ?? "",
+    project: line.project?.trim() ?? "",
+    task: line.task?.trim() ?? "",
+    notes: line.notes?.trim() ?? "",
+    projectBudgetId: line.projectBudgetId?.trim() ?? "",
+    projectTaskId: line.projectTaskId?.trim() ?? "",
+    hours: {
+      mon: Number(line.hours.mon ?? 0),
+      tue: Number(line.hours.tue ?? 0),
+      wed: Number(line.hours.wed ?? 0),
+      thu: Number(line.hours.thu ?? 0),
+      fri: Number(line.hours.fri ?? 0),
+      sat: Number(line.hours.sat ?? 0),
+      sun: Number(line.hours.sun ?? 0),
+    },
+  }));
+
+  return hashSha256(
+    JSON.stringify({
+      id: input.id?.trim() ?? "",
+      employeeId: input.employeeId.trim(),
+      employeeNameSnapshot: input.employeeNameSnapshot?.trim() ?? "",
+      weekStart: normalizeWeekStart(input.weekStart),
+      lines: normalizedLines,
+    }),
+  );
+}
+
+function requestHashForTimesheetDelete(input: { timesheetId: string }) {
+  return hashSha256(JSON.stringify({ timesheetId: input.timesheetId.trim() }));
+}
+
+function requestHashForTimesheetSubmitById(input: { timesheetId: string }) {
+  return hashSha256(
+    JSON.stringify({
+      timesheetId: input.timesheetId.trim(),
+    }),
+  );
+}
+
+function requestHashForTimesheetSubmit(input: {
+  employeeId: string;
+  weekStart: string;
+  lines: Array<{
+    project?: string;
+    task?: string;
+    notes?: string;
+    projectBudgetId?: string;
+    projectTaskId?: string;
+    hours: Partial<Record<DayKey, number>>;
+  }>;
+}) {
+  const normalizedLines = input.lines.map((line) => ({
+    project: line.project?.trim() ?? "",
+    task: line.task?.trim() ?? "",
+    notes: line.notes?.trim() ?? "",
+    projectBudgetId: line.projectBudgetId?.trim() ?? "",
+    projectTaskId: line.projectTaskId?.trim() ?? "",
+    hours: {
+      mon: Number(line.hours.mon ?? 0),
+      tue: Number(line.hours.tue ?? 0),
+      wed: Number(line.hours.wed ?? 0),
+      thu: Number(line.hours.thu ?? 0),
+      fri: Number(line.hours.fri ?? 0),
+      sat: Number(line.hours.sat ?? 0),
+      sun: Number(line.hours.sun ?? 0),
+    },
+  }));
+
+  return hashSha256(
+    JSON.stringify({
+      employeeId: input.employeeId.trim(),
+      weekStart: normalizeWeekStart(input.weekStart),
+      lines: normalizedLines,
+    }),
+  );
 }
 
 function scopedEmployeeId(request: Request, fallback?: string) {
@@ -446,6 +639,48 @@ router.post("/timesheets", requireTenantRole("admin", "employee"), async (reques
   const actor = recordActor(request);
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const employeeId = request.auth?.user.role === "employee" ? request.auth.user.id : parsed.data.employeeId;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey
+    ? requestHashForTimesheetMutation({
+        id: parsed.data.id,
+        employeeId,
+        employeeNameSnapshot: parsed.data.employeeNameSnapshot,
+        weekStart: parsed.data.weekStart,
+        lines: parsed.data.lines,
+      })
+    : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimTimesheetReviewIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimTimesheetReviewIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "timesheet_create",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleTimesheetIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const latestStore = await readStore();
+      const latestTimesheet = idempotencyClaim.row.responseEntityId
+        ? latestStore.timesheets.find((entry) => entry.id === idempotencyClaim.row.responseEntityId)
+        : null;
+      response.json({ timesheet: latestTimesheet ?? null, duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This timesheet create request is already being processed. Please retry shortly." });
+    return;
+  }
   if (request.auth?.user.role === "employee" || request.auth?.user.role === "admin") {
     const tenantEmployees = await loadEmployees(tenantId);
     const tenantEmployeeIds = new Set(tenantEmployees.map((employee) => employee.id));
@@ -520,7 +755,18 @@ router.post("/timesheets", requireTenantRole("admin", "employee"), async (reques
       });
     }
 
-    response.status(existing ? 200 : 201).json({ timesheet: entry });
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: entry.id,
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+
+    response.status(existing ? 200 : 201).json({ timesheet: entry, duplicate: false });
     return;
   }
 
@@ -537,13 +783,27 @@ router.post("/timesheets", requireTenantRole("admin", "employee"), async (reques
       },
     });
   } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
     if (handleWorkflowStateError(error, response)) {
       return;
     }
     throw error;
   }
 
-  response.status(existing ? 200 : 201).json({ timesheet: savedEntry ?? entry });
+  if (idempotencyClaim?.created) {
+    await db
+      .update(idempotencyKeysTable)
+      .set({
+        status: "completed",
+        responseEntityId: (savedEntry ?? entry).id,
+        updatedAt: new Date(),
+      })
+      .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+  }
+
+  response.status(existing ? 200 : 201).json({ timesheet: savedEntry ?? entry, duplicate: false });
 });
 
 router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (request, response) => {
@@ -555,6 +815,7 @@ router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (r
 
   const store = await readStore();
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
   const existing = store.timesheets.find((entry) => entry.id === request.params.id);
   if (!existing) {
     respondNotFound(response, "Timesheet not found");
@@ -576,6 +837,45 @@ router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (r
   }
 
   const employeeId = request.auth?.user.role === "employee" ? request.auth.user.id : parsed.data.employeeId;
+  const requestHash = idempotencyKey
+    ? requestHashForTimesheetMutation({
+        id: routeParam(request.params.id),
+        employeeId,
+        employeeNameSnapshot: parsed.data.employeeNameSnapshot,
+        weekStart: parsed.data.weekStart,
+        lines: parsed.data.lines,
+      })
+    : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimTimesheetReviewIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimTimesheetReviewIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "timesheet_update",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleTimesheetIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const latestStore = await readStore();
+      const latestTimesheet = latestStore.timesheets.find((entry) => entry.id === request.params.id);
+      response.json({ timesheet: latestTimesheet ?? existing, duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This timesheet update request is already being processed. Please retry shortly." });
+    return;
+  }
   const employee =
     request.auth?.user.role === "employee"
       ? { id: request.auth.user.id, name: request.auth.user.name ?? existing.employeeNameSnapshot }
@@ -623,13 +923,27 @@ router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (r
       },
     });
   } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
     if (handleWorkflowStateError(error, response)) {
       return;
     }
     throw error;
   }
 
-  response.json({ timesheet: savedEntry ?? entry });
+  if (idempotencyClaim?.created) {
+    await db
+      .update(idempotencyKeysTable)
+      .set({
+        status: "completed",
+        responseEntityId: (savedEntry ?? entry).id,
+        updatedAt: new Date(),
+      })
+      .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+  }
+
+  response.json({ timesheet: savedEntry ?? entry, duplicate: false });
 });
 
 router.post("/timesheets/submit", requireTenantRole("admin", "employee"), async (request, response) => {
@@ -642,6 +956,47 @@ router.post("/timesheets/submit", requireTenantRole("admin", "employee"), async 
   const store = await readStore();
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const employeeId = request.auth?.user.role === "employee" ? request.auth.user.id : parsed.data.employeeId;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey
+    ? requestHashForTimesheetSubmit({
+        employeeId,
+        weekStart: parsed.data.weekStart,
+        lines: parsed.data.lines,
+      })
+    : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimTimesheetReviewIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimTimesheetReviewIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "timesheet_submit",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleTimesheetIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const latestStore = await readStore();
+      const existingById = idempotencyClaim.row.responseEntityId
+        ? latestStore.timesheets.find((entry) => entry.id === idempotencyClaim.row.responseEntityId)
+        : null;
+      response.json({ timesheet: existingById ?? null, duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This timesheet submit request is already being processed. Please retry shortly." });
+    return;
+  }
+
   const employee =
     request.auth?.user.role === "employee"
       ? { id: request.auth.user.id, name: request.auth.user.name ?? "Employee" }
@@ -688,6 +1043,9 @@ router.post("/timesheets/submit", requireTenantRole("admin", "employee"), async 
   };
 
   if (!timesheetHasContent(entry)) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
     response.status(400).json({ message: "Timesheet must include at least one task or logged hour before submission." });
     return;
   }
@@ -701,7 +1059,20 @@ router.post("/timesheets/submit", requireTenantRole("admin", "employee"), async 
       actorRole: request.auth?.user.role ?? "system",
       requestId: String(request.id),
     });
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: submittedEntry.id,
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
   } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
     if (handleWorkflowStateError(error, response)) {
       return;
     }
@@ -748,7 +1119,7 @@ router.post("/timesheets/submit", requireTenantRole("admin", "employee"), async 
     );
   }
 
-  response.status(existing ? 200 : 201).json({ timesheet: submittedEntry });
+  response.status(existing ? 200 : 201).json({ timesheet: submittedEntry, duplicate: false });
 });
 
 router.post("/timesheets/:id/submit", requireTenantRole("admin", "employee"), async (request, response) => {
@@ -769,6 +1140,39 @@ router.post("/timesheets/:id/submit", requireTenantRole("admin", "employee"), as
     return;
   }
 
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForTimesheetSubmitById({ timesheetId: String(request.params.id) }) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimTimesheetReviewIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimTimesheetReviewIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "timesheet_submit",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleTimesheetIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const latestStore = await readStore();
+      const latestTimesheet = latestStore.timesheets.find((entry) => entry.id === request.params.id);
+      response.json({ timesheet: latestTimesheet ?? existing, duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This timesheet submit request is already being processed. Please retry shortly." });
+    return;
+  }
+
   let submittedEntry: TimesheetEntry | null;
   try {
     submittedEntry = await submitTimesheetFast({
@@ -778,7 +1182,20 @@ router.post("/timesheets/:id/submit", requireTenantRole("admin", "employee"), as
       actorRole: request.auth?.user.role ?? "system",
       requestId: String(request.id),
     });
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: String(request.params.id),
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
   } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
     if (handleWorkflowStateError(error, response)) {
       return;
     }
@@ -823,7 +1240,7 @@ router.post("/timesheets/:id/submit", requireTenantRole("admin", "employee"), as
       ),
     );
   }
-  response.json({ timesheet: submittedEntry ?? existing });
+  response.json({ timesheet: submittedEntry ?? existing, duplicate: false });
 });
 
 router.post("/timesheets/:id/approve", requireTenantRole("admin"), async (request, response) => {
@@ -851,6 +1268,42 @@ router.post("/timesheets/:id/approve", requireTenantRole("admin"), async (reques
   }
 
   const employee = await loadEmployeeProfile(existing.employeeId, tenantId);
+  const note = parsed.data.note?.trim() || undefined;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey
+    ? requestHashForTimesheetReview({ timesheetId: String(request.params.id), status: "approved", note })
+    : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimTimesheetReviewIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimTimesheetReviewIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "timesheet_review",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleTimesheetIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const latestStore = await readStore();
+      const latestTimesheet = latestStore.timesheets.find((entry) => entry.id === request.params.id);
+      response.json({ timesheet: latestTimesheet ?? existing, duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This timesheet review request is already being processed. Please retry shortly." });
+    return;
+  }
+
   let reviewResult: { timesheet: TimesheetEntry; salary?: unknown };
   try {
     reviewResult = await reviewTimesheetFast({
@@ -859,10 +1312,23 @@ router.post("/timesheets/:id/approve", requireTenantRole("admin"), async (reques
       status: "approved",
       actorName: request.auth?.user.name ?? "Admin",
       requestId: String(request.id),
-      note: parsed.data.note?.trim() || undefined,
+      note,
       employee,
     });
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: String(request.params.id),
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
   } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
     if (handleWorkflowStateError(error, response)) {
       return;
     }
@@ -908,7 +1374,7 @@ router.post("/timesheets/:id/approve", requireTenantRole("admin"), async (reques
       ),
     );
   }
-  response.json({ timesheet: reviewResult.timesheet });
+  response.json({ timesheet: reviewResult.timesheet, duplicate: false });
 });
 
 router.post("/timesheets/:id/reject", requireTenantRole("admin"), async (request, response) => {
@@ -936,6 +1402,42 @@ router.post("/timesheets/:id/reject", requireTenantRole("admin"), async (request
   }
 
   let reviewResult: { timesheet: TimesheetEntry; salary?: unknown };
+  const note = parsed.data.note;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey
+    ? requestHashForTimesheetReview({ timesheetId: String(request.params.id), status: "rejected", note })
+    : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimTimesheetReviewIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimTimesheetReviewIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "timesheet_review",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleTimesheetIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const latestStore = await readStore();
+      const latestTimesheet = latestStore.timesheets.find((entry) => entry.id === request.params.id);
+      response.json({ timesheet: latestTimesheet ?? existing, duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This timesheet review request is already being processed. Please retry shortly." });
+    return;
+  }
+
   try {
     reviewResult = await reviewTimesheetFast({
       id: String(request.params.id),
@@ -943,9 +1445,22 @@ router.post("/timesheets/:id/reject", requireTenantRole("admin"), async (request
       status: "rejected",
       actorName: request.auth?.user.name ?? "Admin",
       requestId: String(request.id),
-      note: parsed.data.note,
+      note,
     });
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: String(request.params.id),
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
   } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
     if (handleWorkflowStateError(error, response)) {
       return;
     }
@@ -991,12 +1506,43 @@ router.post("/timesheets/:id/reject", requireTenantRole("admin"), async (request
       ),
     );
   }
-  response.json({ timesheet: reviewResult.timesheet });
+  response.json({ timesheet: reviewResult.timesheet, duplicate: false });
 });
 
 router.delete("/timesheets/:id", requireTenantRole("admin", "employee"), async (request, response) => {
   const store = await readStore();
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForTimesheetDelete({ timesheetId: routeParam(request.params.id) }) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimTimesheetReviewIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimTimesheetReviewIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "timesheet_delete",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleTimesheetIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      response.status(204).send();
+      return;
+    }
+    response.status(409).json({ message: "This timesheet delete request is already being processed. Please retry shortly." });
+    return;
+  }
+
   const tenantEmployees = await loadEmployees(tenantId);
   const tenantEmployeeIds = new Set(tenantEmployees.map((employee) => employee.id));
   const existing = store.timesheets.find((entry) => entry.id === request.params.id);
@@ -1027,6 +1573,16 @@ router.delete("/timesheets/:id", requireTenantRole("admin", "employee"), async (
   );
 
   await updateStore(() => next);
+  if (idempotencyClaim?.created) {
+    await db
+      .update(idempotencyKeysTable)
+      .set({
+        status: "completed",
+        responseEntityId: String(request.params.id),
+        updatedAt: new Date(),
+      })
+      .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+  }
   response.status(204).send();
 });
 

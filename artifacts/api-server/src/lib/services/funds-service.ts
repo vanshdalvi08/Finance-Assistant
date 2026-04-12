@@ -83,6 +83,15 @@ function changedFundFields(previous: FundRecord | null | undefined, next: FundRe
 }
 
 async function claimFundCreateIdempotency(actor: FundActor, key: string, requestHash: string) {
+  return claimFundIdempotency(actor, "fund_create", key, requestHash);
+}
+
+async function claimFundIdempotency(
+  actor: FundActor,
+  scope: "fund_create" | "fund_update" | "fund_delete",
+  key: string,
+  requestHash: string,
+) {
   const keyHash = hashSha256(key);
   const createdAt = new Date();
   const insertedRows = await db
@@ -90,7 +99,7 @@ async function claimFundCreateIdempotency(actor: FundActor, key: string, request
     .values({
       id: createId("idem"),
       tenantId: actor.tenantId,
-      scope: "fund_create",
+      scope,
       keyHash,
       requestHash,
       status: "processing",
@@ -108,7 +117,7 @@ async function claimFundCreateIdempotency(actor: FundActor, key: string, request
   const existingRows = await db
     .select()
     .from(idempotencyKeysTable)
-    .where(and(eq(idempotencyKeysTable.tenantId, actor.tenantId), eq(idempotencyKeysTable.scope, "fund_create"), eq(idempotencyKeysTable.keyHash, keyHash)))
+    .where(and(eq(idempotencyKeysTable.tenantId, actor.tenantId), eq(idempotencyKeysTable.scope, scope), eq(idempotencyKeysTable.keyHash, keyHash)))
     .limit(1);
 
   const row = existingRows[0];
@@ -146,9 +155,12 @@ export async function saveFund(
   actor: FundActor,
   options?: { idempotencyKey?: string | null },
 ): Promise<{ fund: FundRecord; created: boolean; duplicate: boolean }> {
-  const idempotencyKey = !input.id ? options?.idempotencyKey?.trim() || null : null;
+  const idempotencyKey = options?.idempotencyKey?.trim() || null;
   const requestHash = idempotencyKey ? requestHashForFund(input) : null;
-  const idempotencyClaim = idempotencyKey && requestHash ? await claimFundCreateIdempotency(actor, idempotencyKey, requestHash) : null;
+  const idempotencyScope = input.id ? "fund_update" : "fund_create";
+  const idempotencyClaim = idempotencyKey && requestHash
+    ? await claimFundIdempotency(actor, idempotencyScope, idempotencyKey, requestHash)
+    : null;
 
   if (idempotencyClaim && !idempotencyClaim.created) {
     if (idempotencyClaim.row.status === "completed" && idempotencyClaim.row.responseEntityId) {
@@ -228,39 +240,75 @@ export async function saveFund(
   return { fund: fund!, created, duplicate: false };
 }
 
-export async function deleteFund(id: string, actor: FundActor) {
-  let target: FundRecord | null = null;
-  await updateStore((current) => {
-    target = current.funds.find((fund) => fund.id === id) ?? null;
-    if (!target) {
-      throw new FundsServiceError("not_found", "Fund not found");
+export async function deleteFundWithIdempotency(
+  id: string,
+  actor: FundActor,
+  options?: { idempotencyKey?: string | null },
+): Promise<{ fund: FundRecord | null; duplicate: boolean }> {
+  const idempotencyKey = options?.idempotencyKey?.trim() || null;
+  const requestHash = idempotencyKey ? hashSha256(JSON.stringify({ id: id.trim() })) : null;
+  const idempotencyClaim = idempotencyKey && requestHash
+    ? await claimFundIdempotency(actor, "fund_delete", idempotencyKey, requestHash)
+    : null;
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      return { fund: null, duplicate: true };
     }
+    throw new FundsServiceError("conflict", "This fund delete request is already being processed. Please retry shortly.");
+  }
 
-    assertTenantAccess(target.tenantId, actor.tenantId, () => new FundsServiceError("forbidden", "Forbidden"));
+  let target: FundRecord | null = null;
+  try {
+    await updateStore((current) => {
+      target = current.funds.find((fund) => fund.id === id) ?? null;
+      if (!target) {
+        throw new FundsServiceError("not_found", "Fund not found");
+      }
 
-    return pushAuditEvent(
-      {
-        ...current,
-        funds: current.funds.filter((fund) => fund.id !== id),
-      },
-      {
-        ...actor,
-        action: "deleted",
-        entityType: "fund",
-        entityId: id,
-        summary: `Deleted fund inflow from ${target.source}.`,
-        actorUserId: actor.userId,
-        requestId: actor.requestId,
-        details: {
-          entityLabel: target.source,
-          requestId: actor.requestId,
-          changedFields: ["deleted"],
-          before: summarizeFund(target),
-          after: null,
-          context: { operation: "fund_delete" },
+      assertTenantAccess(target.tenantId, actor.tenantId, () => new FundsServiceError("forbidden", "Forbidden"));
+
+      return pushAuditEvent(
+        {
+          ...current,
+          funds: current.funds.filter((fund) => fund.id !== id),
         },
-      },
-    );
-  });
-  return target!;
+        {
+          ...actor,
+          action: "deleted",
+          entityType: "fund",
+          entityId: id,
+          summary: `Deleted fund inflow from ${target.source}.`,
+          actorUserId: actor.userId,
+          requestId: actor.requestId,
+          details: {
+            entityLabel: target.source,
+            requestId: actor.requestId,
+            changedFields: ["deleted"],
+            before: summarizeFund(target),
+            after: null,
+            context: { operation: "fund_delete" },
+          },
+        },
+      );
+    });
+
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: id,
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+  } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    throw error;
+  }
+
+  return { fund: target, duplicate: false };
 }

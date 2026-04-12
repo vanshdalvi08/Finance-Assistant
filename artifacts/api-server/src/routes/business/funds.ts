@@ -5,8 +5,9 @@ import { requireTenantRole } from "../../middlewares/auth";
 import { type FundRecord } from "../../lib/business-store";
 import { DEFAULT_TENANT_ID } from "../../lib/tenants";
 import { notifyAdmins, notifyUsersByIds } from "../../lib/notifications";
+import { logger } from "../../lib/logger";
 import {
-  deleteFund,
+  deleteFundWithIdempotency,
   FundsServiceError,
   getFundForTenant,
   listFundsForTenant,
@@ -36,7 +37,7 @@ function routeParam(value: string | string[] | undefined) {
 
 function deliverNotification(work: Promise<unknown>) {
   void work.catch((error) => {
-    console.error("Failed to deliver notification", error);
+    logger.warn({ err: error }, "Failed to deliver notification");
   });
   return Promise.resolve();
 }
@@ -169,8 +170,13 @@ router.route("/funds/:id").get(requireTenantRole("admin"), async (request, respo
   }
 
   let fund: FundRecord;
+  let duplicate = false;
   try {
-    fund = (await saveFund(parsed.data, recordActor(request))).fund;
+    const result = await saveFund(parsed.data, recordActor(request), {
+      idempotencyKey: request.get("Idempotency-Key") ?? request.get("X-Idempotency-Key"),
+    });
+    fund = result.fund;
+    duplicate = result.duplicate;
   } catch (error) {
     if (handleServiceError(error, response)) {
       return;
@@ -178,41 +184,48 @@ router.route("/funds/:id").get(requireTenantRole("admin"), async (request, respo
     throw error;
   }
 
-  const actor = notificationActor(request);
-  await deliverNotification(
-    notifyUsersByIds(
-      actor.id ? [actor.id] : [],
-      actor,
-      {
-        type: "fund_created",
-        title: "Fund entry updated",
-        body: `Fund inflow from ${fund.source} was updated.`,
-        link: "/funds",
-        email: false,
-        metadata: { fundId: fund.id, amount: fund.amount },
-      },
-    ),
-  );
-  await deliverNotification(
-    notifyAdmins(
-      actor,
-      {
-        type: "fund_created",
-        title: "Fund entry updated",
-        body: `A fund inflow from ${fund.source} was updated.`,
-        link: "/funds",
-        email: false,
-        metadata: { fundId: fund.id, amount: fund.amount },
-      },
-      actor.id ? [actor.id] : [],
-    ),
-  );
+  if (!duplicate) {
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyUsersByIds(
+        actor.id ? [actor.id] : [],
+        actor,
+        {
+          type: "fund_created",
+          title: "Fund entry updated",
+          body: `Fund inflow from ${fund.source} was updated.`,
+          link: "/funds",
+          email: false,
+          metadata: { fundId: fund.id, amount: fund.amount },
+        },
+      ),
+    );
+    await deliverNotification(
+      notifyAdmins(
+        actor,
+        {
+          type: "fund_created",
+          title: "Fund entry updated",
+          body: `A fund inflow from ${fund.source} was updated.`,
+          link: "/funds",
+          email: false,
+          metadata: { fundId: fund.id, amount: fund.amount },
+        },
+        actor.id ? [actor.id] : [],
+      ),
+    );
+  }
 
-  response.json({ fund });
+  response.json({ fund, duplicate });
 }).delete(requireTenantRole("admin"), async (request, response) => {
-  let target: FundRecord;
+  let target: FundRecord | null = null;
+  let duplicate = false;
   try {
-    target = await deleteFund(routeParam(request.params.id), recordActor(request));
+    const result = await deleteFundWithIdempotency(routeParam(request.params.id), recordActor(request), {
+      idempotencyKey: request.get("Idempotency-Key") ?? request.get("X-Idempotency-Key"),
+    });
+    target = result.fund;
+    duplicate = result.duplicate;
   } catch (error) {
     if (handleServiceError(error, response)) {
       return;
@@ -220,35 +233,37 @@ router.route("/funds/:id").get(requireTenantRole("admin"), async (request, respo
     throw error;
   }
 
-  const actor = notificationActor(request);
-  await deliverNotification(
-    notifyUsersByIds(
-      actor.id ? [actor.id] : [],
-      actor,
-      {
-        type: "fund_created",
-        title: "Fund entry deleted",
-        body: `Fund inflow from ${target.source} was removed.`,
-        link: "/funds",
-        email: false,
-        metadata: { fundId: target.id, amount: target.amount },
-      },
-    ),
-  );
-  await deliverNotification(
-    notifyAdmins(
-      actor,
-      {
-        type: "fund_created",
-        title: "Fund entry deleted",
-        body: `A fund inflow from ${target.source} was removed.`,
-        link: "/funds",
-        email: false,
-        metadata: { fundId: target.id, amount: target.amount },
-      },
-      actor.id ? [actor.id] : [],
-    ),
-  );
+  if (!duplicate && target) {
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyUsersByIds(
+        actor.id ? [actor.id] : [],
+        actor,
+        {
+          type: "fund_created",
+          title: "Fund entry deleted",
+          body: `Fund inflow from ${target.source} was removed.`,
+          link: "/funds",
+          email: false,
+          metadata: { fundId: target.id, amount: target.amount },
+        },
+      ),
+    );
+    await deliverNotification(
+      notifyAdmins(
+        actor,
+        {
+          type: "fund_created",
+          title: "Fund entry deleted",
+          body: `A fund inflow from ${target.source} was removed.`,
+          link: "/funds",
+          email: false,
+          metadata: { fundId: target.id, amount: target.amount },
+        },
+        actor.id ? [actor.id] : [],
+      ),
+    );
+  }
 
   response.status(204).send();
 });

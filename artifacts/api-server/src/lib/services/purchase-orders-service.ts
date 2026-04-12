@@ -1,4 +1,7 @@
 import { type ActorRole } from "@workspace/db/schema";
+import { and, eq } from "drizzle-orm";
+import { db } from "@workspace/db";
+import { idempotencyKeysTable } from "@workspace/db/schema";
 import {
   type BusinessStore,
   createId,
@@ -13,6 +16,7 @@ import {
   updateStore,
 } from "../business-store";
 import { assertTenantAccess } from "../policies";
+import { hashSha256 } from "../security";
 import { DEFAULT_TENANT_ID } from "../tenants";
 
 export type PurchaseOrderActor = {
@@ -55,7 +59,8 @@ export class PurchaseOrdersServiceError extends Error {
     | "insufficient_funds"
     | "invalid_planned_amount"
     | "invalid_total_amount"
-    | "already_paid";
+    | "already_paid"
+    | "conflict";
 
   constructor(
     code:
@@ -65,7 +70,8 @@ export class PurchaseOrdersServiceError extends Error {
       | "insufficient_funds"
       | "invalid_planned_amount"
       | "invalid_total_amount"
-      | "already_paid",
+      | "already_paid"
+      | "conflict",
     message: string,
   ) {
     super(message);
@@ -179,6 +185,61 @@ function changedPurchaseOrderFields(previous: PurchaseOrder | null | undefined, 
   const before = summarizePurchaseOrder(previous)!;
   const after = summarizePurchaseOrder(next)!;
   return candidates.filter((key) => before[key] !== after[key]);
+}
+
+function requestHashForPoTaskPay(input: { orderId: string; taskId: string }) {
+  return hashSha256(
+    JSON.stringify({
+      orderId: input.orderId.trim(),
+      taskId: input.taskId.trim(),
+    }),
+  );
+}
+
+async function claimPoTaskPayIdempotency(actor: PurchaseOrderActor, key: string, requestHash: string) {
+  const keyHash = hashSha256(key);
+  const createdAt = new Date();
+  const insertedRows = await db
+    .insert(idempotencyKeysTable)
+    .values({
+      id: createId("idem"),
+      tenantId: actor.tenantId,
+      scope: "po_task_pay",
+      keyHash,
+      requestHash,
+      status: "processing",
+      createdById: actor.userId ?? null,
+      createdAt,
+      updatedAt: createdAt,
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  if (insertedRows[0]) {
+    return { row: insertedRows[0], created: true };
+  }
+
+  const existingRows = await db
+    .select()
+    .from(idempotencyKeysTable)
+    .where(
+      and(
+        eq(idempotencyKeysTable.tenantId, actor.tenantId),
+        eq(idempotencyKeysTable.scope, "po_task_pay"),
+        eq(idempotencyKeysTable.keyHash, keyHash),
+      ),
+    )
+    .limit(1);
+
+  const row = existingRows[0];
+  if (!row) {
+    throw new PurchaseOrdersServiceError("conflict", "Unable to acquire idempotency lock for this PO task pay request.");
+  }
+  if (row.requestHash !== requestHash) {
+    throw new PurchaseOrdersServiceError("conflict", "This idempotency key is already used for a different PO task pay payload.");
+  }
+
+  return { row, created: false };
 }
 
 export async function listPurchaseOrdersForTenant(tenantId: string, options?: { includeArchived?: boolean }) {
@@ -409,85 +470,131 @@ export async function addPurchaseOrderTask(orderId: string, input: PurchaseOrder
   return { task: task! };
 }
 
-export async function payPurchaseOrderTask(orderId: string, taskId: string, actor: PurchaseOrderActor) {
+export async function payPurchaseOrderTask(
+  orderId: string,
+  taskId: string,
+  actor: PurchaseOrderActor,
+  options?: { idempotencyKey?: string | null },
+) {
+  const idempotencyKey = options?.idempotencyKey?.trim() || null;
+  const requestHash = idempotencyKey ? requestHashForPoTaskPay({ orderId, taskId }) : null;
+  const idempotencyClaim =
+    idempotencyKey && requestHash ? await claimPoTaskPayIdempotency(actor, idempotencyKey, requestHash) : null;
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const store = await readStore();
+      const existingOrder = store.purchaseOrders.find((item) => item.id === orderId);
+      const existingTask = existingOrder?.tasks.find((item) => item.id === taskId);
+      if (!existingOrder || !existingTask) {
+        throw new PurchaseOrdersServiceError("not_found", "Purchase order task not found");
+      }
+      assertTenantAccess(existingOrder.tenantId, actor.tenantId, () => new PurchaseOrdersServiceError("forbidden", "Forbidden"));
+      return { purchaseOrder: existingOrder, task: existingTask, wasAlreadyPaid: true };
+    }
+    throw new PurchaseOrdersServiceError("conflict", "This PO task pay request is already being processed. Please retry shortly.");
+  }
+
   let purchaseOrder: PurchaseOrder | null = null;
   let task: PurchaseOrder["tasks"][number] | null = null;
+  let wasAlreadyPaid = false;
 
-  await updateStore((current) => {
-    const order = current.purchaseOrders.find((item) => item.id === orderId);
-    const currentTask = order?.tasks.find((item) => item.id === taskId);
-    if (!order || !currentTask) {
-      throw new PurchaseOrdersServiceError("not_found", "Purchase order task not found");
-    }
-    assertTenantAccess(order.tenantId, actor.tenantId, () => new PurchaseOrdersServiceError("forbidden", "Forbidden"));
-    if (order.status === "archived") {
-      throw new PurchaseOrdersServiceError("archived", "Archived purchase orders cannot be paid.");
-    }
-    if (currentTask.status === "paid") {
-      throw new PurchaseOrdersServiceError("already_paid", "Already paid");
-    }
-    if (currentTask.amount > order.remainingAmount) {
-      throw new PurchaseOrdersServiceError("invalid_total_amount", "Insufficient balance in PO fund");
-    }
+  try {
+    await updateStore((current) => {
+      const order = current.purchaseOrders.find((item) => item.id === orderId);
+      const currentTask = order?.tasks.find((item) => item.id === taskId);
+      if (!order || !currentTask) {
+        throw new PurchaseOrdersServiceError("not_found", "Purchase order task not found");
+      }
+      assertTenantAccess(order.tenantId, actor.tenantId, () => new PurchaseOrdersServiceError("forbidden", "Forbidden"));
+      if (order.status === "archived") {
+        throw new PurchaseOrdersServiceError("archived", "Archived purchase orders cannot be paid.");
+      }
+      if (currentTask.status === "paid") {
+        task = currentTask;
+        purchaseOrder = order;
+        wasAlreadyPaid = true;
+        return current;
+      }
+      if (currentTask.amount > order.remainingAmount) {
+        throw new PurchaseOrdersServiceError("invalid_total_amount", "Insufficient balance in PO fund");
+      }
 
-    ensureFunds(current, currentTask.amount, "this PO task payment", actor.tenantId);
-    const now = nowIso();
-    task = { ...currentTask, status: "paid" as const, paidAt: now };
-    purchaseOrder = {
-      ...order,
-      usedAmount: Number((order.usedAmount + currentTask.amount).toFixed(2)),
-      remainingAmount: Math.max(0, Number((order.remainingAmount - currentTask.amount).toFixed(2))),
-      tasks: order.tasks.map((row) => (row.id === currentTask.id ? task! : row)),
-      updatedAt: now,
-    };
+      ensureFunds(current, currentTask.amount, "this PO task payment", actor.tenantId);
+      const now = nowIso();
+      task = { ...currentTask, status: "paid" as const, paidAt: now };
+      purchaseOrder = {
+        ...order,
+        usedAmount: Number((order.usedAmount + currentTask.amount).toFixed(2)),
+        remainingAmount: Math.max(0, Number((order.remainingAmount - currentTask.amount).toFixed(2))),
+        tasks: order.tasks.map((row) => (row.id === currentTask.id ? task! : row)),
+        updatedAt: now,
+      };
 
-    return pushAuditEvent(
-      {
-        ...current,
-        expenses: [
-          {
-            id: createId("exp"),
-            tenantId: actor.tenantId,
-            category: "Budget Sheet",
-            group: "office",
-            amount: currentTask.amount,
-            date: now,
-            description: `${order.title} - ${currentTask.taskName}`,
-            note: currentTask.description,
-            reimbursable: true,
-            status: "approved",
-            createdAt: now,
-            updatedAt: now,
-          },
-          ...current.expenses,
-        ],
-        purchaseOrders: current.purchaseOrders.map((item) => (item.id === order.id ? purchaseOrder! : item)),
-      },
-      {
-        ...actor,
-        action: "paid",
-        entityType: "purchase-order-task",
-        entityId: currentTask.id,
-        summary: `Marked ${currentTask.taskName} as paid in ${order.title}.`,
-        actorUserId: actor.userId,
-        requestId: actor.requestId,
-        details: {
-          entityLabel: currentTask.taskName,
-          requestId: actor.requestId,
-          changedFields: ["status", "paidAt", "usedAmount", "remainingAmount"],
-          before: {
-            task: summarizePurchaseOrderTask(currentTask),
-            purchaseOrder: summarizePurchaseOrder(order),
-          },
-          after: {
-            task: summarizePurchaseOrderTask(task),
-            purchaseOrder: summarizePurchaseOrder(purchaseOrder),
-          },
-          context: { operation: "purchase_order_task_pay", expenseAmount: currentTask.amount },
+      return pushAuditEvent(
+        {
+          ...current,
+          expenses: [
+            {
+              id: createId("exp"),
+              tenantId: actor.tenantId,
+              category: "Budget Sheet",
+              group: "office",
+              amount: currentTask.amount,
+              date: now,
+              description: `${order.title} - ${currentTask.taskName}`,
+              note: currentTask.description,
+              reimbursable: true,
+              status: "approved",
+              createdAt: now,
+              updatedAt: now,
+            },
+            ...current.expenses,
+          ],
+          purchaseOrders: current.purchaseOrders.map((item) => (item.id === order.id ? purchaseOrder! : item)),
         },
-      },
-    );
-  });
+        {
+          ...actor,
+          action: "paid",
+          entityType: "purchase-order-task",
+          entityId: currentTask.id,
+          summary: `Marked ${currentTask.taskName} as paid in ${order.title}.`,
+          actorUserId: actor.userId,
+          requestId: actor.requestId,
+          details: {
+            entityLabel: currentTask.taskName,
+            requestId: actor.requestId,
+            changedFields: ["status", "paidAt", "usedAmount", "remainingAmount"],
+            before: {
+              task: summarizePurchaseOrderTask(currentTask),
+              purchaseOrder: summarizePurchaseOrder(order),
+            },
+            after: {
+              task: summarizePurchaseOrderTask(task),
+              purchaseOrder: summarizePurchaseOrder(purchaseOrder),
+            },
+            context: { operation: "purchase_order_task_pay", expenseAmount: currentTask.amount },
+          },
+        },
+      );
+    });
 
-  return { purchaseOrder: purchaseOrder!, task: task! };
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: taskId,
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+  } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    throw error;
+  }
+
+  return { purchaseOrder: purchaseOrder!, task: task!, wasAlreadyPaid };
 }

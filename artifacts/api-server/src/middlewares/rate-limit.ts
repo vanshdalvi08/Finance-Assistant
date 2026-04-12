@@ -50,6 +50,13 @@ export function rateLimitKeyByRemoteAddressAndField(field: string) {
 
 export function rateLimit(options: RateLimitOptions) {
   return (request: Request, response: Response, next: NextFunction) => {
+    const bypassForAutomatedTests =
+      process.env.NODE_ENV !== "production" && request.header("X-Test-Bypass-Rate-Limit")?.trim() === "1";
+    if (bypassForAutomatedTests) {
+      next();
+      return;
+    }
+
     const key = `${options.name}:${options.keyFn?.(request) ?? defaultKey(request)}`;
     const now = Date.now();
     const existing = buckets.get(key);

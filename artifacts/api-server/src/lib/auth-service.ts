@@ -8,6 +8,7 @@ import { ACCESS_TOKEN_TTL, REFRESH_TOKEN_TTL, signAccessToken, signRefreshToken,
 import { sendMail } from "./mailer";
 import { onboardingEmailTemplate, passwordResetEmailTemplate } from "./email-templates";
 import { createWelcomeNotification } from "./notifications";
+import { logger } from "./logger";
 import { uploadProfilePhotoDataUrl } from "./storage";
 
 export interface PublicUser {
@@ -93,7 +94,7 @@ export interface UpdateOwnProfileInput {
 
 function runAuthSideEffect(work: Promise<unknown>, label: string) {
   void work.catch((error) => {
-    console.error(`Failed auth side effect: ${label}`, error);
+    logger.warn({ err: error, label }, "Failed auth side effect");
   });
 }
 
@@ -763,7 +764,7 @@ export async function requestPasswordReset(email: string): Promise<{ sent: boole
     });
     return { sent: true };
   } catch (error) {
-    console.error("Failed to send password reset email", error);
+    logger.warn({ err: error }, "Failed to send password reset email");
     return { sent: false };
   }
 }

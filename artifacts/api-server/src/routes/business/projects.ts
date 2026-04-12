@@ -1,6 +1,8 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { z } from "zod";
-import { type ActorRole } from "@workspace/db/schema";
+import { and, eq } from "drizzle-orm";
+import { db } from "@workspace/db";
+import { idempotencyKeysTable, type ActorRole } from "@workspace/db/schema";
 import { requireTenantRole } from "../../middlewares/auth";
 import {
   createId,
@@ -11,6 +13,7 @@ import {
   updateStore,
 } from "../../lib/business-store";
 import { DEFAULT_TENANT_ID } from "../../lib/tenants";
+import { hashSha256 } from "../../lib/security";
 
 const router: IRouter = Router();
 
@@ -33,8 +36,125 @@ const projectSchema = z.object({
   tasks: z.array(projectTaskSchema).optional(),
 });
 
+type ProjectCrudIdempotencyScope = "project_create" | "project_update" | "project_archive" | "project_task_create";
+
+class ProjectCrudIdempotencyError extends Error {
+  code: "conflict";
+
+  constructor(message: string) {
+    super(message);
+    this.code = "conflict";
+  }
+}
+
 function respondNotFound(response: Response, message: string) {
   response.status(404).json({ message });
+}
+
+function routeParam(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] ?? "" : value ?? "";
+}
+
+function idempotencyKeyFrom(request: Request) {
+  const header = request.get("Idempotency-Key") ?? request.get("X-Idempotency-Key");
+  return header?.trim() || undefined;
+}
+
+function requestHashForProjectMutation(input: z.infer<typeof projectSchema> & { id?: string }) {
+  return hashSha256(
+    JSON.stringify({
+      id: input.id?.trim() ?? "",
+      project: input.project.trim(),
+      totalBudget: Number(input.totalBudget),
+      client: input.client?.trim() ?? "",
+      note: input.note?.trim() ?? "",
+      tasks: (input.tasks ?? []).map((task) => ({
+        id: task.id?.trim() ?? "",
+        name: task.name.trim(),
+        description: task.description?.trim() ?? "",
+        maxHours: Number(task.maxHours ?? 0),
+        status: task.status ?? "active",
+      })),
+    }),
+  );
+}
+
+function requestHashForProjectDelete(input: { projectId: string }) {
+  return hashSha256(JSON.stringify({ projectId: input.projectId.trim() }));
+}
+
+function requestHashForProjectTask(input: { projectId: string; task: z.infer<typeof projectTaskSchema> }) {
+  return hashSha256(
+    JSON.stringify({
+      projectId: input.projectId.trim(),
+      task: {
+        id: input.task.id?.trim() ?? "",
+        name: input.task.name.trim(),
+        description: input.task.description?.trim() ?? "",
+        maxHours: Number(input.task.maxHours ?? 0),
+        status: input.task.status ?? "active",
+      },
+    }),
+  );
+}
+
+async function claimProjectCrudIdempotency(
+  actor: { tenantId: string; userId?: string },
+  scope: ProjectCrudIdempotencyScope,
+  key: string,
+  requestHash: string,
+) {
+  const keyHash = hashSha256(key);
+  const createdAt = new Date();
+  const insertedRows = await db
+    .insert(idempotencyKeysTable)
+    .values({
+      id: createId("idem"),
+      tenantId: actor.tenantId,
+      scope,
+      keyHash,
+      requestHash,
+      status: "processing",
+      createdById: actor.userId ?? null,
+      createdAt,
+      updatedAt: createdAt,
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  if (insertedRows[0]) {
+    return { row: insertedRows[0], created: true };
+  }
+
+  const rows = await db
+    .select()
+    .from(idempotencyKeysTable)
+    .where(
+      and(
+        eq(idempotencyKeysTable.tenantId, actor.tenantId),
+        eq(idempotencyKeysTable.scope, scope),
+        eq(idempotencyKeysTable.keyHash, keyHash),
+      ),
+    )
+    .limit(1);
+
+  const row = rows[0];
+  if (!row) {
+    throw new ProjectCrudIdempotencyError("Unable to acquire idempotency lock for this project request.");
+  }
+  if (row.requestHash !== requestHash) {
+    throw new ProjectCrudIdempotencyError("This idempotency key is already used for a different project payload.");
+  }
+
+  return { row, created: false };
+}
+
+function handleProjectCrudIdempotencyError(error: unknown, response: Response) {
+  if (!(error instanceof ProjectCrudIdempotencyError)) {
+    throw error;
+  }
+  response.status(409).json({ message: error.message });
+  return true;
 }
 
 function tenantProjectFilter(project: ProjectBudget, tenantId: string) {
@@ -96,6 +216,35 @@ router.post("/projects", requireTenantRole("admin"), async (request, response) =
 
   const store = await readStore();
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForProjectMutation(parsed.data) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimProjectCrudIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimProjectCrudIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "project_create",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleProjectCrudIdempotencyError(error, response)) return;
+    throw error;
+  }
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const latest = await readStore();
+      const replayed = idempotencyClaim.row.responseEntityId ? latest.projectBudgets.find((item) => item.id === idempotencyClaim.row.responseEntityId) : null;
+      response.json({ projectBudget: replayed ?? null, project: replayed ?? null, duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This project request is already being processed. Please retry shortly." });
+    return;
+  }
   const existing = parsed.data.id ? store.projectBudgets.find((budget) => budget.id === parsed.data.id) : null;
   if (existing && !tenantProjectFilter(existing, tenantId)) {
     response.status(403).json({ message: "Forbidden" });
@@ -159,7 +308,10 @@ router.post("/projects", requireTenantRole("admin"), async (request, response) =
   );
 
   await updateStore(() => next);
-  response.status(existing ? 200 : 201).json({ projectBudget: budget, project: budget });
+  if (idempotencyClaim?.created) {
+    await db.update(idempotencyKeysTable).set({ status: "completed", responseEntityId: budget.id, updatedAt: new Date() }).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+  }
+  response.status(existing ? 200 : 201).json({ projectBudget: budget, project: budget, duplicate: false });
 });
 
 router.route("/projects/:id").get(async (request, response) => {
@@ -185,13 +337,42 @@ router.route("/projects/:id").get(async (request, response) => {
   }
 
   const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForProjectMutation(parsed.data) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimProjectCrudIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimProjectCrudIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "project_update",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleProjectCrudIdempotencyError(error, response)) return;
+    throw error;
+  }
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const latest = await readStore();
+      const replayed = latest.projectBudgets.find((item) => item.id === request.params.id);
+      response.json({ projectBudget: replayed ?? null, project: replayed ?? null, duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This project update request is already being processed. Please retry shortly." });
+    return;
+  }
   const existing = store.projectBudgets.find((budget) => budget.id === request.params.id);
   if (!existing) {
     respondNotFound(response, "Project not found");
     return;
   }
 
-  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   if (!tenantProjectFilter(existing, tenantId)) {
     response.status(403).json({ message: "Forbidden" });
     return;
@@ -251,7 +432,10 @@ router.route("/projects/:id").get(async (request, response) => {
   );
 
   await updateStore(() => next);
-  response.json({ projectBudget: budget, project: budget });
+  if (idempotencyClaim?.created) {
+    await db.update(idempotencyKeysTable).set({ status: "completed", responseEntityId: budget.id, updatedAt: new Date() }).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+  }
+  response.json({ projectBudget: budget, project: budget, duplicate: false });
 }).delete(requireTenantRole("admin"), async (request, response) => {
   const store = await readStore();
   const existing = store.projectBudgets.find((budget) => budget.id === request.params.id);
@@ -261,12 +445,42 @@ router.route("/projects/:id").get(async (request, response) => {
   }
 
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForProjectDelete({ projectId: routeParam(request.params.id) }) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimProjectCrudIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimProjectCrudIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "project_archive",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleProjectCrudIdempotencyError(error, response)) return;
+    throw error;
+  }
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      response.status(204).send();
+      return;
+    }
+    response.status(409).json({ message: "This project archive request is already being processed. Please retry shortly." });
+    return;
+  }
   if (!tenantProjectFilter(existing, tenantId)) {
     response.status(403).json({ message: "Forbidden" });
     return;
   }
 
   if (existing.status === "archived") {
+    if (idempotencyClaim?.created) {
+      await db.update(idempotencyKeysTable).set({ status: "completed", responseEntityId: existing.id, updatedAt: new Date() }).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
     response.status(204).send();
     return;
   }
@@ -316,6 +530,9 @@ router.route("/projects/:id").get(async (request, response) => {
   );
 
   await updateStore(() => next);
+  if (idempotencyClaim?.created) {
+    await db.update(idempotencyKeysTable).set({ status: "completed", responseEntityId: existing.id, updatedAt: new Date() }).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+  }
   response.status(204).send();
 });
 
@@ -334,6 +551,36 @@ router.post("/projects/:id/tasks", requireTenantRole("admin"), async (request, r
   }
 
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForProjectTask({ projectId: routeParam(request.params.id), task: parsed.data }) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimProjectCrudIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimProjectCrudIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "project_task_create",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleProjectCrudIdempotencyError(error, response)) return;
+    throw error;
+  }
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const latest = await readStore();
+      const project = latest.projectBudgets.find((item) => item.id === request.params.id);
+      const task = idempotencyClaim.row.responseEntityId ? project?.tasks.find((item) => item.id === idempotencyClaim.row.responseEntityId) : null;
+      response.json({ task: task ?? null, duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This project task request is already being processed. Please retry shortly." });
+    return;
+  }
   if (!tenantProjectFilter(existing, tenantId)) {
     response.status(403).json({ message: "Forbidden" });
     return;
@@ -385,7 +632,10 @@ router.post("/projects/:id/tasks", requireTenantRole("admin"), async (request, r
   );
 
   await updateStore(() => next);
-  response.status(201).json({ task });
+  if (idempotencyClaim?.created) {
+    await db.update(idempotencyKeysTable).set({ status: "completed", responseEntityId: task.id, updatedAt: new Date() }).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+  }
+  response.status(201).json({ task, duplicate: false });
 });
 
 export default router;

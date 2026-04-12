@@ -1,4 +1,3 @@
-import * as nodemailer from "nodemailer";
 import { logger } from "./logger";
 import { getSmtpConfig } from "./env";
 
@@ -9,12 +8,36 @@ export interface MailPayload {
   html: string;
 }
 
-let transporter: nodemailer.Transporter | null = null;
+type MailerModule = typeof import("nodemailer");
+type MailTransporter = Awaited<ReturnType<MailerModule["createTransport"]>>;
+
+let mailerModule: MailerModule | null | undefined;
+let transporter: MailTransporter | null = null;
 let transporterKey: string | null = null;
 
-function getTransport() {
+async function getMailerModule() {
+  if (mailerModule !== undefined) {
+    return mailerModule;
+  }
+
+  try {
+    mailerModule = await import("nodemailer");
+    return mailerModule;
+  } catch (error) {
+    logger.error({ error }, "Failed to load nodemailer module. Outbound email will be disabled.");
+    mailerModule = null;
+    return null;
+  }
+}
+
+async function getTransport() {
   const smtp = getSmtpConfig();
   if (!smtp) {
+    return null;
+  }
+
+  const nodemailer = await getMailerModule();
+  if (!nodemailer) {
     return null;
   }
 
@@ -36,7 +59,7 @@ function getTransport() {
 }
 
 export async function sendMail(payload: MailPayload): Promise<boolean> {
-  const transportContext = getTransport();
+  const transportContext = await getTransport();
   if (!transportContext) {
     logger.warn({ to: payload.to, subject: payload.subject }, "SMTP is not configured, skipping outbound email");
     return false;

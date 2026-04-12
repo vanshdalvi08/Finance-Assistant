@@ -469,8 +469,43 @@ export interface PlatformEvent {
   acknowledgedByUserId?: string;
   resolvedAt?: string;
   resolvedByUserId?: string;
+  delivery?: PlatformEventDelivery | null;
   metadata?: Record<string, unknown>;
   createdAt: string;
+}
+
+export interface PlatformEventDelivery {
+  state: "delivered" | "failed" | "suppressed" | "pending" | "unknown";
+  provider?: string | null;
+  destination?: string | null;
+  attemptedAt?: string | null;
+  deliveredAt?: string | null;
+  failedAt?: string | null;
+  statusCode?: number | null;
+  attempts?: number | null;
+  reason?: string | null;
+  error?: string | null;
+}
+
+export interface PlatformExternalAlertRetryResult {
+  eventId: string;
+  status: "retried" | "skipped" | "not_found";
+  reason?: "event_not_found" | "legacy_mode_unsupported" | "not_failed" | "internal_failure_event" | "dispatch_error";
+  previousState?: PlatformEventDelivery["state"];
+  nextState?: PlatformEventDelivery["state"];
+  title?: string;
+}
+
+export interface RetryFailedPlatformExternalAlertsResult {
+  dryRun: boolean;
+  limit: number;
+  candidateCount: number;
+  retried: number;
+  delivered: number;
+  failed: number;
+  suppressed: number;
+  skipped: number;
+  results: PlatformExternalAlertRetryResult[];
 }
 
 export interface PlatformOverview {
@@ -491,6 +526,18 @@ export interface PlatformMonitoringResponse {
   events: PlatformEvent[];
   summary: Record<"info" | "warning" | "error", number>;
   categorySummary: Record<"request" | "auth" | "database" | "upload" | "tenant" | "system", number>;
+  stateSummary: Record<"open" | "acknowledged" | "resolved", number>;
+  externalAlertSummary: Record<
+    "delivered" | "failed" | "skipped" | "notConfigured" | "belowMinSeverity" | "cooldownActive" | "unknown",
+    number
+  >;
+  externalAlerting: {
+    enabled: boolean;
+    provider: "webhook";
+    endpoint: string | null;
+    minSeverity: "info" | "warning" | "error";
+    cooldownMs: number;
+  };
   workflowSupported?: boolean;
   appliedFilters: {
     severity: PlatformEvent["severity"] | null;
@@ -547,7 +594,93 @@ export interface PlatformSettingsResponse {
       runbookUrl: string;
       lastRecoveryDrillDate: string | null;
     };
+    retention: {
+      platformEvents: {
+        supported: boolean;
+        mode: "manual";
+        unresolvedRetention: "indefinite";
+        excludedSources: string[];
+        resolvedRetentionDays: {
+          info: number;
+          warning: number;
+          error: number;
+        };
+        stats: {
+          totalEvents: number;
+          openEvents: number;
+          acknowledgedEvents: number;
+          resolvedEvents: number;
+          pruneEligibleTotal: number;
+          pruneEligibleBySeverity: {
+            info: number;
+            warning: number;
+            error: number;
+          };
+          oldestEventAt: string | null;
+          newestEventAt: string | null;
+        };
+        latestPruneRun: {
+          at: string;
+          deletedCount: number;
+          limit: number;
+          actorUserId?: string;
+        } | null;
+      };
+      auditTrail: {
+        mode: "protected";
+        destructivePruningEnabled: boolean;
+        defaultRetentionDays: number;
+        stats: {
+          totalEntries: number;
+          oldestEntryAt: string | null;
+          newestEntryAt: string | null;
+          estimatedEligibleEntries: number;
+        };
+        note: string;
+      };
+    };
   };
+}
+
+export interface PlatformRetentionPruneResult {
+  supported: boolean;
+  dryRun: boolean;
+  limit: number;
+  deletedCount: number;
+  eligibleCount: number;
+  retainedAuditEntries: number;
+  preview: PlatformSettingsResponse["operationalDefaults"]["retention"];
+}
+
+export interface PlatformRecoveryDrill {
+  id: string;
+  type: "tabletop" | "restore" | "failover" | "backup-validation" | "other";
+  title: string;
+  scope: "platform" | "tenant" | "database" | "storage" | "service";
+  status: "passed" | "partial" | "failed";
+  summary: string;
+  notes?: string;
+  durationMinutes?: number;
+  tenantId?: string;
+  actorUserId?: string;
+  performedAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  createdAt: string;
+}
+
+export interface CreatePlatformRecoveryDrillInput {
+  type?: PlatformRecoveryDrill["type"];
+  title?: string;
+  scope?: PlatformRecoveryDrill["scope"];
+  status: PlatformRecoveryDrill["status"];
+  summary: string;
+  notes?: string;
+  durationMinutes?: number;
+  tenantId?: string;
+  performedAt?: string;
+  startedAt?: string;
+  completedAt?: string;
 }
 
 interface NotificationsResponse {
@@ -1070,6 +1203,17 @@ async function businessPost<T>(path: string, data?: unknown, method: "POST" | "P
   });
 }
 
+async function platformGet<T>(path: string) {
+  return requestJson<T>(`/platform${path}`);
+}
+
+async function platformPost<T>(path: string, data?: unknown, method: "POST" | "PATCH" | "DELETE" = "POST") {
+  return requestJson<T>(`/platform${path}`, {
+    method,
+    data,
+  });
+}
+
 async function uploadBinary<T>(path: string, file: File) {
   return requestJson<T>(path, {
     method: "POST",
@@ -1586,9 +1730,9 @@ export const api = {
 
   getAdminOverview: async () => businessGet<AdminOverview>("/overview"),
 
-  getPlatformOverview: async () => businessGet<PlatformOverview>("/platform/overview"),
+  getPlatformOverview: async () => platformGet<PlatformOverview>("/overview"),
 
-  getPlatformTenants: async () => (await businessGet<{ tenants: PlatformTenantSummary[] }>("/platform/tenants")).tenants,
+  getPlatformTenants: async () => (await platformGet<{ tenants: PlatformTenantSummary[] }>("/tenants")).tenants,
 
   createPlatformTenant: async (input: {
     name: string;
@@ -1600,19 +1744,19 @@ export const api = {
     ownerDepartment?: string;
     ownerPassword?: string;
   }) =>
-    businessPost<{
+    platformPost<{
       tenant: { id: string; name: string; slug: string; status: "active" | "inactive"; createdAt: string; updatedAt: string };
       owner: AuthUser;
       temporaryPassword: string | null;
       passwordWasGenerated: boolean;
-    }>("/platform/tenants", input),
+    }>("/tenants", input),
 
   updatePlatformTenantStatus: async (tenantId: string, status: "active" | "inactive") =>
-    (await businessPost<{ tenant: PlatformTenantSummary }>(`/platform/tenants/${tenantId}/status`, { status }, "PATCH")).tenant,
+    (await platformPost<{ tenant: PlatformTenantSummary }>(`/tenants/${tenantId}/status`, { status }, "PATCH")).tenant,
 
   getPlatformMonitoring: async (limit?: number) => {
-    const path = withQuery("/platform/monitoring", { limit: limit ? String(limit) : undefined });
-    return businessGet<PlatformMonitoringResponse>(path);
+    const path = withQuery("/monitoring", { limit: limit ? String(limit) : undefined });
+    return platformGet<PlatformMonitoringResponse>(path);
   },
 
   getFilteredPlatformMonitoring: async (filters: {
@@ -1623,7 +1767,7 @@ export const api = {
     state?: "open" | "acknowledged" | "resolved" | "all";
     search?: string;
   }) => {
-    const path = withQuery("/platform/monitoring", {
+    const path = withQuery("/monitoring", {
       limit: filters.limit ? String(filters.limit) : undefined,
       severity: filters.severity,
       category: filters.category,
@@ -1631,14 +1775,20 @@ export const api = {
       state: filters.state,
       search: filters.search,
     });
-    return businessGet<PlatformMonitoringResponse>(path);
+    return platformGet<PlatformMonitoringResponse>(path);
   },
 
   acknowledgePlatformEvent: async (eventId: string) =>
-    (await businessPost<{ event: PlatformEvent }>(`/platform/monitoring/${eventId}/acknowledge`, {}, "PATCH")).event,
+    (await platformPost<{ event: PlatformEvent }>(`/monitoring/${eventId}/acknowledge`, {}, "PATCH")).event,
 
   resolvePlatformEvent: async (eventId: string) =>
-    (await businessPost<{ event: PlatformEvent }>(`/platform/monitoring/${eventId}/resolve`, {}, "PATCH")).event,
+    (await platformPost<{ event: PlatformEvent }>(`/monitoring/${eventId}/resolve`, {}, "PATCH")).event,
+
+  retryPlatformEventDelivery: async (eventId: string) =>
+    (await platformPost<{ result: PlatformExternalAlertRetryResult }>(`/monitoring/${eventId}/retry-delivery`, {})).result,
+
+  retryFailedPlatformEventDeliveries: async (input?: { dryRun?: boolean; limit?: number }) =>
+    (await platformPost<{ result: RetryFailedPlatformExternalAlertsResult }>("/monitoring/retry-failed", input ?? {})).result,
 
   triggerPlatformTestAlert: async (input?: {
     severity?: PlatformEvent["severity"];
@@ -1646,7 +1796,7 @@ export const api = {
     title?: string;
     message?: string;
   }) =>
-    businessPost<{
+    platformPost<{
       queued: boolean;
       testAlert: {
         severity: "info" | "warning" | "error";
@@ -1655,9 +1805,21 @@ export const api = {
         requestId: string;
         triggeredAt: string;
       };
-    }>("/platform/monitoring/test-alert", input ?? {}),
+    }>("/monitoring/test-alert", input ?? {}),
 
-  getPlatformSettings: async () => businessGet<PlatformSettingsResponse>("/platform/settings"),
+  getPlatformSettings: async () => platformGet<PlatformSettingsResponse>("/settings"),
+
+  getPlatformRetention: async () =>
+    (await platformGet<{ retention: PlatformSettingsResponse["operationalDefaults"]["retention"] }>("/retention")).retention,
+
+  runPlatformRetentionPrune: async (input?: { dryRun?: boolean; limit?: number }) =>
+    (await platformPost<{ result: PlatformRetentionPruneResult }>("/retention/prune", input ?? {})).result,
+
+  getPlatformRecoveryDrills: async (limit = 100) =>
+    (await platformGet<{ drills: PlatformRecoveryDrill[] }>(withQuery("/recovery/drills", { limit: String(limit) }))).drills,
+
+  createPlatformRecoveryDrill: async (input: CreatePlatformRecoveryDrillInput) =>
+    (await platformPost<{ drill: PlatformRecoveryDrill }>("/recovery/drills", input)).drill,
 
   getAuditTrail: async () => (await businessGet<{ auditTrail: AuditTrailEntry[] }>("/audit-trail")).auditTrail,
 

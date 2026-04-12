@@ -1,5 +1,8 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Request, type Response } from "express";
 import { z } from "zod";
+import { and, eq } from "drizzle-orm";
+import { db } from "@workspace/db";
+import { idempotencyKeysTable } from "@workspace/db/schema";
 import {
   createClientAccount,
   createEmployeeAccount,
@@ -10,9 +13,12 @@ import {
   updateClientAccount,
   updateEmployeeAccount,
 } from "../lib/auth-service";
+import { createId } from "../lib/business-store";
+import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../lib/notifications";
+import { hashSha256 } from "../lib/security";
+import { logger } from "../lib/logger";
 import { requireAuth, requireTenantRole } from "../middlewares/auth";
 import { rateLimit } from "../middlewares/rate-limit";
-import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../lib/notifications";
 
 const router: IRouter = Router();
 const mutationLimiter = rateLimit({
@@ -54,6 +60,23 @@ const updateClientSchema = createClientSchema.extend({
   id: z.string().trim().uuid(),
 });
 
+type AdminIdempotencyScope =
+  | "admin_employee_create"
+  | "admin_employee_update"
+  | "admin_employee_delete"
+  | "admin_client_create"
+  | "admin_client_update"
+  | "admin_client_delete";
+
+class AdminIdempotencyError extends Error {
+  code: "conflict";
+
+  constructor(message: string) {
+    super(message);
+    this.code = "conflict";
+  }
+}
+
 function notificationActor(request: Parameters<typeof requireAuth>[0]) {
   return {
     id: request.auth?.user.id,
@@ -65,9 +88,180 @@ function notificationActor(request: Parameters<typeof requireAuth>[0]) {
 
 function deliverNotification(work: Promise<unknown>) {
   void work.catch((error) => {
-    console.error("Failed to deliver notification", error);
+    logger.warn({ err: error }, "Failed to deliver notification");
   });
   return Promise.resolve();
+}
+
+function idempotencyKeyFrom(request: Request) {
+  const header = request.get("Idempotency-Key") ?? request.get("X-Idempotency-Key");
+  return header?.trim() || undefined;
+}
+
+function handleAdminIdempotencyError(error: unknown, response: Response) {
+  if (!(error instanceof AdminIdempotencyError)) {
+    throw error;
+  }
+
+  response.status(409).json({ message: error.message });
+  return true;
+}
+
+function requestHashForEmployeeCreate(input: z.infer<typeof createEmployeeSchema>) {
+  return hashSha256(
+    JSON.stringify({
+      name: input.name.trim(),
+      email: input.email.trim().toLowerCase(),
+      phone: input.phone.trim(),
+      position: input.position.trim(),
+      salary: Number(input.salary),
+      payType: input.payType ?? "monthly",
+      hourlyRate: Number(input.hourlyRate ?? 0),
+      profilePhotoUrl: input.profilePhotoUrl?.trim() ?? null,
+      department: input.department?.trim() ?? null,
+      status: input.status ?? "active",
+    }),
+  );
+}
+
+function requestHashForEmployeeUpdate(input: z.infer<typeof updateEmployeeSchema>) {
+  return hashSha256(
+    JSON.stringify({
+      id: input.id.trim(),
+      name: input.name.trim(),
+      email: input.email.trim().toLowerCase(),
+      phone: input.phone.trim(),
+      position: input.position.trim(),
+      salary: Number(input.salary),
+      payType: input.payType ?? "monthly",
+      hourlyRate: Number(input.hourlyRate ?? 0),
+      profilePhotoUrl: input.profilePhotoUrl?.trim() ?? null,
+      department: input.department?.trim() ?? null,
+      status: input.status ?? "active",
+    }),
+  );
+}
+
+function requestHashForClientCreate(input: z.infer<typeof createClientSchema>) {
+  return hashSha256(
+    JSON.stringify({
+      name: input.name.trim(),
+      email: input.email.trim().toLowerCase(),
+      phone: input.phone.trim(),
+      company: input.company?.trim() ?? null,
+      address: input.address?.trim() ?? null,
+      website: input.website?.trim() ?? null,
+      billingEmail: input.billingEmail?.trim().toLowerCase() ?? null,
+      status: input.status ?? "active",
+    }),
+  );
+}
+
+function requestHashForClientUpdate(input: z.infer<typeof updateClientSchema>) {
+  return hashSha256(
+    JSON.stringify({
+      id: input.id.trim(),
+      name: input.name.trim(),
+      email: input.email.trim().toLowerCase(),
+      phone: input.phone.trim(),
+      company: input.company?.trim() ?? null,
+      address: input.address?.trim() ?? null,
+      website: input.website?.trim() ?? null,
+      billingEmail: input.billingEmail?.trim().toLowerCase() ?? null,
+      status: input.status ?? "active",
+    }),
+  );
+}
+
+function requestHashForDelete(id: string) {
+  return hashSha256(JSON.stringify({ id: id.trim() }));
+}
+
+async function claimAdminIdempotency(
+  actor: { tenantId?: string; userId?: string },
+  scope: AdminIdempotencyScope,
+  key: string,
+  requestHash: string,
+) {
+  const tenantId = actor.tenantId?.trim();
+  if (!tenantId) {
+    throw new AdminIdempotencyError("Unable to acquire idempotency lock without a tenant.");
+  }
+
+  const keyHash = hashSha256(key);
+  const createdAt = new Date();
+  const insertedRows = await db
+    .insert(idempotencyKeysTable)
+    .values({
+      id: createId("idem"),
+      tenantId,
+      scope,
+      keyHash,
+      requestHash,
+      status: "processing",
+      createdById: actor.userId ?? null,
+      createdAt,
+      updatedAt: createdAt,
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  if (insertedRows[0]) {
+    return { row: insertedRows[0], created: true };
+  }
+
+  const rows = await db
+    .select()
+    .from(idempotencyKeysTable)
+    .where(
+      and(
+        eq(idempotencyKeysTable.tenantId, tenantId),
+        eq(idempotencyKeysTable.scope, scope),
+        eq(idempotencyKeysTable.keyHash, keyHash),
+      ),
+    )
+    .limit(1);
+
+  const row = rows[0];
+  if (!row) {
+    throw new AdminIdempotencyError("Unable to acquire idempotency lock for this admin request.");
+  }
+  if (row.requestHash !== requestHash) {
+    throw new AdminIdempotencyError("This idempotency key is already used for a different admin payload.");
+  }
+
+  return { row, created: false };
+}
+
+async function completeAdminIdempotency(id: string, responseEntityId?: string) {
+  await db
+    .update(idempotencyKeysTable)
+    .set({
+      status: "completed",
+      responseEntityId: responseEntityId ?? null,
+      updatedAt: new Date(),
+    })
+    .where(eq(idempotencyKeysTable.id, id));
+}
+
+async function clearAdminIdempotency(id: string) {
+  await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, id));
+}
+
+async function findEmployeeById(tenantId?: string, userId?: string | null) {
+  if (!tenantId || !userId) {
+    return null;
+  }
+  const employees = await listEmployees(tenantId);
+  return employees.find((employee) => employee.id === userId) ?? null;
+}
+
+async function findClientById(tenantId?: string, userId?: string | null) {
+  if (!tenantId || !userId) {
+    return null;
+  }
+  const clients = await listClients(tenantId);
+  return clients.find((client) => client.id === userId) ?? null;
 }
 
 router.use(requireAuth, requireTenantRole("admin"));
@@ -79,13 +273,13 @@ router.use((request, response, next) => {
   next();
 });
 
-router.get("/employees", async (_request, response) => {
-  const employees = await listEmployees(_request.auth?.user.tenantId);
+router.get("/employees", async (request, response) => {
+  const employees = await listEmployees(request.auth?.user.tenantId);
   response.json({ employees });
 });
 
-router.get("/clients", async (_request, response) => {
-  const clients = await listClients(_request.auth?.user.tenantId);
+router.get("/clients", async (request, response) => {
+  const clients = await listClients(request.auth?.user.tenantId);
   response.json({ clients });
 });
 
@@ -93,6 +287,43 @@ router.post("/employees", async (request, response) => {
   const parsed = createEmployeeSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid employee payload" });
+    return;
+  }
+
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForEmployeeCreate(parsed.data) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimAdminIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimAdminIdempotency(
+            { tenantId: request.auth?.user.tenantId, userId: request.auth?.user.id },
+            "admin_employee_create",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleAdminIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const user = await findEmployeeById(request.auth?.user.tenantId, idempotencyClaim.row.responseEntityId);
+      response.status(200).json({
+        user,
+        employeeId: user?.employeeId ?? null,
+        onboardingEmailSent: false,
+        duplicate: true,
+      });
+      return;
+    }
+    response.status(409).json({ message: "This employee create request is already being processed. Please retry shortly." });
     return;
   }
 
@@ -152,13 +383,20 @@ router.post("/employees", async (request, response) => {
         actor.id ? [actor.id] : [],
       ),
     );
+    if (idempotencyClaim?.created) {
+      await completeAdminIdempotency(idempotencyClaim.row.id, result.user.id);
+    }
     response.status(201).json({
       user: result.user,
       employeeId: result.user.employeeId,
       onboardingEmailSent: result.onboardingEmailSent,
+      duplicate: false,
       ...(process.env.NODE_ENV !== "production" ? { temporaryPassword: result.temporaryPassword } : {}),
     });
   } catch (error) {
+    if (idempotencyClaim?.created) {
+      await clearAdminIdempotency(idempotencyClaim.row.id);
+    }
     response.status(409).json({ message: error instanceof Error ? error.message : "Failed to create employee" });
   }
 });
@@ -167,6 +405,42 @@ router.post("/clients", async (request, response) => {
   const parsed = createClientSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid client payload" });
+    return;
+  }
+
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForClientCreate(parsed.data) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimAdminIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimAdminIdempotency(
+            { tenantId: request.auth?.user.tenantId, userId: request.auth?.user.id },
+            "admin_client_create",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleAdminIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const user = await findClientById(request.auth?.user.tenantId, idempotencyClaim.row.responseEntityId);
+      response.status(200).json({
+        user,
+        onboardingEmailSent: false,
+        duplicate: true,
+      });
+      return;
+    }
+    response.status(409).json({ message: "This client create request is already being processed. Please retry shortly." });
     return;
   }
 
@@ -193,12 +467,19 @@ router.post("/clients", async (request, response) => {
         },
       ),
     );
+    if (idempotencyClaim?.created) {
+      await completeAdminIdempotency(idempotencyClaim.row.id, result.user.id);
+    }
     response.status(201).json({
       user: result.user,
       onboardingEmailSent: result.onboardingEmailSent,
+      duplicate: false,
       ...(process.env.NODE_ENV !== "production" ? { temporaryPassword: result.temporaryPassword } : {}),
     });
   } catch (error) {
+    if (idempotencyClaim?.created) {
+      await clearAdminIdempotency(idempotencyClaim.row.id);
+    }
     response.status(409).json({ message: error instanceof Error ? error.message : "Failed to create client" });
   }
 });
@@ -211,6 +492,38 @@ router.patch("/employees/:id", async (request, response) => {
 
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid employee payload" });
+    return;
+  }
+
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForEmployeeUpdate(parsed.data) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimAdminIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimAdminIdempotency(
+            { tenantId: request.auth?.user.tenantId, userId: request.auth?.user.id },
+            "admin_employee_update",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleAdminIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const user = await findEmployeeById(request.auth?.user.tenantId, idempotencyClaim.row.responseEntityId);
+      response.json({ user, duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This employee update request is already being processed. Please retry shortly." });
     return;
   }
 
@@ -253,10 +566,17 @@ router.patch("/employees/:id", async (request, response) => {
         },
       ),
     );
+    if (idempotencyClaim?.created) {
+      await completeAdminIdempotency(idempotencyClaim.row.id, result.user.id);
+    }
     response.json({
       user: result.user,
+      duplicate: false,
     });
   } catch (error) {
+    if (idempotencyClaim?.created) {
+      await clearAdminIdempotency(idempotencyClaim.row.id);
+    }
     response.status(409).json({ message: error instanceof Error ? error.message : "Failed to update employee" });
   }
 });
@@ -272,13 +592,51 @@ router.patch("/clients/:id", async (request, response) => {
     return;
   }
 
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForClientUpdate(parsed.data) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimAdminIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimAdminIdempotency(
+            { tenantId: request.auth?.user.tenantId, userId: request.auth?.user.id },
+            "admin_client_update",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleAdminIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const user = await findClientById(request.auth?.user.tenantId, idempotencyClaim.row.responseEntityId);
+      response.json({ user, duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This client update request is already being processed. Please retry shortly." });
+    return;
+  }
+
   try {
     const result = await updateClientAccount({
       ...parsed.data,
       tenantId: request.auth?.user.tenantId,
     });
-    response.json({ user: result.user });
+    if (idempotencyClaim?.created) {
+      await completeAdminIdempotency(idempotencyClaim.row.id, result.user.id);
+    }
+    response.json({ user: result.user, duplicate: false });
   } catch (error) {
+    if (idempotencyClaim?.created) {
+      await clearAdminIdempotency(idempotencyClaim.row.id);
+    }
     response.status(409).json({ message: error instanceof Error ? error.message : "Failed to update client" });
   }
 });
@@ -288,6 +646,37 @@ router.delete("/employees/:id", async (request, response) => {
 
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid employee id" });
+    return;
+  }
+
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForDelete(parsed.data) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimAdminIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimAdminIdempotency(
+            { tenantId: request.auth?.user.tenantId, userId: request.auth?.user.id },
+            "admin_employee_delete",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleAdminIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      response.json({ user: null, message: "Employee deactivated", duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This employee delete request is already being processed. Please retry shortly." });
     return;
   }
 
@@ -327,11 +716,18 @@ router.delete("/employees/:id", async (request, response) => {
         },
       ),
     );
+    if (idempotencyClaim?.created) {
+      await completeAdminIdempotency(idempotencyClaim.row.id, result.user.id);
+    }
     response.json({
       user: result.user,
       message: "Employee deactivated",
+      duplicate: false,
     });
   } catch (error) {
+    if (idempotencyClaim?.created) {
+      await clearAdminIdempotency(idempotencyClaim.row.id);
+    }
     response.status(404).json({ message: error instanceof Error ? error.message : "Failed to deactivate employee" });
   }
 });
@@ -344,13 +740,51 @@ router.delete("/clients/:id", async (request, response) => {
     return;
   }
 
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForDelete(parsed.data) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimAdminIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimAdminIdempotency(
+            { tenantId: request.auth?.user.tenantId, userId: request.auth?.user.id },
+            "admin_client_delete",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleAdminIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      response.json({ user: null, message: "Client removed", duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This client delete request is already being processed. Please retry shortly." });
+    return;
+  }
+
   try {
     const result = await deactivateClientAccount(parsed.data, request.auth?.user.tenantId);
+    if (idempotencyClaim?.created) {
+      await completeAdminIdempotency(idempotencyClaim.row.id, result.user.id);
+    }
     response.json({
       user: result.user,
       message: "Client removed",
+      duplicate: false,
     });
   } catch (error) {
+    if (idempotencyClaim?.created) {
+      await clearAdminIdempotency(idempotencyClaim.row.id);
+    }
     response.status(404).json({ message: error instanceof Error ? error.message : "Failed to remove client" });
   }
 });

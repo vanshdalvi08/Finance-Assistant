@@ -4,15 +4,21 @@ import { requireAuth, requirePlatformRole } from "../middlewares/auth";
 import {
   acknowledgePlatformEvent,
   createTenantWithOwner,
+  listRecoveryDrillHistory,
   listPlatformMonitoring,
   listPlatformOverview,
+  listPlatformRetentionSummary,
   listPlatformSettings,
   listPlatformTenants,
   PlatformConflictError,
   PlatformFeatureUnavailableError,
+  recordRecoveryDrill,
   recordPlatformEventSafe,
   recordPlatformEvent,
+  retryFailedPlatformExternalAlerts,
+  retryPlatformExternalAlert,
   resolvePlatformEvent,
+  runPlatformRetentionPrune,
   setTenantStatus,
 } from "../lib/platform";
 
@@ -56,6 +62,36 @@ const monitoringTestAlertSchema = z.object({
   message: z.string().trim().min(4).max(600).optional(),
 });
 
+const retryFailedMonitoringDeliverySchema = z.object({
+  dryRun: z.boolean().optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
+const recoveryDrillSchema = z.object({
+  type: z.enum(["tabletop", "restore", "failover", "backup-validation", "other"]).optional(),
+  status: z.enum(["passed", "failed", "partial"]),
+  title: z.string().trim().min(4).max(120).optional(),
+  summary: z.string().trim().min(4).max(600).optional(),
+  scope: z.enum(["platform", "tenant", "database", "storage", "service"]).optional(),
+  notes: z.string().trim().min(2).max(4000).optional(),
+  performedAt: z.string().datetime().optional(),
+  startedAt: z.string().datetime().optional(),
+  completedAt: z.string().datetime().optional(),
+  durationMinutes: z.coerce.number().min(0).max(24 * 60).optional(),
+  tenantId: z.string().uuid().optional(),
+});
+
+const recoveryDrillQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  status: z.enum(["passed", "failed", "partial"]).optional(),
+  tenantId: z.string().uuid().optional(),
+});
+
+const retentionPruneSchema = z.object({
+  dryRun: z.boolean().optional(),
+  limit: z.coerce.number().int().min(1).max(2000).optional(),
+});
+
 router.use(requireAuth, requirePlatformRole());
 
 router.get("/overview", async (_request, response) => {
@@ -73,7 +109,20 @@ router.post("/tenants", async (request, response) => {
     return;
   }
 
-  const result = await createTenantWithOwner(parsed.data);
+  let result;
+  try {
+    result = await createTenantWithOwner(parsed.data);
+  } catch (error) {
+    if (error instanceof PlatformConflictError) {
+      response.status(409).json({
+        message: error.message,
+        code: error.conflictCode,
+      });
+      return;
+    }
+    throw error;
+  }
+
   if (!result.tenant || !result.owner) {
     response.status(409).json({ message: "Could not create tenant" });
     return;
@@ -231,6 +280,98 @@ router.patch("/monitoring/:id/resolve", async (request, response) => {
   }
 
   response.json({ event });
+});
+
+router.post("/monitoring/:id/retry-delivery", async (request, response) => {
+  const actorUserId = request.auth?.user.id;
+  if (!actorUserId) {
+    response.status(401).json({ message: "Unauthorized" });
+    return;
+  }
+
+  const result = await retryPlatformExternalAlert(request.params.id.trim(), {
+    actorUserId,
+    requestId: String(request.id),
+  });
+
+  if (result.status === "not_found") {
+    response.status(404).json({ message: "Monitoring event not found" });
+    return;
+  }
+
+  response.status(result.status === "retried" ? 202 : 200).json({ result });
+});
+
+router.post("/monitoring/retry-failed", async (request, response) => {
+  const actorUserId = request.auth?.user.id;
+  if (!actorUserId) {
+    response.status(401).json({ message: "Unauthorized" });
+    return;
+  }
+
+  const parsed = retryFailedMonitoringDeliverySchema.safeParse(request.body ?? {});
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid retry payload" });
+    return;
+  }
+
+  const result = await retryFailedPlatformExternalAlerts({
+    ...parsed.data,
+    actorUserId,
+    requestId: String(request.id),
+  });
+
+  response.status(parsed.data.dryRun ? 200 : 202).json({ result });
+});
+
+router.get("/recovery/drills", async (request, response) => {
+  const parsed = recoveryDrillQuerySchema.safeParse(request.query);
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid recovery drill query" });
+    return;
+  }
+
+  response.json(await listRecoveryDrillHistory(parsed.data));
+});
+
+router.post("/recovery/drills", async (request, response) => {
+  const parsed = recoveryDrillSchema.safeParse(request.body ?? {});
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid recovery drill payload" });
+    return;
+  }
+
+  const actor = request.auth?.user;
+  const drill = await recordRecoveryDrill({
+    ...parsed.data,
+    actorUserId: actor?.id ?? null,
+    actorRole: actor?.role ?? null,
+    actorEmail: actor?.email ?? null,
+    requestId: String(request.id),
+  });
+
+  response.status(201).json({ drill });
+});
+
+router.get("/retention", async (_request, response) => {
+  response.json({ retention: await listPlatformRetentionSummary() });
+});
+
+router.post("/retention/prune", async (request, response) => {
+  const parsed = retentionPruneSchema.safeParse(request.body ?? {});
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid retention prune payload" });
+    return;
+  }
+
+  const actor = request.auth?.user;
+  const result = await runPlatformRetentionPrune({
+    ...parsed.data,
+    actorUserId: actor?.id ?? null,
+    requestId: String(request.id),
+  });
+
+  response.status(parsed.data.dryRun ? 200 : 202).json({ result });
 });
 
 router.get("/settings", async (_request, response) => {

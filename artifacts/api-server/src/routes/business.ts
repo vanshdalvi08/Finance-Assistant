@@ -5,6 +5,7 @@ import { db } from "@workspace/db";
 import {
   companySettingsTable,
   fundsTable,
+  idempotencyKeysTable,
   preApprovalsTable,
   usersTable,
   type CompanySettingsRecord,
@@ -73,6 +74,8 @@ import {
   updatePreApproval,
 } from "../lib/services/pre-approvals-service";
 import { assertActorRoleAccess, assertEmployeeSelfAccess, assertTenantAccess } from "../lib/policies";
+import { hashSha256 } from "../lib/security";
+import { logger } from "../lib/logger";
 import { assertWorkflowTransition, WorkflowStateError } from "../lib/workflow-state";
 
 const router: IRouter = Router();
@@ -85,6 +88,205 @@ const mutationLimiter = rateLimit({
 
 function routeParam(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] ?? "" : value ?? "";
+}
+
+function idempotencyKeyFrom(request: Request) {
+  const header = request.get("Idempotency-Key") ?? request.get("X-Idempotency-Key");
+  return header?.trim() || undefined;
+}
+
+class LeaveIdempotencyError extends Error {
+  code: "conflict";
+
+  constructor(message: string) {
+    super(message);
+    this.code = "conflict";
+  }
+}
+
+class CategoryIdempotencyError extends Error {
+  code: "conflict";
+
+  constructor(message: string) {
+    super(message);
+    this.code = "conflict";
+  }
+}
+
+class PreApprovalDraftIdempotencyError extends Error {
+  code: "conflict";
+
+  constructor(message: string) {
+    super(message);
+    this.code = "conflict";
+  }
+}
+
+class CalendarIdempotencyError extends Error {
+  code: "conflict";
+
+  constructor(message: string) {
+    super(message);
+    this.code = "conflict";
+  }
+}
+
+function requestHashForLeaveReview(input: { leaveRequestId: string; status: "approved" | "rejected"; reviewNote?: string }) {
+  return hashSha256(
+    JSON.stringify({
+      leaveRequestId: input.leaveRequestId.trim(),
+      status: input.status,
+      reviewNote: input.reviewNote?.trim() ?? "",
+    }),
+  );
+}
+
+function requestHashForCategoryMutation(input: { categoryId?: string; name: string; color: string; group: "personal" | "office" }) {
+  return hashSha256(
+    JSON.stringify({
+      categoryId: input.categoryId?.trim() ?? "",
+      name: input.name.trim(),
+      color: input.color.trim(),
+      group: input.group,
+    }),
+  );
+}
+
+function requestHashForCategoryDelete(input: { categoryId: string }) {
+  return hashSha256(JSON.stringify({ categoryId: input.categoryId.trim() }));
+}
+
+async function claimLeaveReviewIdempotency(
+  actor: { tenantId: string; userId?: string },
+  key: string,
+  requestHash: string,
+) {
+  const keyHash = hashSha256(key);
+  const createdAt = new Date();
+  const insertedRows = await db
+    .insert(idempotencyKeysTable)
+    .values({
+      id: createId("idem"),
+      tenantId: actor.tenantId,
+      scope: "leave_review",
+      keyHash,
+      requestHash,
+      status: "processing",
+      createdById: actor.userId ?? null,
+      createdAt,
+      updatedAt: createdAt,
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  if (insertedRows[0]) {
+    return { row: insertedRows[0], created: true };
+  }
+
+  const existingRows = await db
+    .select()
+    .from(idempotencyKeysTable)
+    .where(
+      and(
+        eq(idempotencyKeysTable.tenantId, actor.tenantId),
+        eq(idempotencyKeysTable.scope, "leave_review"),
+        eq(idempotencyKeysTable.keyHash, keyHash),
+      ),
+    )
+    .limit(1);
+
+  const row = existingRows[0];
+  if (!row) {
+    throw new LeaveIdempotencyError("Unable to acquire idempotency lock for this leave review request.");
+  }
+  if (row.requestHash !== requestHash) {
+    throw new LeaveIdempotencyError("This idempotency key is already used for a different leave review payload.");
+  }
+
+  return { row, created: false };
+}
+
+async function claimCategoryIdempotency(
+  actor: { tenantId: string; userId?: string },
+  scope: "category_create" | "category_update" | "category_delete",
+  key: string,
+  requestHash: string,
+) {
+  const keyHash = hashSha256(key);
+  const createdAt = new Date();
+  const insertedRows = await db
+    .insert(idempotencyKeysTable)
+    .values({
+      id: createId("idem"),
+      tenantId: actor.tenantId,
+      scope,
+      keyHash,
+      requestHash,
+      status: "processing",
+      createdById: actor.userId ?? null,
+      createdAt,
+      updatedAt: createdAt,
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  if (insertedRows[0]) {
+    return { row: insertedRows[0], created: true };
+  }
+
+  const existingRows = await db
+    .select()
+    .from(idempotencyKeysTable)
+    .where(
+      and(
+        eq(idempotencyKeysTable.tenantId, actor.tenantId),
+        eq(idempotencyKeysTable.scope, scope),
+        eq(idempotencyKeysTable.keyHash, keyHash),
+      ),
+    )
+    .limit(1);
+
+  const row = existingRows[0];
+  if (!row) {
+    throw new CategoryIdempotencyError("Unable to acquire idempotency lock for this category request.");
+  }
+  if (row.requestHash !== requestHash) {
+    throw new CategoryIdempotencyError("This idempotency key is already used for a different category payload.");
+  }
+
+  return { row, created: false };
+}
+
+function handleLeaveIdempotencyError(error: unknown, response: Response) {
+  if (!(error instanceof LeaveIdempotencyError)) {
+    throw error;
+  }
+  response.status(409).json({ message: error.message });
+  return true;
+}
+
+function handleCategoryIdempotencyError(error: unknown, response: Response) {
+  if (!(error instanceof CategoryIdempotencyError)) {
+    throw error;
+  }
+  response.status(409).json({ message: error.message });
+  return true;
+}
+
+function handlePreApprovalDraftIdempotencyError(error: unknown, response: Response) {
+  if (!(error instanceof PreApprovalDraftIdempotencyError)) {
+    throw error;
+  }
+  response.status(409).json({ message: error.message });
+  return true;
+}
+
+function handleCalendarIdempotencyError(error: unknown, response: Response) {
+  if (!(error instanceof CalendarIdempotencyError)) {
+    throw error;
+  }
+  response.status(409).json({ message: error.message });
+  return true;
 }
 
 const dateSchema = z.string().min(1);
@@ -217,6 +419,185 @@ const preApprovalSchema = z.object({
   projectInfo: projectInfoSchema.optional(),
   tasks: z.array(poTaskSchema).optional(),
 });
+
+type PreApprovalDraftIdempotencyScope = "pre_approval_create" | "pre_approval_update" | "pre_approval_delete";
+
+function requestHashForPreApprovalMutation(input: z.infer<typeof preApprovalSchema> & { id?: string }) {
+  return hashSha256(
+    JSON.stringify({
+      id: input.id?.trim() ?? "",
+      title: input.title.trim(),
+      project: input.project.trim(),
+      clientId: input.clientId.trim(),
+      date: input.date.trim(),
+      notes: input.notes?.trim() ?? "",
+      companyInfo: {
+        companyName: input.companyInfo?.companyName?.trim() ?? "",
+        address: input.companyInfo?.address?.trim() ?? "",
+        phone: input.companyInfo?.phone?.trim() ?? "",
+        email: input.companyInfo?.email?.trim() ?? "",
+        website: input.companyInfo?.website?.trim() ?? "",
+      },
+      clientInfo: {
+        companyName: input.clientInfo?.companyName?.trim() ?? "",
+        address: input.clientInfo?.address?.trim() ?? "",
+        phone: input.clientInfo?.phone?.trim() ?? "",
+        email: input.clientInfo?.email?.trim() ?? "",
+        website: input.clientInfo?.website?.trim() ?? "",
+      },
+      projectInfo: {
+        workDescription: input.projectInfo?.workDescription?.trim() ?? "",
+        projectStartDate: input.projectInfo?.projectStartDate?.trim() ?? "",
+        projectCompletionDate: input.projectInfo?.projectCompletionDate?.trim() ?? "",
+        totalContractValue: Number(input.projectInfo?.totalContractValue ?? 0),
+        retainagePercent: Number(input.projectInfo?.retainagePercent ?? 0),
+        retainageAmount: Number(input.projectInfo?.retainageAmount ?? 0),
+        previouslyBilledAmount: Number(input.projectInfo?.previouslyBilledAmount ?? 0),
+      },
+      tasks: (input.tasks ?? []).map((task) => ({
+        id: task.id?.trim() ?? "",
+        taskName: task.taskName.trim(),
+        description: task.description?.trim() ?? "",
+        hours: Number(task.hours),
+        rate: Number(task.rate),
+      })),
+    }),
+  );
+}
+
+function requestHashForPreApprovalDelete(input: { id: string }) {
+  return hashSha256(JSON.stringify({ id: input.id.trim() }));
+}
+
+async function claimPreApprovalDraftIdempotency(
+  actor: { tenantId: string; userId?: string },
+  scope: PreApprovalDraftIdempotencyScope,
+  key: string,
+  requestHash: string,
+) {
+  const keyHash = hashSha256(key);
+  const createdAt = new Date();
+  const insertedRows = await db
+    .insert(idempotencyKeysTable)
+    .values({
+      id: createId("idem"),
+      tenantId: actor.tenantId,
+      scope,
+      keyHash,
+      requestHash,
+      status: "processing",
+      createdById: actor.userId ?? null,
+      createdAt,
+      updatedAt: createdAt,
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  if (insertedRows[0]) {
+    return { row: insertedRows[0], created: true };
+  }
+
+  const rows = await db
+    .select()
+    .from(idempotencyKeysTable)
+    .where(
+      and(
+        eq(idempotencyKeysTable.tenantId, actor.tenantId),
+        eq(idempotencyKeysTable.scope, scope),
+        eq(idempotencyKeysTable.keyHash, keyHash),
+      ),
+    )
+    .limit(1);
+
+  const row = rows[0];
+  if (!row) {
+    throw new PreApprovalDraftIdempotencyError("Unable to acquire idempotency lock for this pre-approval request.");
+  }
+  if (row.requestHash !== requestHash) {
+    throw new PreApprovalDraftIdempotencyError("This idempotency key is already used for a different pre-approval payload.");
+  }
+
+  return { row, created: false };
+}
+
+type CalendarIdempotencyScope = "holiday_create" | "holiday_delete" | "leave_request_create" | "leave_request_delete";
+
+function requestHashForHolidayMutation(input: z.infer<typeof holidaySchema>) {
+  return hashSha256(
+    JSON.stringify({
+      id: input.id?.trim() ?? "",
+      date: input.date.trim(),
+      name: input.name.trim(),
+    }),
+  );
+}
+
+function requestHashForLeaveRequestMutation(input: z.infer<typeof leaveRequestSchema> & { employeeId: string }) {
+  return hashSha256(
+    JSON.stringify({
+      id: input.id?.trim() ?? "",
+      employeeId: input.employeeId.trim(),
+      startDate: input.startDate.trim(),
+      endDate: input.endDate.trim(),
+      reason: input.reason?.trim() ?? "",
+    }),
+  );
+}
+
+function requestHashForDeleteById(input: { id: string }) {
+  return hashSha256(JSON.stringify({ id: input.id.trim() }));
+}
+
+async function claimCalendarIdempotency(
+  actor: { tenantId: string; userId?: string },
+  scope: CalendarIdempotencyScope,
+  key: string,
+  requestHash: string,
+) {
+  const keyHash = hashSha256(key);
+  const createdAt = new Date();
+  const insertedRows = await db
+    .insert(idempotencyKeysTable)
+    .values({
+      id: createId("idem"),
+      tenantId: actor.tenantId,
+      scope,
+      keyHash,
+      requestHash,
+      status: "processing",
+      createdById: actor.userId ?? null,
+      createdAt,
+      updatedAt: createdAt,
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  if (insertedRows[0]) {
+    return { row: insertedRows[0], created: true };
+  }
+
+  const rows = await db
+    .select()
+    .from(idempotencyKeysTable)
+    .where(
+      and(
+        eq(idempotencyKeysTable.tenantId, actor.tenantId),
+        eq(idempotencyKeysTable.scope, scope),
+        eq(idempotencyKeysTable.keyHash, keyHash),
+      ),
+    )
+    .limit(1);
+
+  const row = rows[0];
+  if (!row) {
+    throw new CalendarIdempotencyError("Unable to acquire idempotency lock for this request.");
+  }
+  if (row.requestHash !== requestHash) {
+    throw new CalendarIdempotencyError("This idempotency key is already used for a different payload.");
+  }
+
+  return { row, created: false };
+}
 
 function isAdmin(request: Request) {
   return request.auth?.user.role === "admin";
@@ -423,6 +804,11 @@ function handlePreApprovalServiceError(error: unknown, response: Response) {
 
   if (error.code === "forbidden") {
     response.status(403).json({ message: error.message });
+    return true;
+  }
+
+  if (error.code === "conflict") {
+    response.status(409).json({ message: error.message });
     return true;
   }
 
@@ -635,7 +1021,7 @@ function buildMonthCalendar(store: BusinessStore, employeeId: string, month: str
 
 function deliverNotification(work: Promise<unknown>) {
   void work.catch((error) => {
-    console.error("Failed to deliver notification", error);
+    logger.warn({ err: error }, "Failed to deliver notification");
   });
   return Promise.resolve();
 }
@@ -849,6 +1235,30 @@ router.post("/holidays", requireTenantRole("admin"), async (request, response) =
   const store = await readStore();
   const now = nowIso();
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForHolidayMutation(parsed.data) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimCalendarIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimCalendarIdempotency({ tenantId, userId: request.auth?.user.id }, "holiday_create", idempotencyKey, requestHash)
+        : null;
+  } catch (error) {
+    if (handleCalendarIdempotencyError(error, response)) return;
+    throw error;
+  }
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const latest = await readStore();
+      const replayed = idempotencyClaim.row.responseEntityId ? latest.holidays.find((item) => item.id === idempotencyClaim.row.responseEntityId) : null;
+      response.json({ holiday: replayed ?? null, duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This holiday request is already being processed. Please retry shortly." });
+    return;
+  }
   const existing = parsed.data.id ? store.holidays.find((holiday) => holiday.id === parsed.data.id) : null;
   if (existing && (existing.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
     response.status(403).json({ message: "Forbidden" });
@@ -868,7 +1278,11 @@ router.post("/holidays", requireTenantRole("admin"), async (request, response) =
     holidays: existing ? current.holidays.map((item) => (item.id === holiday.id ? holiday : item)) : [holiday, ...current.holidays],
   }));
 
-  response.status(existing ? 200 : 201).json({ holiday });
+  if (idempotencyClaim?.created) {
+    await db.update(idempotencyKeysTable).set({ status: "completed", responseEntityId: holiday.id, updatedAt: new Date() }).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+  }
+
+  response.status(existing ? 200 : 201).json({ holiday, duplicate: false });
 });
 
 router.delete("/holidays/:id", requireTenantRole("admin"), async (request, response) => {
@@ -880,6 +1294,28 @@ router.delete("/holidays/:id", requireTenantRole("admin"), async (request, respo
   }
 
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForDeleteById({ id: routeParam(request.params.id) }) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimCalendarIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimCalendarIdempotency({ tenantId, userId: request.auth?.user.id }, "holiday_delete", idempotencyKey, requestHash)
+        : null;
+  } catch (error) {
+    if (handleCalendarIdempotencyError(error, response)) return;
+    throw error;
+  }
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      response.status(204).end();
+      return;
+    }
+    response.status(409).json({ message: "This holiday delete request is already being processed. Please retry shortly." });
+    return;
+  }
   if ((existing.tenantId ?? DEFAULT_TENANT_ID) !== tenantId) {
     response.status(403).json({ message: "Forbidden" });
     return;
@@ -889,6 +1325,10 @@ router.delete("/holidays/:id", requireTenantRole("admin"), async (request, respo
     ...current,
     holidays: current.holidays.filter((holiday) => holiday.id !== request.params.id),
   }));
+
+  if (idempotencyClaim?.created) {
+    await db.update(idempotencyKeysTable).set({ status: "completed", responseEntityId: routeParam(request.params.id), updatedAt: new Date() }).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+  }
 
   response.status(204).end();
 });
@@ -1034,6 +1474,30 @@ router.post("/leave-requests", requireTenantRole("employee"), async (request, re
   const employeeId = user.id;
   const store = await readStore();
   const tenantId = user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForLeaveRequestMutation({ ...parsed.data, employeeId }) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimCalendarIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimCalendarIdempotency({ tenantId, userId: user.id }, "leave_request_create", idempotencyKey, requestHash)
+        : null;
+  } catch (error) {
+    if (handleCalendarIdempotencyError(error, response)) return;
+    throw error;
+  }
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const latest = await readStore();
+      const replayed = idempotencyClaim.row.responseEntityId ? latest.leaveRequests.find((item) => item.id === idempotencyClaim.row.responseEntityId) : null;
+      response.json({ leaveRequest: replayed ?? null, duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This leave request is already being processed. Please retry shortly." });
+    return;
+  }
   const employeeProfile = await loadEmployeeProfile(employeeId, tenantId);
   const employeeNameSnapshot = employeeProfile?.name ?? user.name ?? "Employee";
   const startDate = normalizeDate(parsed.data.startDate);
@@ -1097,7 +1561,11 @@ router.post("/leave-requests", requireTenantRole("employee"), async (request, re
     leaveRequests: [leaveRequest, ...current.leaveRequests],
   }));
 
-  response.status(201).json({ leaveRequest });
+  if (idempotencyClaim?.created) {
+    await db.update(idempotencyKeysTable).set({ status: "completed", responseEntityId: leaveRequest.id, updatedAt: new Date() }).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+  }
+
+  response.status(201).json({ leaveRequest, duplicate: false });
 });
 
 router.delete("/leave-requests/:id", async (request, response) => {
@@ -1112,6 +1580,28 @@ router.delete("/leave-requests/:id", async (request, response) => {
   const userId = request.auth?.user.id;
   const isAdminRequest = role === "admin";
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForDeleteById({ id: routeParam(request.params.id) }) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimCalendarIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimCalendarIdempotency({ tenantId, userId }, "leave_request_delete", idempotencyKey, requestHash)
+        : null;
+  } catch (error) {
+    if (handleCalendarIdempotencyError(error, response)) return;
+    throw error;
+  }
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      response.status(204).end();
+      return;
+    }
+    response.status(409).json({ message: "This leave delete request is already being processed. Please retry shortly." });
+    return;
+  }
   try {
     assertTenantAccess(existing.tenantId, tenantId, () => new Error("Forbidden"));
     if (!isAdminRequest) {
@@ -1132,6 +1622,10 @@ router.delete("/leave-requests/:id", async (request, response) => {
     ...current,
     leaveRequests: current.leaveRequests.filter((leaveRequest) => leaveRequest.id !== existing.id),
   }));
+
+  if (idempotencyClaim?.created) {
+    await db.update(idempotencyKeysTable).set({ status: "completed", responseEntityId: existing.id, updatedAt: new Date() }).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+  }
 
   response.status(204).end();
 });
@@ -1158,9 +1652,51 @@ router.patch("/leave-requests/:id/status", requireTenantRole("admin"), async (re
     return;
   }
 
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const reviewNote = parsed.data.reviewNote?.trim() || undefined;
+  const requestHash = idempotencyKey
+    ? requestHashForLeaveReview({
+        leaveRequestId: routeParam(request.params.id),
+        status: parsed.data.status,
+        reviewNote,
+      })
+    : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimLeaveReviewIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimLeaveReviewIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleLeaveIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const latestStore = await readStore();
+      const latestLeave = latestStore.leaveRequests.find((leaveRequest) => leaveRequest.id === request.params.id);
+      response.json({ leaveRequest: latestLeave ?? existing, duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This leave review request is already being processed. Please retry shortly." });
+    return;
+  }
+
   try {
     assertWorkflowTransition("leaveRequest", existing.status, parsed.data.status);
   } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
     if (error instanceof WorkflowStateError) {
       response.status(409).json({ message: error.message });
       return;
@@ -1171,18 +1707,35 @@ router.patch("/leave-requests/:id/status", requireTenantRole("admin"), async (re
   const updatedRequest: LeaveRequestRecord = {
     ...existing,
     status: parsed.data.status,
-    reviewNote: parsed.data.reviewNote?.trim() || undefined,
+    reviewNote,
     reviewedAt: nowIso(),
     reviewedBy: request.auth?.user.name ?? "Admin",
     updatedAt: nowIso(),
   };
 
-  await updateStore((current) => ({
-    ...current,
-    leaveRequests: current.leaveRequests.map((leaveRequest) => (leaveRequest.id === updatedRequest.id ? updatedRequest : leaveRequest)),
-  }));
+  try {
+    await updateStore((current) => ({
+      ...current,
+      leaveRequests: current.leaveRequests.map((leaveRequest) => (leaveRequest.id === updatedRequest.id ? updatedRequest : leaveRequest)),
+    }));
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: updatedRequest.id,
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+  } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    throw error;
+  }
 
-  response.json({ leaveRequest: updatedRequest });
+  response.json({ leaveRequest: updatedRequest, duplicate: false });
 });
 
 router.route("/categories").get(async (_request, response) => {
@@ -1192,6 +1745,49 @@ router.route("/categories").get(async (_request, response) => {
   const parsed = categorySchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid category payload" });
+    return;
+  }
+
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey
+    ? requestHashForCategoryMutation({
+        categoryId: parsed.data.id,
+        name: parsed.data.name,
+        color: parsed.data.color,
+        group: parsed.data.group,
+      })
+    : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimCategoryIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimCategoryIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            parsed.data.id ? "category_update" : "category_create",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleCategoryIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed" && idempotencyClaim.row.responseEntityId) {
+      const latest = await readStore();
+      const replayed = latest.categories.find((category) => category.id === idempotencyClaim.row.responseEntityId);
+      if (replayed) {
+        response.status(200).json({ category: replayed, duplicate: true });
+        return;
+      }
+    }
+    response.status(409).json({ message: "This category request is already being processed. Please retry shortly." });
     return;
   }
 
@@ -1247,8 +1843,26 @@ router.route("/categories").get(async (_request, response) => {
     },
   });
 
-  await updateStore(() => next);
-  response.status(existing ? 200 : 201).json({ category });
+  try {
+    await updateStore(() => next);
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: category.id,
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+  } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    throw error;
+  }
+
+  response.status(existing ? 200 : 201).json({ category, duplicate: false });
 });
 
 router.route("/categories/:id").get(requireTenantRole("admin"), async (request, response) => {
@@ -1267,9 +1881,55 @@ router.route("/categories/:id").get(requireTenantRole("admin"), async (request, 
     return;
   }
 
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey
+    ? requestHashForCategoryMutation({
+        categoryId: routeParam(request.params.id),
+        name: parsed.data.name,
+        color: parsed.data.color,
+        group: parsed.data.group,
+      })
+    : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimCategoryIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimCategoryIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "category_update",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleCategoryIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const latest = await readStore();
+      const replayed = latest.categories.find((category) => category.id === request.params.id);
+      if (replayed) {
+        response.json({ category: replayed, duplicate: true });
+        return;
+      }
+    }
+    response.status(409).json({ message: "This category update request is already being processed. Please retry shortly." });
+    return;
+  }
+
   const store = await readStore();
   const existing = store.categories.find((category) => category.id === request.params.id);
   if (!existing) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
     respondNotFound(response, "Category not found");
     return;
   }
@@ -1319,12 +1979,64 @@ router.route("/categories/:id").get(requireTenantRole("admin"), async (request, 
     },
   });
 
-  await updateStore(() => next);
-  response.json({ category });
+  try {
+    await updateStore(() => next);
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: category.id,
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+  } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    throw error;
+  }
+  response.json({ category, duplicate: false });
 }).delete(requireTenantRole("admin"), async (request, response) => {
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForCategoryDelete({ categoryId: routeParam(request.params.id) }) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimCategoryIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimCategoryIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "category_delete",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleCategoryIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      response.status(204).send();
+      return;
+    }
+    response.status(409).json({ message: "This category delete request is already being processed. Please retry shortly." });
+    return;
+  }
+
   const store = await readStore();
   const target = store.categories.find((category) => category.id === request.params.id);
   if (!target) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
     respondNotFound(response, "Category not found");
     return;
   }
@@ -1356,7 +2068,24 @@ router.route("/categories/:id").get(requireTenantRole("admin"), async (request, 
     },
   );
 
-  await updateStore(() => next);
+  try {
+    await updateStore(() => next);
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: routeParam(request.params.id),
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+  } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    throw error;
+  }
   response.status(204).send();
 });
 
@@ -1548,10 +2277,56 @@ router.post("/pre-approvals", requireTenantRole("admin"), async (request, respon
     return;
   }
 
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForPreApprovalMutation(parsed.data) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimPreApprovalDraftIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimPreApprovalDraftIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "pre_approval_create",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handlePreApprovalDraftIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed" && idempotencyClaim.row.responseEntityId) {
+      const replayed = await getPreApprovalForActor(idempotencyClaim.row.responseEntityId, preApprovalActor(request));
+      response.json({ preApproval: serializePreApproval(replayed), duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This pre-approval request is already being processed. Please retry shortly." });
+    return;
+  }
+
   try {
     const row = await createPreApproval(parsed.data, preApprovalActor(request));
-    response.status(201).json({ preApproval: serializePreApproval(row) });
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: row.id,
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    response.status(201).json({ preApproval: serializePreApproval(row), duplicate: false });
   } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
     if (handlePreApprovalServiceError(error, response)) {
       return;
     }
@@ -1583,20 +2358,111 @@ router.route("/pre-approvals/:id").get(async (request, response) => {
     return;
   }
 
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForPreApprovalMutation(parsed.data) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimPreApprovalDraftIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimPreApprovalDraftIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "pre_approval_update",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handlePreApprovalDraftIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed" && idempotencyClaim.row.responseEntityId) {
+      const replayed = await getPreApprovalForActor(idempotencyClaim.row.responseEntityId, preApprovalActor(request));
+      response.json({ preApproval: serializePreApproval(replayed), duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This pre-approval update request is already being processed. Please retry shortly." });
+    return;
+  }
+
   try {
     const row = await updatePreApproval(routeParam(request.params.id), parsed.data, preApprovalActor(request));
-    response.json({ preApproval: serializePreApproval(row) });
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: row.id,
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    response.json({ preApproval: serializePreApproval(row), duplicate: false });
   } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
     if (handlePreApprovalServiceError(error, response)) {
       return;
     }
     throw error;
   }
 }).delete(requireTenantRole("admin"), async (request, response) => {
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForPreApprovalDelete({ id: routeParam(request.params.id) }) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimPreApprovalDraftIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimPreApprovalDraftIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "pre_approval_delete",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handlePreApprovalDraftIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      response.status(204).send();
+      return;
+    }
+    response.status(409).json({ message: "This pre-approval delete request is already being processed. Please retry shortly." });
+    return;
+  }
+
   try {
     await deletePreApproval(routeParam(request.params.id), preApprovalActor(request));
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: routeParam(request.params.id),
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
     response.status(204).send();
   } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
     if (handlePreApprovalServiceError(error, response)) {
       return;
     }
@@ -1606,17 +2472,21 @@ router.route("/pre-approvals/:id").get(async (request, response) => {
 
 router.post("/pre-approvals/:id/submit", requireTenantRole("admin"), async (request, response) => {
   try {
-    const row = await submitPreApproval(routeParam(request.params.id), preApprovalActor(request));
-    await deliverNotification(
-      notifyUsersByIds([row.clientId], notificationActor(request), {
-      type: "pre_approval_submitted",
-      title: "Pre-approval ready for review",
-      body: `${row.title} is waiting for your approval.`,
-      link: "/client/pre-approvals",
-      metadata: { entityType: "pre-approval", entityId: row.id },
-    }),
-    );
-    response.json({ preApproval: serializePreApproval(row) });
+    const result = await submitPreApproval(routeParam(request.params.id), preApprovalActor(request), {
+      idempotencyKey: idempotencyKeyFrom(request),
+    });
+    if (!result.wasAlreadySubmitted) {
+      await deliverNotification(
+        notifyUsersByIds([result.preApproval.clientId], notificationActor(request), {
+        type: "pre_approval_submitted",
+        title: "Pre-approval ready for review",
+        body: `${result.preApproval.title} is waiting for your approval.`,
+        link: "/client/pre-approvals",
+        metadata: { entityType: "pre-approval", entityId: result.preApproval.id },
+      }),
+      );
+    }
+    response.json({ preApproval: serializePreApproval(result.preApproval), duplicate: result.wasAlreadySubmitted });
   } catch (error) {
     if (handlePreApprovalServiceError(error, response)) {
       return;
@@ -1640,8 +2510,12 @@ router.post("/pre-approvals/:id/comments", async (request, response) => {
   }
 
   try {
-    const result = await addPreApprovalComment(routeParam(request.params.id), parsed.data.message, preApprovalActor(request));
-    response.status(201).json({ preApproval: serializePreApproval(result.preApproval), comment: result.comment });
+    const result = await addPreApprovalComment(routeParam(request.params.id), parsed.data.message, preApprovalActor(request), {
+      idempotencyKey: idempotencyKeyFrom(request),
+    });
+    response
+      .status(result.wasDuplicate ? 200 : 201)
+      .json({ preApproval: serializePreApproval(result.preApproval), comment: result.comment, duplicate: result.wasDuplicate });
   } catch (error) {
     if (handlePreApprovalServiceError(error, response)) {
       return;
@@ -1659,17 +2533,21 @@ router.post("/pre-approvals/:id/approve", async (request, response) => {
   }
 
   try {
-    const row = await approvePreApproval(routeParam(request.params.id), preApprovalActor(request));
-    await deliverNotification(
-      notifyAdmins(notificationActor(request), {
-      type: "pre_approval_approved",
-      title: "Client approved pre-approval",
-      body: `${row.clientNameSnapshot} approved ${row.title}.`,
-      link: "/pre-approvals",
-      metadata: { entityType: "pre-approval", entityId: row.id },
-    }),
-    );
-    response.json({ preApproval: serializePreApproval(row) });
+    const result = await approvePreApproval(routeParam(request.params.id), preApprovalActor(request), {
+      idempotencyKey: idempotencyKeyFrom(request),
+    });
+    if (!result.wasAlreadyApproved) {
+      await deliverNotification(
+        notifyAdmins(notificationActor(request), {
+        type: "pre_approval_approved",
+        title: "Client approved pre-approval",
+        body: `${result.preApproval.clientNameSnapshot} approved ${result.preApproval.title}.`,
+        link: "/pre-approvals",
+        metadata: { entityType: "pre-approval", entityId: result.preApproval.id },
+      }),
+      );
+    }
+    response.json({ preApproval: serializePreApproval(result.preApproval), duplicate: result.wasAlreadyApproved });
   } catch (error) {
     if (handlePreApprovalServiceError(error, response)) {
       return;
@@ -1680,7 +2558,9 @@ router.post("/pre-approvals/:id/approve", async (request, response) => {
 
   router.post("/pre-approvals/:id/receive-funds", requireTenantRole("admin"), async (request, response) => {
     try {
-      const result = await receivePreApprovalFunds(routeParam(request.params.id), preApprovalActor(request));
+      const result = await receivePreApprovalFunds(routeParam(request.params.id), preApprovalActor(request), {
+        idempotencyKey: request.get("Idempotency-Key") ?? request.get("X-Idempotency-Key"),
+      });
       response.json({ preApproval: serializePreApproval(result.preApproval), duplicate: result.wasAlreadyReceived });
     } catch (error) {
       if (handlePreApprovalServiceError(error, response)) {
@@ -1705,17 +2585,21 @@ router.post("/pre-approvals/:id/request-changes", async (request, response) => {
   }
 
   try {
-    const result = await requestPreApprovalChanges(routeParam(request.params.id), parsed.data.message, preApprovalActor(request));
-    await deliverNotification(
-      notifyAdmins(notificationActor(request), {
-      type: "pre_approval_changes_requested",
-      title: "Client requested changes",
-      body: `${result.preApproval.clientNameSnapshot} requested changes on ${result.preApproval.title}.`,
-      link: "/pre-approvals",
-      metadata: { entityType: "pre-approval", entityId: result.preApproval.id },
-    }),
-    );
-    response.json({ preApproval: serializePreApproval(result.preApproval) });
+    const result = await requestPreApprovalChanges(routeParam(request.params.id), parsed.data.message, preApprovalActor(request), {
+      idempotencyKey: idempotencyKeyFrom(request),
+    });
+    if (!result.wasAlreadyRequested) {
+      await deliverNotification(
+        notifyAdmins(notificationActor(request), {
+        type: "pre_approval_changes_requested",
+        title: "Client requested changes",
+        body: `${result.preApproval.clientNameSnapshot} requested changes on ${result.preApproval.title}.`,
+        link: "/pre-approvals",
+        metadata: { entityType: "pre-approval", entityId: result.preApproval.id },
+      }),
+      );
+    }
+    response.json({ preApproval: serializePreApproval(result.preApproval), duplicate: result.wasAlreadyRequested });
   } catch (error) {
     if (handlePreApprovalServiceError(error, response)) {
       return;

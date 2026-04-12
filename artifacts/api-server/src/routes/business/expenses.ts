@@ -1,11 +1,15 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { z } from "zod";
-import { type ActorRole } from "@workspace/db/schema";
+import { and, eq } from "drizzle-orm";
+import { db } from "@workspace/db";
+import { idempotencyKeysTable, type ActorRole } from "@workspace/db/schema";
 import { requireTenantRole } from "../../middlewares/auth";
-import { type ApprovalStatus, type ExpenseRecord } from "../../lib/business-store";
+import { createId, type ApprovalStatus, type ExpenseRecord } from "../../lib/business-store";
 import { DEFAULT_TENANT_ID } from "../../lib/tenants";
 import { resolveExpenseAttachmentUrl } from "../../lib/storage";
 import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../../lib/notifications";
+import { logger } from "../../lib/logger";
+import { hashSha256 } from "../../lib/security";
 import {
   deleteExpense,
   ExpensesServiceError,
@@ -46,9 +50,110 @@ function routeParam(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] ?? "" : value ?? "";
 }
 
+function idempotencyKeyFrom(request: Request) {
+  const header = request.get("Idempotency-Key") ?? request.get("X-Idempotency-Key");
+  return header?.trim() || undefined;
+}
+
+type ExpenseCrudIdempotencyScope = "expense_create" | "expense_update" | "expense_delete";
+
+class ExpenseCrudIdempotencyError extends Error {
+  code: "conflict";
+
+  constructor(message: string) {
+    super(message);
+    this.code = "conflict";
+  }
+}
+
+function handleExpenseCrudIdempotencyError(error: unknown, response: Response) {
+  if (!(error instanceof ExpenseCrudIdempotencyError)) {
+    throw error;
+  }
+  response.status(409).json({ message: error.message });
+  return true;
+}
+
+function requestHashForExpenseMutation(input: z.infer<typeof expenseSchema> & { id?: string }) {
+  return hashSha256(
+    JSON.stringify({
+      id: input.id?.trim() ?? "",
+      employeeId: input.employeeId?.trim() ?? "",
+      employeeNameSnapshot: input.employeeNameSnapshot?.trim() ?? "",
+      project: input.project?.trim() ?? "",
+      category: input.category.trim(),
+      group: input.group,
+      amount: Number(input.amount),
+      date: input.date.trim(),
+      description: input.description.trim(),
+      note: input.note?.trim() ?? "",
+      attachmentName: input.attachmentName?.trim() ?? "",
+      attachmentPath: input.attachmentPath?.trim() ?? "",
+      reimbursable: Boolean(input.reimbursable ?? false),
+      status: input.status ?? "",
+      reviewerNote: input.reviewerNote?.trim() ?? "",
+    }),
+  );
+}
+
+function requestHashForExpenseDelete(input: { expenseId: string }) {
+  return hashSha256(JSON.stringify({ expenseId: input.expenseId.trim() }));
+}
+
+async function claimExpenseCrudIdempotency(
+  actor: { tenantId: string; userId?: string },
+  scope: ExpenseCrudIdempotencyScope,
+  key: string,
+  requestHash: string,
+) {
+  const keyHash = hashSha256(key);
+  const createdAt = new Date();
+  const insertedRows = await db
+    .insert(idempotencyKeysTable)
+    .values({
+      id: createId("idem"),
+      tenantId: actor.tenantId,
+      scope,
+      keyHash,
+      requestHash,
+      status: "processing",
+      createdById: actor.userId ?? null,
+      createdAt,
+      updatedAt: createdAt,
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  if (insertedRows[0]) {
+    return { row: insertedRows[0], created: true };
+  }
+
+  const rows = await db
+    .select()
+    .from(idempotencyKeysTable)
+    .where(
+      and(
+        eq(idempotencyKeysTable.tenantId, actor.tenantId),
+        eq(idempotencyKeysTable.scope, scope),
+        eq(idempotencyKeysTable.keyHash, keyHash),
+      ),
+    )
+    .limit(1);
+
+  const row = rows[0];
+  if (!row) {
+    throw new ExpenseCrudIdempotencyError("Unable to acquire idempotency lock for this expense request.");
+  }
+  if (row.requestHash !== requestHash) {
+    throw new ExpenseCrudIdempotencyError("This idempotency key is already used for a different expense payload.");
+  }
+
+  return { row, created: false };
+}
+
 function deliverNotification(work: Promise<unknown>) {
   void work.catch((error) => {
-    console.error("Failed to deliver notification", error);
+    logger.warn({ err: error }, "Failed to deliver notification");
   });
   return Promise.resolve();
 }
@@ -104,6 +209,11 @@ function handleServiceError(error: unknown, response: Response) {
     return true;
   }
 
+  if (error.code === "conflict") {
+    response.status(409).json({ message: error.message });
+    return true;
+  }
+
   if (error.code === "invalid_input") {
     response.status(400).json({ message: error.message });
     return true;
@@ -116,6 +226,44 @@ router.post("/expenses", async (request, response) => {
   const parsed = expenseSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid expense payload" });
+    return;
+  }
+
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForExpenseMutation(parsed.data) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimExpenseCrudIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimExpenseCrudIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "expense_create",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleExpenseCrudIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed" && idempotencyClaim.row.responseEntityId) {
+      const replayed = await getExpenseForTenant(
+        idempotencyClaim.row.responseEntityId,
+        tenantId,
+        request.auth?.user.id,
+        request.auth?.user.role,
+      );
+      response.json({ expense: await serializeExpense(replayed), duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This expense request is already being processed. Please retry shortly." });
     return;
   }
 
@@ -136,6 +284,9 @@ router.post("/expenses", async (request, response) => {
     expense = result.expense;
     created = result.created;
   } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
     if (handleServiceError(error, response)) {
       return;
     }
@@ -174,7 +325,18 @@ router.post("/expenses", async (request, response) => {
     );
   }
 
-  response.status(created ? 201 : 200).json({ expense: await serializeExpense(expense) });
+  if (idempotencyClaim?.created) {
+    await db
+      .update(idempotencyKeysTable)
+      .set({
+        status: "completed",
+        responseEntityId: expense.id,
+        updatedAt: new Date(),
+      })
+      .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+  }
+
+  response.status(created ? 201 : 200).json({ expense: await serializeExpense(expense), duplicate: false });
 });
 
 router.route("/expenses/:id").get(async (request, response) => {
@@ -199,6 +361,44 @@ router.route("/expenses/:id").get(async (request, response) => {
     return;
   }
 
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForExpenseMutation(parsed.data) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimExpenseCrudIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimExpenseCrudIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "expense_update",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleExpenseCrudIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed" && idempotencyClaim.row.responseEntityId) {
+      const replayed = await getExpenseForTenant(
+        idempotencyClaim.row.responseEntityId,
+        tenantId,
+        request.auth?.user.id,
+        request.auth?.user.role,
+      );
+      response.json({ expense: await serializeExpense(replayed), duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This expense update request is already being processed. Please retry shortly." });
+    return;
+  }
+
   let expense: ExpenseRecord;
   try {
     expense = (
@@ -215,14 +415,60 @@ router.route("/expenses/:id").get(async (request, response) => {
       )
     ).expense;
   } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
     if (handleServiceError(error, response)) {
       return;
     }
     throw error;
   }
 
-  response.json({ expense: await serializeExpense(expense) });
+  if (idempotencyClaim?.created) {
+    await db
+      .update(idempotencyKeysTable)
+      .set({
+        status: "completed",
+        responseEntityId: expense.id,
+        updatedAt: new Date(),
+      })
+      .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+  }
+
+  response.json({ expense: await serializeExpense(expense), duplicate: false });
 }).delete(async (request, response) => {
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForExpenseDelete({ expenseId: routeParam(request.params.id) }) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimExpenseCrudIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimExpenseCrudIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "expense_delete",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleExpenseCrudIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      response.status(204).send();
+      return;
+    }
+    response.status(409).json({ message: "This expense delete request is already being processed. Please retry shortly." });
+    return;
+  }
+
   try {
     await deleteExpense(
       routeParam(request.params.id),
@@ -231,10 +477,24 @@ router.route("/expenses/:id").get(async (request, response) => {
       request.auth?.user.role,
     );
   } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
     if (handleServiceError(error, response)) {
       return;
     }
     throw error;
+  }
+
+  if (idempotencyClaim?.created) {
+    await db
+      .update(idempotencyKeysTable)
+      .set({
+        status: "completed",
+        responseEntityId: routeParam(request.params.id),
+        updatedAt: new Date(),
+      })
+      .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
   }
 
   response.status(204).send();
@@ -260,6 +520,9 @@ router.patch("/expenses/:id/status", requireTenantRole("admin"), async (request,
       parsed.data.status,
       parsed.data.reviewerNote,
       recordActor(request),
+      {
+        idempotencyKey: request.get("Idempotency-Key") ?? request.get("X-Idempotency-Key"),
+      },
     );
     expense = result.expense;
     previousStatus = result.previousStatus;

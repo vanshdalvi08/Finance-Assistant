@@ -9,6 +9,7 @@ const baseUrl = `http://127.0.0.1:${apiPort}/api`;
 const cwd = path.resolve("C:/Users/vansh/Desktop/Finance-Assistant/artifacts/api-server");
 
 let serverProcess;
+const loginCache = new Map();
 
 function randomSuffix(prefix) {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
@@ -31,6 +32,7 @@ async function waitForHealth(timeoutMs = 20000) {
 
 async function api(pathname, options = {}) {
   const headers = new Headers(options.headers ?? {});
+  headers.set("X-Test-Bypass-Rate-Limit", "1");
   if (options.token) {
     headers.set("Authorization", `Bearer ${options.token}`);
   }
@@ -58,11 +60,18 @@ async function api(pathname, options = {}) {
 }
 
 async function login(email, password) {
+  const cacheKey = `${email}::${password}`;
+  const cached = loginCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   const response = await api("/auth/login", {
     method: "POST",
     body: { email, password },
   });
   assert.equal(response.status, 200, `Login failed for ${email}: ${JSON.stringify(response.json)}`);
+  loginCache.set(cacheKey, response.json.accessToken);
   return response.json.accessToken;
 }
 
@@ -119,6 +128,20 @@ after(async () => {
   }
 });
 
+test("healthz reports runtime dependency checks", { concurrency: false }, async () => {
+  const response = await api("/healthz");
+  assert.equal(response.status, 200);
+  assert.ok(response.json);
+  assert.ok(["ok", "degraded", "error"].includes(response.json.status));
+  assert.equal(response.json.service, "api-server");
+  assert.equal(typeof response.json.timestamp, "string");
+  assert.equal(typeof response.json.uptimeSeconds, "number");
+  assert.ok(["ok", "degraded", "error"].includes(response.json.checks.configuration.status));
+  assert.equal(response.json.checks.database.status, "ok");
+  assert.ok(["ok", "degraded", "error"].includes(response.json.checks.storage.status));
+  assert.ok(["ok", "degraded", "error"].includes(response.json.checks.externalMonitoring.status));
+});
+
 test("timesheet draft cannot be approved before submission", { concurrency: false }, async () => {
   const adminToken = await login("admin@yojak.in", "yojak123");
   const suffix = randomSuffix("phase2-timesheet-employee");
@@ -147,6 +170,174 @@ test("timesheet draft cannot be approved before submission", { concurrency: fals
     assert.equal(approveResponse.status, 409, JSON.stringify(approveResponse.json));
   } finally {
     await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("timesheet approve retries stay idempotent with key reuse protection", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-timesheet-idem");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+  const weekStart = "2026-04-13";
+  const key = randomSuffix("timesheet-review");
+
+  const createResponse = await api("/business/timesheets", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      employeeId: employee.id,
+      weekStart,
+      lines: [{ project: "Phase 2", task: "Idempotent approve", hours: { mon: 1 } }],
+    },
+  });
+  assert.ok([200, 201].includes(createResponse.status), `Timesheet create failed: ${JSON.stringify(createResponse.json)}`);
+  const timesheetId = createResponse.json.timesheet.id;
+
+  try {
+    const submitResponse = await api(`/business/timesheets/${timesheetId}/submit`, {
+      method: "POST",
+      token: adminToken,
+      body: {},
+    });
+    assert.equal(submitResponse.status, 200, JSON.stringify(submitResponse.json));
+
+    const approve1 = await api(`/business/timesheets/${timesheetId}/approve`, {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": key },
+      body: { note: "approved-once" },
+    });
+    assert.equal(approve1.status, 200, JSON.stringify(approve1.json));
+    assert.equal(approve1.json.duplicate, false);
+    assert.equal(approve1.json.timesheet.status, "approved");
+
+    const approve2 = await api(`/business/timesheets/${timesheetId}/approve`, {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": key },
+      body: { note: "approved-once" },
+    });
+    assert.equal(approve2.status, 200, JSON.stringify(approve2.json));
+    assert.equal(approve2.json.duplicate, true);
+    assert.equal(approve2.json.timesheet.status, "approved");
+
+    const approveConflict = await api(`/business/timesheets/${timesheetId}/approve`, {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": key },
+      body: { note: "changed-note" },
+    });
+    assert.equal(approveConflict.status, 409, JSON.stringify(approveConflict.json));
+  } finally {
+    await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("timesheet submit retries stay idempotent with key reuse protection", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-timesheet-submit-idem");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+  const submitByIdKey = randomSuffix("timesheet-submit-id");
+  const submitPayloadKey = randomSuffix("timesheet-submit-payload");
+
+  const createA = await api("/business/timesheets", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      employeeId: employee.id,
+      weekStart: "2026-04-20",
+      lines: [{ project: "Phase 2", task: "Submit Idempotency A", hours: { mon: 1 } }],
+    },
+  });
+  assert.ok([200, 201].includes(createA.status), `Timesheet create failed: ${JSON.stringify(createA.json)}`);
+  const timesheetAId = createA.json.timesheet.id;
+
+  const createB = await api("/business/timesheets", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      employeeId: employee.id,
+      weekStart: "2026-04-27",
+      lines: [{ project: "Phase 2", task: "Submit Idempotency B", hours: { tue: 1 } }],
+    },
+  });
+  assert.ok([200, 201].includes(createB.status), `Timesheet create failed: ${JSON.stringify(createB.json)}`);
+  const timesheetBId = createB.json.timesheet.id;
+
+  try {
+    const submitA1 = await api(`/business/timesheets/${timesheetAId}/submit`, {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": submitByIdKey },
+      body: {},
+    });
+    assert.equal(submitA1.status, 200, JSON.stringify(submitA1.json));
+    assert.equal(submitA1.json.duplicate, false);
+    assert.equal(submitA1.json.timesheet.status, "submitted");
+
+    const submitA2 = await api(`/business/timesheets/${timesheetAId}/submit`, {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": submitByIdKey },
+      body: {},
+    });
+    assert.equal(submitA2.status, 200, JSON.stringify(submitA2.json));
+    assert.equal(submitA2.json.duplicate, true);
+    assert.equal(submitA2.json.timesheet.status, "submitted");
+
+    const submitByIdConflict = await api(`/business/timesheets/${timesheetBId}/submit`, {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": submitByIdKey },
+      body: {},
+    });
+    assert.equal(submitByIdConflict.status, 409, JSON.stringify(submitByIdConflict.json));
+
+    const payloadSubmit1 = await api("/business/timesheets/submit", {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": submitPayloadKey },
+      body: {
+        employeeId: employee.id,
+        weekStart: "2026-05-04",
+        lines: [{ project: "Phase 2", task: "Payload submit", hours: { wed: 1 } }],
+      },
+    });
+    assert.ok([200, 201].includes(payloadSubmit1.status), JSON.stringify(payloadSubmit1.json));
+    assert.equal(payloadSubmit1.json.duplicate, false);
+    const payloadTimesheetId = payloadSubmit1.json.timesheet.id;
+
+    const payloadSubmit2 = await api("/business/timesheets/submit", {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": submitPayloadKey },
+      body: {
+        employeeId: employee.id,
+        weekStart: "2026-05-04",
+        lines: [{ project: "Phase 2", task: "Payload submit", hours: { wed: 1 } }],
+      },
+    });
+    assert.equal(payloadSubmit2.status, 200, JSON.stringify(payloadSubmit2.json));
+    assert.equal(payloadSubmit2.json.duplicate, true);
+    assert.equal(payloadSubmit2.json.timesheet.id, payloadTimesheetId);
+
+    const payloadConflict = await api("/business/timesheets/submit", {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": submitPayloadKey },
+      body: {
+        employeeId: employee.id,
+        weekStart: "2026-05-11",
+        lines: [{ project: "Phase 2", task: "Different payload", hours: { thu: 1 } }],
+      },
+    });
+    assert.equal(payloadConflict.status, 409, JSON.stringify(payloadConflict.json));
+  } finally {
+    await api(`/business/timesheets/${timesheetAId}`, { method: "DELETE", token: adminToken });
+    await api(`/business/timesheets/${timesheetBId}`, { method: "DELETE", token: adminToken });
     await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
   }
 });
@@ -193,6 +384,62 @@ test("approved expense cannot be rejected afterward", { concurrency: false }, as
   }
 });
 
+test("expense review retries stay idempotent with key reuse protection", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const employeesResponse = await api("/admin/employees", { token: adminToken });
+  const employee = employeesResponse.json.employees[0];
+  const today = "2026-04-11";
+
+  const createResponse = await api("/business/expenses", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      employeeId: employee.id,
+      employeeNameSnapshot: employee.name,
+      category: "Phase2",
+      group: "office",
+      amount: 1,
+      date: today,
+      description: "Phase 2 expense idempotency check",
+      note: "workflow",
+    },
+  });
+  assert.equal(createResponse.status, 201, JSON.stringify(createResponse.json));
+  const expenseId = createResponse.json.expense.id;
+  const idempotencyKey = randomSuffix("expense-review");
+
+  try {
+    const approveFirst = await api(`/business/expenses/${expenseId}/status`, {
+      method: "PATCH",
+      token: adminToken,
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: { status: "approved", reviewerNote: "approved" },
+    });
+    assert.equal(approveFirst.status, 200, JSON.stringify(approveFirst.json));
+    assert.equal(approveFirst.json.duplicate, false);
+
+    const approveRetry = await api(`/business/expenses/${expenseId}/status`, {
+      method: "PATCH",
+      token: adminToken,
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: { status: "approved", reviewerNote: "approved" },
+    });
+    assert.equal(approveRetry.status, 200, JSON.stringify(approveRetry.json));
+    assert.equal(approveRetry.json.duplicate, true);
+    assert.equal(approveRetry.json.expense.status, "approved");
+
+    const approveConflict = await api(`/business/expenses/${expenseId}/status`, {
+      method: "PATCH",
+      token: adminToken,
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: { status: "approved", reviewerNote: "different-note" },
+    });
+    assert.equal(approveConflict.status, 409, JSON.stringify(approveConflict.json));
+  } finally {
+    await api(`/business/expenses/${expenseId}`, { method: "DELETE", token: adminToken });
+  }
+});
+
 test("leave request cannot be reviewed twice", { concurrency: false }, async () => {
   const adminToken = await login("admin@yojak.in", "yojak123");
   const suffix = randomSuffix("phase2-employee");
@@ -226,6 +473,60 @@ test("leave request cannot be reviewed twice", { concurrency: false }, async () 
       body: { status: "rejected", reviewNote: "should fail" },
     });
     assert.equal(rejectResponse.status, 409, JSON.stringify(rejectResponse.json));
+  } finally {
+    await api(`/business/leave-requests/${leaveId}`, { method: "DELETE", token: adminToken });
+    await api(`/admin/employees/${employeeId}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("leave review retries stay idempotent with key reuse protection", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-leave-idem-employee");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employeeId = createdEmployee.user.id;
+  const employeeToken = await login(createdEmployee.user.email, createdEmployee.temporaryPassword);
+  const idempotencyKey = randomSuffix("leave-review");
+
+  const leaveCreate = await api("/business/leave-requests", {
+    method: "POST",
+    token: employeeToken,
+    body: {
+      startDate: "2026-05-12",
+      endDate: "2026-05-12",
+      reason: "Phase 2 leave idempotency",
+    },
+  });
+  assert.equal(leaveCreate.status, 201, JSON.stringify(leaveCreate.json));
+  const leaveId = leaveCreate.json.leaveRequest.id;
+
+  try {
+    const approve1 = await api(`/business/leave-requests/${leaveId}/status`, {
+      method: "PATCH",
+      token: adminToken,
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: { status: "approved", reviewNote: "approve-once" },
+    });
+    assert.equal(approve1.status, 200, JSON.stringify(approve1.json));
+    assert.equal(approve1.json.duplicate, false);
+    assert.equal(approve1.json.leaveRequest.status, "approved");
+
+    const approve2 = await api(`/business/leave-requests/${leaveId}/status`, {
+      method: "PATCH",
+      token: adminToken,
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: { status: "approved", reviewNote: "approve-once" },
+    });
+    assert.equal(approve2.status, 200, JSON.stringify(approve2.json));
+    assert.equal(approve2.json.duplicate, true);
+    assert.equal(approve2.json.leaveRequest.status, "approved");
+
+    const approveConflict = await api(`/business/leave-requests/${leaveId}/status`, {
+      method: "PATCH",
+      token: adminToken,
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: { status: "approved", reviewNote: "different-note" },
+    });
+    assert.equal(approveConflict.status, 409, JSON.stringify(approveConflict.json));
   } finally {
     await api(`/business/leave-requests/${leaveId}`, { method: "DELETE", token: adminToken });
     await api(`/admin/employees/${employeeId}`, { method: "DELETE", token: adminToken });
@@ -292,10 +593,262 @@ test("pre-approval cannot be approved from draft and cannot be edited once submi
   }
 });
 
-test("salary and PO payment retries stay idempotent", { concurrency: false }, async () => {
+test("pre-approval receive-funds retries stay idempotent", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-client-rf");
+  const createdClient = await createClient(adminToken, suffix);
+  const clientToken = await login(createdClient.user.email, createdClient.temporaryPassword);
+  const title = `Phase 2 Receive Funds ${suffix}`;
+
+  const createResponse = await api("/business/pre-approvals", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      title,
+      project: `Phase Project ${suffix}`,
+      clientId: createdClient.user.id,
+      date: "2026-04-11",
+      tasks: [{ taskName: "Execution", description: "Billable row", hours: 1, rate: 100 }],
+    },
+  });
+  assert.equal(createResponse.status, 201, JSON.stringify(createResponse.json));
+  const preApprovalId = createResponse.json.preApproval.id;
+  const idempotencyKey = randomSuffix("receive-funds");
+
+  try {
+    const submitResponse = await api(`/business/pre-approvals/${preApprovalId}/submit`, {
+      method: "POST",
+      token: adminToken,
+      body: {},
+    });
+    assert.equal(submitResponse.status, 200, JSON.stringify(submitResponse.json));
+
+    const approveResponse = await api(`/business/pre-approvals/${preApprovalId}/approve`, {
+      method: "POST",
+      token: clientToken,
+      body: {},
+    });
+    assert.equal(approveResponse.status, 200, JSON.stringify(approveResponse.json));
+
+    const receiveFirst = await api(`/business/pre-approvals/${preApprovalId}/receive-funds`, {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: {},
+    });
+    assert.equal(receiveFirst.status, 200, JSON.stringify(receiveFirst.json));
+    assert.equal(receiveFirst.json.duplicate, false);
+    const receivedFundId = receiveFirst.json.preApproval.receivedFundId;
+    assert.ok(receivedFundId, "Expected receivedFundId to be set after first receive.");
+
+    const receiveRetry = await api(`/business/pre-approvals/${preApprovalId}/receive-funds`, {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: {},
+    });
+    assert.equal(receiveRetry.status, 200, JSON.stringify(receiveRetry.json));
+    assert.equal(receiveRetry.json.duplicate, true);
+    assert.equal(receiveRetry.json.preApproval.receivedFundId, receivedFundId);
+
+    const fundsResponse = await api("/business/funds", {
+      method: "GET",
+      token: adminToken,
+    });
+    assert.equal(fundsResponse.status, 200, JSON.stringify(fundsResponse.json));
+    const matchingFunds = fundsResponse.json.funds.filter((fund) => fund.id === receivedFundId);
+    assert.equal(matchingFunds.length, 1);
+  } finally {
+    await api(`/admin/clients/${createdClient.user.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("pre-approval submit/approve/request-changes retries stay idempotent with key reuse protection", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-client-approval-idem");
+  const createdClient = await createClient(adminToken, suffix);
+  const clientToken = await login(createdClient.user.email, createdClient.temporaryPassword);
+  const submitKey = randomSuffix("pa-submit");
+  const approveKey = randomSuffix("pa-approve");
+  const requestChangesKey = randomSuffix("pa-request-changes");
+
+  const createA = await api("/business/pre-approvals", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      title: `Phase 2 Pre Approval A ${suffix}`,
+      project: `Phase Project A ${suffix}`,
+      clientId: createdClient.user.id,
+      date: "2026-04-11",
+      tasks: [{ taskName: "Task A", description: "Row A", hours: 1, rate: 100 }],
+    },
+  });
+  assert.equal(createA.status, 201, JSON.stringify(createA.json));
+  const preApprovalAId = createA.json.preApproval.id;
+
+  const createB = await api("/business/pre-approvals", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      title: `Phase 2 Pre Approval B ${suffix}`,
+      project: `Phase Project B ${suffix}`,
+      clientId: createdClient.user.id,
+      date: "2026-04-11",
+      tasks: [{ taskName: "Task B", description: "Row B", hours: 1, rate: 120 }],
+    },
+  });
+  assert.equal(createB.status, 201, JSON.stringify(createB.json));
+  const preApprovalBId = createB.json.preApproval.id;
+
+  try {
+    const submitA1 = await api(`/business/pre-approvals/${preApprovalAId}/submit`, {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": submitKey },
+      body: {},
+    });
+    assert.equal(submitA1.status, 200, JSON.stringify(submitA1.json));
+    assert.equal(submitA1.json.duplicate, false);
+
+    const submitA2 = await api(`/business/pre-approvals/${preApprovalAId}/submit`, {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": submitKey },
+      body: {},
+    });
+    assert.equal(submitA2.status, 200, JSON.stringify(submitA2.json));
+    assert.equal(submitA2.json.duplicate, true);
+
+    const submitConflict = await api(`/business/pre-approvals/${preApprovalBId}/submit`, {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": submitKey },
+      body: {},
+    });
+    assert.equal(submitConflict.status, 409, JSON.stringify(submitConflict.json));
+
+    const approveA1 = await api(`/business/pre-approvals/${preApprovalAId}/approve`, {
+      method: "POST",
+      token: clientToken,
+      headers: { "Idempotency-Key": approveKey },
+      body: {},
+    });
+    assert.equal(approveA1.status, 200, JSON.stringify(approveA1.json));
+    assert.equal(approveA1.json.duplicate, false);
+
+    const approveA2 = await api(`/business/pre-approvals/${preApprovalAId}/approve`, {
+      method: "POST",
+      token: clientToken,
+      headers: { "Idempotency-Key": approveKey },
+      body: {},
+    });
+    assert.equal(approveA2.status, 200, JSON.stringify(approveA2.json));
+    assert.equal(approveA2.json.duplicate, true);
+
+    const approveConflict = await api(`/business/pre-approvals/${preApprovalBId}/approve`, {
+      method: "POST",
+      token: clientToken,
+      headers: { "Idempotency-Key": approveKey },
+      body: {},
+    });
+    assert.equal(approveConflict.status, 409, JSON.stringify(approveConflict.json));
+
+    const submitB = await api(`/business/pre-approvals/${preApprovalBId}/submit`, {
+      method: "POST",
+      token: adminToken,
+      body: {},
+    });
+    assert.equal(submitB.status, 200, JSON.stringify(submitB.json));
+
+    const requestChanges1 = await api(`/business/pre-approvals/${preApprovalBId}/request-changes`, {
+      method: "POST",
+      token: clientToken,
+      headers: { "Idempotency-Key": requestChangesKey },
+      body: { message: "Please revise totals." },
+    });
+    assert.equal(requestChanges1.status, 200, JSON.stringify(requestChanges1.json));
+    assert.equal(requestChanges1.json.duplicate, false);
+
+    const requestChanges2 = await api(`/business/pre-approvals/${preApprovalBId}/request-changes`, {
+      method: "POST",
+      token: clientToken,
+      headers: { "Idempotency-Key": requestChangesKey },
+      body: { message: "Please revise totals." },
+    });
+    assert.equal(requestChanges2.status, 200, JSON.stringify(requestChanges2.json));
+    assert.equal(requestChanges2.json.duplicate, true);
+
+    const requestChangesConflict = await api(`/business/pre-approvals/${preApprovalBId}/request-changes`, {
+      method: "POST",
+      token: clientToken,
+      headers: { "Idempotency-Key": requestChangesKey },
+      body: { message: "Different message." },
+    });
+    assert.equal(requestChangesConflict.status, 409, JSON.stringify(requestChangesConflict.json));
+  } finally {
+    await api(`/admin/clients/${createdClient.user.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("pre-approval comment retries stay idempotent with key reuse protection", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-client-comment-idem");
+  const createdClient = await createClient(adminToken, suffix);
+  const commentKey = randomSuffix("pa-comment");
+
+  const createResponse = await api("/business/pre-approvals", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      title: `Phase 2 Comment Pre Approval ${suffix}`,
+      project: `Phase Project ${suffix}`,
+      clientId: createdClient.user.id,
+      date: "2026-04-11",
+      tasks: [{ taskName: "Comment task", description: "Row", hours: 1, rate: 100 }],
+    },
+  });
+  assert.equal(createResponse.status, 201, JSON.stringify(createResponse.json));
+  const preApprovalId = createResponse.json.preApproval.id;
+
+  try {
+    const comment1 = await api(`/business/pre-approvals/${preApprovalId}/comments`, {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": commentKey },
+      body: { message: "Please verify line items." },
+    });
+    assert.equal(comment1.status, 201, JSON.stringify(comment1.json));
+    assert.equal(comment1.json.duplicate, false);
+    assert.equal(comment1.json.comment.message, "Please verify line items.");
+
+    const comment2 = await api(`/business/pre-approvals/${preApprovalId}/comments`, {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": commentKey },
+      body: { message: "Please verify line items." },
+    });
+    assert.equal(comment2.status, 200, JSON.stringify(comment2.json));
+    assert.equal(comment2.json.duplicate, true);
+    assert.equal(comment2.json.comment.message, "Please verify line items.");
+
+    const conflict = await api(`/business/pre-approvals/${preApprovalId}/comments`, {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": commentKey },
+      body: { message: "Different comment payload." },
+    });
+    assert.equal(conflict.status, 409, JSON.stringify(conflict.json));
+  } finally {
+    await api(`/admin/clients/${createdClient.user.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("salary and PO payment retries stay idempotent with key reuse protection", { concurrency: false }, async () => {
   const adminToken = await login("admin@yojak.in", "yojak123");
   const employeesResponse = await api("/admin/employees", { token: adminToken });
   const employee = employeesResponse.json.employees[0];
+  const salaryPayKey = randomSuffix("salary-pay");
+  const poPayKey = randomSuffix("po-pay");
 
   const salaryCreate = await api("/business/salaries", {
     method: "POST",
@@ -317,16 +870,27 @@ test("salary and PO payment retries stay idempotent", { concurrency: false }, as
     const salaryPay1 = await api(`/business/salaries/${salaryId}/pay`, {
       method: "POST",
       token: adminToken,
+      headers: { "Idempotency-Key": salaryPayKey },
       body: { note: "first pay" },
     });
     const salaryPay2 = await api(`/business/salaries/${salaryId}/pay`, {
       method: "POST",
       token: adminToken,
-      body: { note: "second pay" },
+      headers: { "Idempotency-Key": salaryPayKey },
+      body: { note: "first pay" },
     });
     assert.equal(salaryPay1.status, 200, JSON.stringify(salaryPay1.json));
     assert.equal(salaryPay2.status, 200, JSON.stringify(salaryPay2.json));
+    assert.equal(salaryPay1.json.duplicate, false);
     assert.equal(salaryPay2.json.duplicate, true);
+
+    const salaryPayConflict = await api(`/business/salaries/${salaryId}/pay`, {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": salaryPayKey },
+      body: { note: "different note" },
+    });
+    assert.equal(salaryPayConflict.status, 409, JSON.stringify(salaryPayConflict.json));
 
     const taskCreate = await api(`/business/purchase-orders/${poId}/tasks`, {
       method: "POST",
@@ -339,20 +903,763 @@ test("salary and PO payment retries stay idempotent", { concurrency: false }, as
     const pay1 = await api(`/business/purchase-orders/${poId}/tasks/${taskId}/pay`, {
       method: "POST",
       token: adminToken,
+      headers: { "Idempotency-Key": poPayKey },
       body: {},
     });
     const pay2 = await api(`/business/purchase-orders/${poId}/tasks/${taskId}/pay`, {
       method: "POST",
       token: adminToken,
+      headers: { "Idempotency-Key": poPayKey },
       body: {},
     });
     assert.equal(pay1.status, 200, JSON.stringify(pay1.json));
     assert.equal(pay2.status, 200, JSON.stringify(pay2.json));
+    assert.equal(pay1.json.duplicate, false);
+    assert.equal(pay2.json.duplicate, true);
     const paidTask = pay2.json.purchaseOrder.tasks.find((task) => task.id === taskId);
     assert.equal(paidTask.status, "paid");
+
+    const secondTaskCreate = await api(`/business/purchase-orders/${poId}/tasks`, {
+      method: "POST",
+      token: adminToken,
+      body: { taskName: "Second payable row", hours: 1, rate: 1, description: "phase2 second" },
+    });
+    assert.equal(secondTaskCreate.status, 201, JSON.stringify(secondTaskCreate.json));
+    const secondTaskId = secondTaskCreate.json.task.id;
+
+    const payConflict = await api(`/business/purchase-orders/${poId}/tasks/${secondTaskId}/pay`, {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": poPayKey },
+      body: {},
+    });
+    assert.equal(payConflict.status, 409, JSON.stringify(payConflict.json));
   } finally {
     await api(`/business/salaries/${salaryId}`, { method: "DELETE", token: adminToken });
     await api(`/business/purchase-orders/${poId}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("timesheet draft create/update/delete workflow stays stable for repeated same-id saves", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("timesheet-draft");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+  const employeeToken = await login(employee.email, createdEmployee.temporaryPassword);
+  const timesheetId = randomSuffix("timesheet-draft-id");
+  const timesheetPayload = {
+    id: timesheetId,
+    employeeId: employee.id,
+    weekStart: "2026-05-18",
+    lines: [{ project: "Draft Project", task: "Draft row", hours: { mon: 1 } }],
+  };
+
+  try {
+    const create1 = await api("/business/timesheets", {
+      method: "POST",
+      token: employeeToken,
+      body: timesheetPayload,
+    });
+    assert.equal(create1.status, 201, JSON.stringify(create1.json));
+    assert.equal(create1.json.timesheet.id, timesheetId);
+
+    const create2 = await api("/business/timesheets", {
+      method: "POST",
+      token: employeeToken,
+      body: timesheetPayload,
+    });
+    assert.equal(create2.status, 200, JSON.stringify(create2.json));
+    assert.equal(create2.json.timesheet.id, timesheetId);
+
+    const updatePayload = {
+      ...timesheetPayload,
+      lines: [{ project: "Draft Project Updated", task: "Draft row updated", hours: { mon: 2 } }],
+    };
+    const update1 = await api(`/business/timesheets/${timesheetId}`, {
+      method: "PATCH",
+      token: employeeToken,
+      body: updatePayload,
+    });
+    assert.equal(update1.status, 200, JSON.stringify(update1.json));
+    assert.equal(update1.json.timesheet.id, timesheetId);
+
+    const update2 = await api(`/business/timesheets/${timesheetId}`, {
+      method: "PATCH",
+      token: employeeToken,
+      body: updatePayload,
+    });
+    assert.equal(update2.status, 200, JSON.stringify(update2.json));
+    assert.equal(update2.json.timesheet.id, timesheetId);
+
+    const deleteResponse = await api(`/business/timesheets/${timesheetId}`, {
+      method: "DELETE",
+      token: employeeToken,
+    });
+    assert.equal(deleteResponse.status, 204, JSON.stringify(deleteResponse.json));
+
+    const deletedLookup = await api(`/business/timesheets/${timesheetId}`, {
+      method: "GET",
+      token: adminToken,
+    });
+    assert.equal(deletedLookup.status, 404, JSON.stringify(deletedLookup.json));
+  } finally {
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("leave request create/delete workflow rejects duplicate submission and cleans up", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("leave-workflow");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+  const employeeToken = await login(employee.email, createdEmployee.temporaryPassword);
+  const leavePayload = {
+    startDate: "2026-05-25",
+    endDate: "2026-05-26",
+    reason: "Workflow coverage leave",
+  };
+
+  try {
+    const createResponse = await api("/business/leave-requests", {
+      method: "POST",
+      token: employeeToken,
+      body: leavePayload,
+    });
+    assert.equal(createResponse.status, 201, JSON.stringify(createResponse.json));
+    const leaveId = createResponse.json.leaveRequest.id;
+
+    const duplicateResponse = await api("/business/leave-requests", {
+      method: "POST",
+      token: employeeToken,
+      body: leavePayload,
+    });
+    assert.equal(duplicateResponse.status, 409, JSON.stringify(duplicateResponse.json));
+
+    const deleteResponse = await api(`/business/leave-requests/${leaveId}`, {
+      method: "DELETE",
+      token: employeeToken,
+    });
+    assert.equal(deleteResponse.status, 204, JSON.stringify(deleteResponse.json));
+  } finally {
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("holiday create/delete workflow keeps the same id on repeated saves", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const holidayId = randomSuffix("holiday-workflow");
+  const holidayPayload = {
+    id: holidayId,
+    date: "2026-05-27",
+    name: "Workflow Coverage Holiday",
+  };
+
+  const createResponse1 = await api("/business/holidays", {
+    method: "POST",
+    token: adminToken,
+    body: holidayPayload,
+  });
+  assert.equal(createResponse1.status, 201, JSON.stringify(createResponse1.json));
+  assert.equal(createResponse1.json.holiday.id, holidayId);
+
+  const createResponse2 = await api("/business/holidays", {
+    method: "POST",
+    token: adminToken,
+    body: holidayPayload,
+  });
+  assert.equal(createResponse2.status, 200, JSON.stringify(createResponse2.json));
+  assert.equal(createResponse2.json.holiday.id, holidayId);
+
+  const deleteResponse = await api(`/business/holidays/${holidayId}`, {
+    method: "DELETE",
+    token: adminToken,
+  });
+  assert.equal(deleteResponse.status, 204, JSON.stringify(deleteResponse.json));
+});
+
+test("project create/update/delete/task-create workflow stays stable with repeated same-id saves", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const projectId = randomSuffix("project-workflow");
+  const taskId = randomSuffix("project-task-workflow");
+  const createPayload = {
+    id: projectId,
+    project: `Workflow Project ${projectId}`,
+    totalBudget: 25,
+    client: "Workflow Client",
+    note: "project-create",
+    tasks: [],
+  };
+
+  const createResponse1 = await api("/business/projects", {
+    method: "POST",
+    token: adminToken,
+    body: createPayload,
+  });
+  assert.equal(createResponse1.status, 201, JSON.stringify(createResponse1.json));
+  assert.equal(createResponse1.json.project.id, projectId);
+
+  const createResponse2 = await api("/business/projects", {
+    method: "POST",
+    token: adminToken,
+    body: createPayload,
+  });
+  assert.equal(createResponse2.status, 200, JSON.stringify(createResponse2.json));
+  assert.equal(createResponse2.json.project.id, projectId);
+
+  const updatePayload = {
+    id: projectId,
+    project: `${createPayload.project} Updated`,
+    totalBudget: 30,
+    client: "Workflow Client Updated",
+    note: "project-update",
+    tasks: [],
+  };
+  const updateResponse1 = await api(`/business/projects/${projectId}`, {
+    method: "PATCH",
+    token: adminToken,
+    body: updatePayload,
+  });
+  assert.equal(updateResponse1.status, 200, JSON.stringify(updateResponse1.json));
+  assert.equal(updateResponse1.json.project.id, projectId);
+
+  const updateResponse2 = await api(`/business/projects/${projectId}`, {
+    method: "PATCH",
+    token: adminToken,
+    body: updatePayload,
+  });
+  assert.equal(updateResponse2.status, 200, JSON.stringify(updateResponse2.json));
+  assert.equal(updateResponse2.json.project.id, projectId);
+
+  const taskCreateResponse = await api(`/business/projects/${projectId}/tasks`, {
+    method: "POST",
+    token: adminToken,
+    body: {
+      id: taskId,
+      name: "Workflow Project Task",
+      description: "task-create",
+      maxHours: 4,
+      status: "active",
+    },
+  });
+  assert.equal(taskCreateResponse.status, 201, JSON.stringify(taskCreateResponse.json));
+  assert.equal(taskCreateResponse.json.task.id, taskId);
+
+  const deleteResponse1 = await api(`/business/projects/${projectId}`, {
+    method: "DELETE",
+    token: adminToken,
+  });
+  assert.equal(deleteResponse1.status, 204, JSON.stringify(deleteResponse1.json));
+
+  const deleteResponse2 = await api(`/business/projects/${projectId}`, {
+    method: "DELETE",
+    token: adminToken,
+  });
+  assert.equal(deleteResponse2.status, 204, JSON.stringify(deleteResponse2.json));
+});
+
+test("expense create/update/delete retries stay idempotent with key reuse protection", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const createdEmployee = await createEmployee(adminToken, randomSuffix("expense-idem-employee"));
+  const employee = createdEmployee.user;
+  const createKey = randomSuffix("expense-create");
+  const updateKey = randomSuffix("expense-update");
+  const deleteKey = randomSuffix("expense-delete");
+
+  const createPayload = {
+    employeeId: employee.id,
+    employeeNameSnapshot: employee.name,
+    category: `Legacy Expense ${randomSuffix("category")}`,
+    group: "office",
+    amount: 11,
+    date: "2026-04-11",
+    description: "Legacy expense idempotency check",
+    note: "expense-create",
+  };
+  const createResponse1 = await api("/business/expenses", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: createPayload,
+  });
+  assert.equal(createResponse1.status, 201, JSON.stringify(createResponse1.json));
+  assert.equal(createResponse1.json.duplicate, false);
+  const expenseId = createResponse1.json.expense.id;
+
+  const createResponse2 = await api("/business/expenses", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: createPayload,
+  });
+  assert.equal(createResponse2.status, 200, JSON.stringify(createResponse2.json));
+  assert.equal(createResponse2.json.duplicate, true);
+  assert.equal(createResponse2.json.expense.id, expenseId);
+
+  const createConflict = await api("/business/expenses", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: { ...createPayload, description: "Different expense description" },
+  });
+  assert.equal(createConflict.status, 409, JSON.stringify(createConflict.json));
+
+  const updatePayload = {
+    employeeId: employee.id,
+    employeeNameSnapshot: employee.name,
+    category: `${createPayload.category} Updated`,
+    group: "office",
+    amount: 12,
+    date: "2026-04-11",
+    description: "Legacy expense updated",
+    note: "expense-update",
+  };
+  const updateResponse1 = await api(`/business/expenses/${expenseId}`, {
+    method: "PATCH",
+    token: adminToken,
+    headers: { "Idempotency-Key": updateKey },
+    body: updatePayload,
+  });
+  assert.equal(updateResponse1.status, 200, JSON.stringify(updateResponse1.json));
+  assert.equal(updateResponse1.json.duplicate, false);
+  assert.equal(updateResponse1.json.expense.description, updatePayload.description);
+
+  const updateResponse2 = await api(`/business/expenses/${expenseId}`, {
+    method: "PATCH",
+    token: adminToken,
+    headers: { "Idempotency-Key": updateKey },
+    body: updatePayload,
+  });
+  assert.equal(updateResponse2.status, 200, JSON.stringify(updateResponse2.json));
+  assert.equal(updateResponse2.json.duplicate, true);
+  assert.equal(updateResponse2.json.expense.description, updatePayload.description);
+
+  const updateConflict = await api(`/business/expenses/${expenseId}`, {
+    method: "PATCH",
+    token: adminToken,
+    headers: { "Idempotency-Key": updateKey },
+    body: { ...updatePayload, description: "Different expense update" },
+  });
+  assert.equal(updateConflict.status, 409, JSON.stringify(updateConflict.json));
+
+  const secondExpense = await api("/business/expenses", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      ...createPayload,
+      description: "Legacy expense delete conflict",
+      note: "expense-delete-conflict",
+    },
+  });
+  assert.equal(secondExpense.status, 201, JSON.stringify(secondExpense.json));
+  const secondExpenseId = secondExpense.json.expense.id;
+
+  try {
+    const deleteResponse1 = await api(`/business/expenses/${expenseId}`, {
+      method: "DELETE",
+      token: adminToken,
+      headers: { "Idempotency-Key": deleteKey },
+    });
+    assert.equal(deleteResponse1.status, 204, JSON.stringify(deleteResponse1.json));
+
+    const deleteResponse2 = await api(`/business/expenses/${expenseId}`, {
+      method: "DELETE",
+      token: adminToken,
+      headers: { "Idempotency-Key": deleteKey },
+    });
+    assert.equal(deleteResponse2.status, 204, JSON.stringify(deleteResponse2.json));
+
+    const deleteConflict = await api(`/business/expenses/${secondExpenseId}`, {
+      method: "DELETE",
+      token: adminToken,
+      headers: { "Idempotency-Key": deleteKey },
+    });
+    assert.equal(deleteConflict.status, 409, JSON.stringify(deleteConflict.json));
+  } finally {
+    await api(`/business/expenses/${secondExpenseId}`, { method: "DELETE", token: adminToken });
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("salary create/update/delete retries stay idempotent with key reuse protection", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const createdEmployee = await createEmployee(adminToken, randomSuffix("salary-idem-employee"));
+  const employee = createdEmployee.user;
+  const createKey = randomSuffix("salary-create");
+  const updateKey = randomSuffix("salary-update");
+  const deleteKey = randomSuffix("salary-delete");
+
+  const createPayload = {
+    employeeId: employee.id,
+    amount: 1200,
+    date: "2026-04-11",
+    note: "salary-create",
+  };
+  const createResponse1 = await api("/business/salaries", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: createPayload,
+  });
+  assert.equal(createResponse1.status, 201, JSON.stringify(createResponse1.json));
+  assert.equal(createResponse1.json.duplicate, false);
+  const salaryId = createResponse1.json.salary.id;
+
+  const createResponse2 = await api("/business/salaries", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: createPayload,
+  });
+  assert.equal(createResponse2.status, 200, JSON.stringify(createResponse2.json));
+  assert.equal(createResponse2.json.duplicate, true);
+  assert.equal(createResponse2.json.salary.id, salaryId);
+
+  const createConflict = await api("/business/salaries", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: { ...createPayload, amount: 1300 },
+  });
+  assert.equal(createConflict.status, 409, JSON.stringify(createConflict.json));
+
+  const updatePayload = {
+    employeeId: employee.id,
+    amount: 1450,
+    date: "2026-04-11",
+    note: "salary-update",
+  };
+  const updateResponse1 = await api(`/business/salaries/${salaryId}`, {
+    method: "PATCH",
+    token: adminToken,
+    headers: { "Idempotency-Key": updateKey },
+    body: updatePayload,
+  });
+  assert.equal(updateResponse1.status, 200, JSON.stringify(updateResponse1.json));
+  assert.equal(updateResponse1.json.duplicate, false);
+  assert.equal(updateResponse1.json.salary.amount, 1450);
+
+  const updateResponse2 = await api(`/business/salaries/${salaryId}`, {
+    method: "PATCH",
+    token: adminToken,
+    headers: { "Idempotency-Key": updateKey },
+    body: updatePayload,
+  });
+  assert.equal(updateResponse2.status, 200, JSON.stringify(updateResponse2.json));
+  assert.equal(updateResponse2.json.duplicate, true);
+  assert.equal(updateResponse2.json.salary.amount, 1450);
+
+  const updateConflict = await api(`/business/salaries/${salaryId}`, {
+    method: "PATCH",
+    token: adminToken,
+    headers: { "Idempotency-Key": updateKey },
+    body: { ...updatePayload, amount: 1500 },
+  });
+  assert.equal(updateConflict.status, 409, JSON.stringify(updateConflict.json));
+
+  const secondSalary = await api("/business/salaries", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      employeeId: employee.id,
+      amount: 900,
+      date: "2026-04-11",
+      note: "salary-delete-conflict",
+    },
+  });
+  assert.equal(secondSalary.status, 201, JSON.stringify(secondSalary.json));
+  const secondSalaryId = secondSalary.json.salary.id;
+
+  try {
+    const deleteResponse1 = await api(`/business/salaries/${salaryId}`, {
+      method: "DELETE",
+      token: adminToken,
+      headers: { "Idempotency-Key": deleteKey },
+    });
+    assert.equal(deleteResponse1.status, 204, JSON.stringify(deleteResponse1.json));
+
+    const deleteResponse2 = await api(`/business/salaries/${salaryId}`, {
+      method: "DELETE",
+      token: adminToken,
+      headers: { "Idempotency-Key": deleteKey },
+    });
+    assert.equal(deleteResponse2.status, 204, JSON.stringify(deleteResponse2.json));
+
+    const deleteConflict = await api(`/business/salaries/${secondSalaryId}`, {
+      method: "DELETE",
+      token: adminToken,
+      headers: { "Idempotency-Key": deleteKey },
+    });
+    assert.equal(deleteConflict.status, 409, JSON.stringify(deleteConflict.json));
+  } finally {
+    await api(`/business/salaries/${secondSalaryId}`, { method: "DELETE", token: adminToken });
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("purchase order create/update/delete/task-create retries stay idempotent with key reuse protection", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const createKey = randomSuffix("po-create");
+  const updateKey = randomSuffix("po-update");
+  const deleteKey = randomSuffix("po-delete");
+  const taskKey = randomSuffix("po-task-create");
+
+  const createPayload = {
+    title: `Legacy PO ${randomSuffix("base")}`,
+    totalAmount: 10,
+    vendor: "Workflow Vendor",
+    date: "2026-04-11",
+    notes: "po-create",
+    tasks: [],
+  };
+  const createResponse1 = await api("/business/purchase-orders", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: createPayload,
+  });
+  assert.equal(createResponse1.status, 201, JSON.stringify(createResponse1.json));
+  assert.equal(createResponse1.json.duplicate, false);
+  const purchaseOrderId = createResponse1.json.purchaseOrder.id;
+
+  const createResponse2 = await api("/business/purchase-orders", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: createPayload,
+  });
+  assert.equal(createResponse2.status, 200, JSON.stringify(createResponse2.json));
+  assert.equal(createResponse2.json.duplicate, true);
+  assert.equal(createResponse2.json.purchaseOrder.id, purchaseOrderId);
+
+  const createConflict = await api("/business/purchase-orders", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: { ...createPayload, title: `${createPayload.title} Updated` },
+  });
+  assert.equal(createConflict.status, 409, JSON.stringify(createConflict.json));
+
+  const updatePayload = {
+    title: `${createPayload.title} Updated`,
+    totalAmount: 12,
+    vendor: "Workflow Vendor Updated",
+    date: "2026-04-11",
+    notes: "po-update",
+    tasks: [],
+  };
+  const updateResponse1 = await api(`/business/purchase-orders/${purchaseOrderId}`, {
+    method: "PATCH",
+    token: adminToken,
+    headers: { "Idempotency-Key": updateKey },
+    body: updatePayload,
+  });
+  assert.equal(updateResponse1.status, 200, JSON.stringify(updateResponse1.json));
+  assert.equal(updateResponse1.json.duplicate, false);
+  assert.equal(updateResponse1.json.purchaseOrder.title, updatePayload.title);
+
+  const updateResponse2 = await api(`/business/purchase-orders/${purchaseOrderId}`, {
+    method: "PATCH",
+    token: adminToken,
+    headers: { "Idempotency-Key": updateKey },
+    body: updatePayload,
+  });
+  assert.equal(updateResponse2.status, 200, JSON.stringify(updateResponse2.json));
+  assert.equal(updateResponse2.json.duplicate, true);
+  assert.equal(updateResponse2.json.purchaseOrder.title, updatePayload.title);
+
+  const updateConflict = await api(`/business/purchase-orders/${purchaseOrderId}`, {
+    method: "PATCH",
+    token: adminToken,
+    headers: { "Idempotency-Key": updateKey },
+    body: { ...updatePayload, notes: "po-update-different" },
+  });
+  assert.equal(updateConflict.status, 409, JSON.stringify(updateConflict.json));
+
+  const taskCreate1 = await api(`/business/purchase-orders/${purchaseOrderId}/tasks`, {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": taskKey },
+    body: { taskName: "Legacy PO Task", description: "task-create", hours: 1, rate: 5 },
+  });
+  assert.equal(taskCreate1.status, 201, JSON.stringify(taskCreate1.json));
+  assert.equal(taskCreate1.json.duplicate, false);
+  const taskId = taskCreate1.json.task.id;
+
+  const taskCreate2 = await api(`/business/purchase-orders/${purchaseOrderId}/tasks`, {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": taskKey },
+    body: { taskName: "Legacy PO Task", description: "task-create", hours: 1, rate: 5 },
+  });
+  assert.equal(taskCreate2.status, 200, JSON.stringify(taskCreate2.json));
+  assert.equal(taskCreate2.json.duplicate, true);
+  assert.equal(taskCreate2.json.task.id, taskId);
+
+  const taskCreateConflict = await api(`/business/purchase-orders/${purchaseOrderId}/tasks`, {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": taskKey },
+    body: { taskName: "Legacy PO Task", description: "task-create", hours: 1, rate: 6 },
+  });
+  assert.equal(taskCreateConflict.status, 409, JSON.stringify(taskCreateConflict.json));
+
+  const secondPurchaseOrder = await api("/business/purchase-orders", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      title: `Legacy PO Delete ${randomSuffix("secondary")}`,
+      totalAmount: 8,
+      vendor: "Workflow Vendor",
+      date: "2026-04-11",
+      notes: "po-delete-conflict",
+      tasks: [],
+    },
+  });
+  assert.equal(secondPurchaseOrder.status, 201, JSON.stringify(secondPurchaseOrder.json));
+  const secondPurchaseOrderId = secondPurchaseOrder.json.purchaseOrder.id;
+
+  try {
+    const deleteResponse1 = await api(`/business/purchase-orders/${purchaseOrderId}`, {
+      method: "DELETE",
+      token: adminToken,
+      headers: { "Idempotency-Key": deleteKey },
+    });
+    assert.equal(deleteResponse1.status, 204, JSON.stringify(deleteResponse1.json));
+
+    const deleteResponse2 = await api(`/business/purchase-orders/${purchaseOrderId}`, {
+      method: "DELETE",
+      token: adminToken,
+      headers: { "Idempotency-Key": deleteKey },
+    });
+    assert.equal(deleteResponse2.status, 204, JSON.stringify(deleteResponse2.json));
+
+    const deleteConflict = await api(`/business/purchase-orders/${secondPurchaseOrderId}`, {
+      method: "DELETE",
+      token: adminToken,
+      headers: { "Idempotency-Key": deleteKey },
+    });
+    assert.equal(deleteConflict.status, 409, JSON.stringify(deleteConflict.json));
+  } finally {
+    await api(`/business/purchase-orders/${secondPurchaseOrderId}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("pre-approval create/update/delete retries stay idempotent with key reuse protection", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const createdClient = await createClient(adminToken, randomSuffix("pre-approval-idem-client"));
+  const createKey = randomSuffix("pre-approval-create");
+  const updateKey = randomSuffix("pre-approval-update");
+  const deleteKey = randomSuffix("pre-approval-delete");
+
+  const createPayload = {
+    title: `Legacy Pre Approval ${randomSuffix("base")}`,
+    project: `Legacy Project ${randomSuffix("project")}`,
+    clientId: createdClient.user.id,
+    date: "2026-04-11",
+    notes: "pre-approval-create",
+    tasks: [{ taskName: "Planning", description: "task-create", hours: 1, rate: 100 }],
+  };
+  const createResponse1 = await api("/business/pre-approvals", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: createPayload,
+  });
+  assert.equal(createResponse1.status, 201, JSON.stringify(createResponse1.json));
+  assert.equal(createResponse1.json.duplicate, false);
+  const preApprovalId = createResponse1.json.preApproval.id;
+
+  const createResponse2 = await api("/business/pre-approvals", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: createPayload,
+  });
+  assert.equal(createResponse2.status, 200, JSON.stringify(createResponse2.json));
+  assert.equal(createResponse2.json.duplicate, true);
+  assert.equal(createResponse2.json.preApproval.id, preApprovalId);
+
+  const createConflict = await api("/business/pre-approvals", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: { ...createPayload, title: `${createPayload.title} Updated` },
+  });
+  assert.equal(createConflict.status, 409, JSON.stringify(createConflict.json));
+
+  const updatePayload = {
+    title: `${createPayload.title} Updated`,
+    project: `${createPayload.project} Updated`,
+    clientId: createdClient.user.id,
+    date: "2026-04-11",
+    notes: "pre-approval-update",
+    tasks: [{ taskName: "Planning", description: "task-update", hours: 1, rate: 100 }],
+  };
+  const updateResponse1 = await api(`/business/pre-approvals/${preApprovalId}`, {
+    method: "PATCH",
+    token: adminToken,
+    headers: { "Idempotency-Key": updateKey },
+    body: updatePayload,
+  });
+  assert.equal(updateResponse1.status, 200, JSON.stringify(updateResponse1.json));
+  assert.equal(updateResponse1.json.duplicate, false);
+  assert.equal(updateResponse1.json.preApproval.title, updatePayload.title);
+
+  const updateResponse2 = await api(`/business/pre-approvals/${preApprovalId}`, {
+    method: "PATCH",
+    token: adminToken,
+    headers: { "Idempotency-Key": updateKey },
+    body: updatePayload,
+  });
+  assert.equal(updateResponse2.status, 200, JSON.stringify(updateResponse2.json));
+  assert.equal(updateResponse2.json.duplicate, true);
+  assert.equal(updateResponse2.json.preApproval.title, updatePayload.title);
+
+  const updateConflict = await api(`/business/pre-approvals/${preApprovalId}`, {
+    method: "PATCH",
+    token: adminToken,
+    headers: { "Idempotency-Key": updateKey },
+    body: { ...updatePayload, notes: "pre-approval-update-different" },
+  });
+  assert.equal(updateConflict.status, 409, JSON.stringify(updateConflict.json));
+
+  const secondPreApproval = await api("/business/pre-approvals", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      ...createPayload,
+      title: `Legacy Pre Approval ${randomSuffix("delete-conflict")}`,
+      project: `Legacy Project ${randomSuffix("delete-project")}`,
+      notes: "pre-approval-delete-conflict",
+    },
+  });
+  assert.equal(secondPreApproval.status, 201, JSON.stringify(secondPreApproval.json));
+  const secondPreApprovalId = secondPreApproval.json.preApproval.id;
+
+  try {
+    const deleteResponse1 = await api(`/business/pre-approvals/${preApprovalId}`, {
+      method: "DELETE",
+      token: adminToken,
+      headers: { "Idempotency-Key": deleteKey },
+    });
+    assert.equal(deleteResponse1.status, 204, JSON.stringify(deleteResponse1.json));
+
+    const deleteResponse2 = await api(`/business/pre-approvals/${preApprovalId}`, {
+      method: "DELETE",
+      token: adminToken,
+      headers: { "Idempotency-Key": deleteKey },
+    });
+    assert.equal(deleteResponse2.status, 204, JSON.stringify(deleteResponse2.json));
+
+    const deleteConflict = await api(`/business/pre-approvals/${secondPreApprovalId}`, {
+      method: "DELETE",
+      token: adminToken,
+      headers: { "Idempotency-Key": deleteKey },
+    });
+    assert.equal(deleteConflict.status, 409, JSON.stringify(deleteConflict.json));
+  } finally {
+    await api(`/business/pre-approvals/${secondPreApprovalId}`, { method: "DELETE", token: adminToken });
+    await api(`/admin/clients/${createdClient.user.id}`, { method: "DELETE", token: adminToken });
   }
 });
 
@@ -374,6 +1681,20 @@ test("tenant isolation and unauthorized access stay enforced", { concurrency: fa
     },
   });
   assert.equal(createTenant.status, 201, JSON.stringify(createTenant.json));
+  const duplicateTenant = await api("/platform/tenants", {
+    method: "POST",
+    token: platformToken,
+    body: {
+      name: `Phase Two Duplicate ${suffix}`,
+      slug: `${suffix.toLowerCase()}-duplicate`,
+      ownerName: "Phase Tenant Owner Duplicate",
+      ownerEmail: createTenant.json.owner.email,
+      ownerPhone: `${Math.floor(7000000000 + Math.random() * 99999999)}`,
+      ownerPassword: "tenantpass123",
+    },
+  });
+  assert.equal(duplicateTenant.status, 409, JSON.stringify(duplicateTenant.json));
+  assert.equal(duplicateTenant.json.code, "email_taken");
   const tenantOwnerToken = await login(createTenant.json.owner.email, "tenantpass123");
 
   const employeeSeed = await createEmployee(adminToken, randomSuffix("phase2-isolation-employee"));
@@ -423,6 +1744,351 @@ test("finance constraints reject zero amounts", { concurrency: false }, async ()
     body: { employeeId: "00000000-0000-0000-0000-000000000000", amount: 0, date: "2026-04-11" },
   });
   assert.equal(salaryResponse.status, 400, JSON.stringify(salaryResponse.json));
+});
+
+test("fund update and delete retries stay idempotent", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const createKey = randomSuffix("fund-create");
+  const updateKey = randomSuffix("fund-update");
+  const deleteKey = randomSuffix("fund-delete");
+
+  const createResponse = await api("/business/funds", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: { source: "Fund Idem Base", amount: 7, date: "2026-04-11", note: "start" },
+  });
+  assert.equal(createResponse.status, 201, JSON.stringify(createResponse.json));
+  const fundId = createResponse.json.fund.id;
+
+  const updatePayload = { source: "Fund Idem Updated", amount: 9, date: "2026-04-11", note: "updated" };
+  const firstUpdate = await api(`/business/funds/${fundId}`, {
+    method: "PATCH",
+    token: adminToken,
+    headers: { "Idempotency-Key": updateKey },
+    body: updatePayload,
+  });
+  assert.equal(firstUpdate.status, 200, JSON.stringify(firstUpdate.json));
+  assert.equal(firstUpdate.json.duplicate, false);
+  assert.equal(firstUpdate.json.fund.amount, 9);
+
+  const retryUpdate = await api(`/business/funds/${fundId}`, {
+    method: "PATCH",
+    token: adminToken,
+    headers: { "Idempotency-Key": updateKey },
+    body: updatePayload,
+  });
+  assert.equal(retryUpdate.status, 200, JSON.stringify(retryUpdate.json));
+  assert.equal(retryUpdate.json.duplicate, true);
+  assert.equal(retryUpdate.json.fund.amount, 9);
+
+  const conflictUpdate = await api(`/business/funds/${fundId}`, {
+    method: "PATCH",
+    token: adminToken,
+    headers: { "Idempotency-Key": updateKey },
+    body: { ...updatePayload, note: "different" },
+  });
+  assert.equal(conflictUpdate.status, 409, JSON.stringify(conflictUpdate.json));
+
+  const firstDelete = await api(`/business/funds/${fundId}`, {
+    method: "DELETE",
+    token: adminToken,
+    headers: { "Idempotency-Key": deleteKey },
+  });
+  assert.equal(firstDelete.status, 204, JSON.stringify(firstDelete.json));
+
+  const retryDelete = await api(`/business/funds/${fundId}`, {
+    method: "DELETE",
+    token: adminToken,
+    headers: { "Idempotency-Key": deleteKey },
+  });
+  assert.equal(retryDelete.status, 204, JSON.stringify(retryDelete.json));
+});
+
+test("category create/update/delete retries stay idempotent with key reuse protection", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const createKey = randomSuffix("category-create");
+  const updateKey = randomSuffix("category-update");
+  const deleteKey = randomSuffix("category-delete");
+
+  const createPayload = {
+    name: `Phase2 Category ${randomSuffix("base")}`,
+    color: "#1F2937",
+    group: "office",
+  };
+  const createResponse1 = await api("/business/categories", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: createPayload,
+  });
+  assert.equal(createResponse1.status, 201, JSON.stringify(createResponse1.json));
+  assert.equal(createResponse1.json.duplicate, false);
+  const categoryId = createResponse1.json.category.id;
+
+  const createResponse2 = await api("/business/categories", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: createPayload,
+  });
+  assert.equal(createResponse2.status, 200, JSON.stringify(createResponse2.json));
+  assert.equal(createResponse2.json.duplicate, true);
+  assert.equal(createResponse2.json.category.id, categoryId);
+
+  const createConflict = await api("/business/categories", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: { ...createPayload, name: `${createPayload.name} changed` },
+  });
+  assert.equal(createConflict.status, 409, JSON.stringify(createConflict.json));
+
+  const updatePayload = {
+    id: categoryId,
+    name: `${createPayload.name} Updated`,
+    color: "#111827",
+    group: "office",
+  };
+  const updateResponse1 = await api(`/business/categories/${categoryId}`, {
+    method: "PATCH",
+    token: adminToken,
+    headers: { "Idempotency-Key": updateKey },
+    body: updatePayload,
+  });
+  assert.equal(updateResponse1.status, 200, JSON.stringify(updateResponse1.json));
+  assert.equal(updateResponse1.json.duplicate, false);
+  assert.equal(updateResponse1.json.category.name, updatePayload.name);
+
+  const updateResponse2 = await api(`/business/categories/${categoryId}`, {
+    method: "PATCH",
+    token: adminToken,
+    headers: { "Idempotency-Key": updateKey },
+    body: updatePayload,
+  });
+  assert.equal(updateResponse2.status, 200, JSON.stringify(updateResponse2.json));
+  assert.equal(updateResponse2.json.duplicate, true);
+  assert.equal(updateResponse2.json.category.name, updatePayload.name);
+
+  const updateConflict = await api(`/business/categories/${categoryId}`, {
+    method: "PATCH",
+    token: adminToken,
+    headers: { "Idempotency-Key": updateKey },
+    body: { ...updatePayload, color: "#000000" },
+  });
+  assert.equal(updateConflict.status, 409, JSON.stringify(updateConflict.json));
+
+  const secondCategory = await api("/business/categories", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      name: `Phase2 Category ${randomSuffix("second")}`,
+      color: "#0F172A",
+      group: "office",
+    },
+  });
+  assert.ok([200, 201].includes(secondCategory.status), JSON.stringify(secondCategory.json));
+  const secondCategoryId = secondCategory.json.category.id;
+
+  try {
+    const deleteResponse1 = await api(`/business/categories/${categoryId}`, {
+      method: "DELETE",
+      token: adminToken,
+      headers: { "Idempotency-Key": deleteKey },
+    });
+    assert.equal(deleteResponse1.status, 204, JSON.stringify(deleteResponse1.json));
+
+    const deleteResponse2 = await api(`/business/categories/${categoryId}`, {
+      method: "DELETE",
+      token: adminToken,
+      headers: { "Idempotency-Key": deleteKey },
+    });
+    assert.equal(deleteResponse2.status, 204, JSON.stringify(deleteResponse2.json));
+
+    const deleteConflict = await api(`/business/categories/${secondCategoryId}`, {
+      method: "DELETE",
+      token: adminToken,
+      headers: { "Idempotency-Key": deleteKey },
+    });
+    assert.equal(deleteConflict.status, 409, JSON.stringify(deleteConflict.json));
+  } finally {
+    await api(`/business/categories/${secondCategoryId}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("employee create retries stay idempotent with key reuse protection", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const createKey = randomSuffix("employee-create");
+  const payload = {
+    name: `Admin Employee ${randomSuffix("create")}`,
+    email: `${randomSuffix("employee")}@example.com`,
+    phone: `${Math.floor(9000000000 + Math.random() * 99999999)}`,
+    position: "QA Analyst",
+    salary: 1000,
+    payType: "hourly",
+    hourlyRate: 100,
+    department: "QA",
+  };
+
+  const createResponse1 = await api("/admin/employees", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: payload,
+  });
+  assert.equal(createResponse1.status, 201, JSON.stringify(createResponse1.json));
+  assert.equal(createResponse1.json.duplicate, false);
+  const employeeId = createResponse1.json.user.id;
+
+  try {
+    const createResponse2 = await api("/admin/employees", {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": createKey },
+      body: payload,
+    });
+    assert.equal(createResponse2.status, 200, JSON.stringify(createResponse2.json));
+    assert.equal(createResponse2.json.duplicate, true);
+    assert.equal(createResponse2.json.user.id, employeeId);
+
+    const createConflict = await api("/admin/employees", {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": createKey },
+      body: { ...payload, position: "Senior QA Analyst" },
+    });
+    assert.equal(createConflict.status, 409, JSON.stringify(createConflict.json));
+  } finally {
+    await api(`/admin/employees/${employeeId}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("employee update retries stay idempotent with key reuse protection", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const updateKey = randomSuffix("employee-update");
+  const suffix = randomSuffix("employee-update-base");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+  const updatePayload = {
+    name: `${employee.name} Updated`,
+    email: employee.email,
+    phone: employee.phone,
+    position: "Senior QA Analyst",
+    salary: employee.salary + 250,
+    payType: employee.payType,
+    hourlyRate: employee.hourlyRate,
+    department: employee.department ?? "QA",
+  };
+
+  try {
+    const updateResponse1 = await api(`/admin/employees/${employee.id}`, {
+      method: "PATCH",
+      token: adminToken,
+      headers: { "Idempotency-Key": updateKey },
+      body: updatePayload,
+    });
+    assert.equal(updateResponse1.status, 200, JSON.stringify(updateResponse1.json));
+    assert.equal(updateResponse1.json.duplicate, false);
+    assert.equal(updateResponse1.json.user.name, updatePayload.name);
+
+    const updateResponse2 = await api(`/admin/employees/${employee.id}`, {
+      method: "PATCH",
+      token: adminToken,
+      headers: { "Idempotency-Key": updateKey },
+      body: updatePayload,
+    });
+    assert.equal(updateResponse2.status, 200, JSON.stringify(updateResponse2.json));
+    assert.equal(updateResponse2.json.duplicate, true);
+    assert.equal(updateResponse2.json.user.name, updatePayload.name);
+
+    const updateConflict = await api(`/admin/employees/${employee.id}`, {
+      method: "PATCH",
+      token: adminToken,
+      headers: { "Idempotency-Key": updateKey },
+      body: { ...updatePayload, salary: updatePayload.salary + 25 },
+    });
+    assert.equal(updateConflict.status, 409, JSON.stringify(updateConflict.json));
+  } finally {
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("employee delete retries stay idempotent with key reuse protection", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const deleteKey = randomSuffix("employee-delete");
+  const firstEmployee = await createEmployee(adminToken, randomSuffix("employee-delete-a"));
+  const secondEmployee = await createEmployee(adminToken, randomSuffix("employee-delete-b"));
+
+  try {
+    const deleteResponse1 = await api(`/admin/employees/${firstEmployee.user.id}`, {
+      method: "DELETE",
+      token: adminToken,
+      headers: { "Idempotency-Key": deleteKey },
+    });
+    assert.equal(deleteResponse1.status, 200, JSON.stringify(deleteResponse1.json));
+
+    const deleteResponse2 = await api(`/admin/employees/${firstEmployee.user.id}`, {
+      method: "DELETE",
+      token: adminToken,
+      headers: { "Idempotency-Key": deleteKey },
+    });
+    assert.equal(deleteResponse2.status, 200, JSON.stringify(deleteResponse2.json));
+
+    const deleteConflict = await api(`/admin/employees/${secondEmployee.user.id}`, {
+      method: "DELETE",
+      token: adminToken,
+      headers: { "Idempotency-Key": deleteKey },
+    });
+    assert.equal(deleteConflict.status, 409, JSON.stringify(deleteConflict.json));
+  } finally {
+    await api(`/admin/employees/${secondEmployee.user.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("client create retries stay idempotent with key reuse protection", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const createKey = randomSuffix("client-create");
+  const payload = {
+    name: `Admin Client ${randomSuffix("create")}`,
+    email: `${randomSuffix("client")}.client@example.com`,
+    phone: `${Math.floor(8000000000 + Math.random() * 99999999)}`,
+    company: `Client Co ${randomSuffix("co")}`,
+    billingEmail: `${randomSuffix("billing")}.billing@example.com`,
+    address: "Workflow Test Address",
+    website: "https://example.com",
+  };
+
+  const createResponse1 = await api("/admin/clients", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: payload,
+  });
+  assert.equal(createResponse1.status, 201, JSON.stringify(createResponse1.json));
+  assert.equal(createResponse1.json.duplicate, false);
+  const clientId = createResponse1.json.user.id;
+
+  try {
+    const createResponse2 = await api("/admin/clients", {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": createKey },
+      body: payload,
+    });
+    assert.equal(createResponse2.status, 200, JSON.stringify(createResponse2.json));
+    assert.equal(createResponse2.json.duplicate, true);
+    assert.equal(createResponse2.json.user.id, clientId);
+
+    const createConflict = await api("/admin/clients", {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": createKey },
+      body: { ...payload, company: `${payload.company} Updated` },
+    });
+    assert.equal(createConflict.status, 409, JSON.stringify(createConflict.json));
+  } finally {
+    await api(`/admin/clients/${clientId}`, { method: "DELETE", token: adminToken });
+  }
 });
 
 test("audit trail includes structured details for finance actions", { concurrency: false }, async () => {

@@ -2,6 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   fundsTable,
+  idempotencyKeysTable,
   preApprovalsTable,
   usersTable,
   type ActorRole,
@@ -13,6 +14,7 @@ import {
 import { auditTrailTable } from "../../../../../lib/db/src/schema/business";
 import { type AuditTrailDetailsRecord, createId, invalidateBusinessStoreCache, normalizeDate, nowIso } from "../business-store";
 import { assertActorRoleAccess, assertClientSelfAccess, assertTenantAccess } from "../policies";
+import { hashSha256 } from "../security";
 import { DEFAULT_TENANT_ID } from "../tenants";
 import { assertWorkflowTransition } from "../workflow-state";
 
@@ -53,9 +55,9 @@ export type PreApprovalInput = {
 };
 
 export class PreApprovalsServiceError extends Error {
-  code: "not_found" | "forbidden" | "invalid_state" | "invalid_input";
+  code: "not_found" | "forbidden" | "invalid_state" | "invalid_input" | "conflict";
 
-  constructor(code: "not_found" | "forbidden" | "invalid_state" | "invalid_input", message: string) {
+  constructor(code: "not_found" | "forbidden" | "invalid_state" | "invalid_input" | "conflict", message: string) {
     super(message);
     this.code = code;
   }
@@ -150,6 +152,96 @@ async function loadClientUser(clientId: string, tenantId: string) {
 function assertActorCanAccess(actor: PreApprovalActor, preApproval: DbPreApproval) {
   assertTenantAccess(preApproval.tenantId ?? DEFAULT_TENANT_ID, actor.tenantId, () => new PreApprovalsServiceError("forbidden", "Forbidden"));
   assertClientSelfAccess(preApproval.clientId, actor.actorRole, actor.userId, () => new PreApprovalsServiceError("forbidden", "Forbidden"));
+}
+
+function requestHashForReceiveFunds(input: { preApprovalId: string }) {
+  return hashSha256(JSON.stringify({ preApprovalId: input.preApprovalId.trim() }));
+}
+
+function requestHashForSubmit(input: { preApprovalId: string }) {
+  return hashSha256(JSON.stringify({ preApprovalId: input.preApprovalId.trim() }));
+}
+
+function requestHashForApprove(input: { preApprovalId: string }) {
+  return hashSha256(JSON.stringify({ preApprovalId: input.preApprovalId.trim() }));
+}
+
+function requestHashForRequestChanges(input: { preApprovalId: string; message: string }) {
+  return hashSha256(
+    JSON.stringify({
+      preApprovalId: input.preApprovalId.trim(),
+      message: input.message.trim(),
+    }),
+  );
+}
+
+function requestHashForComment(input: { preApprovalId: string; message: string }) {
+  return hashSha256(
+    JSON.stringify({
+      preApprovalId: input.preApprovalId.trim(),
+      message: input.message.trim(),
+    }),
+  );
+}
+
+async function claimPreApprovalIdempotency(
+  actor: PreApprovalActor,
+  scope:
+    | "pre_approval_receive_funds"
+    | "pre_approval_submit"
+    | "pre_approval_approve"
+    | "pre_approval_request_changes"
+    | "pre_approval_comment",
+  key: string,
+  requestHash: string,
+) {
+  const keyHash = hashSha256(key);
+  const createdAt = new Date();
+  const insertedRows = await db
+    .insert(idempotencyKeysTable)
+    .values({
+      id: createId("idem"),
+      tenantId: actor.tenantId,
+      scope,
+      keyHash,
+      requestHash,
+      status: "processing",
+      createdById: actor.userId ?? null,
+      createdAt,
+      updatedAt: createdAt,
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  if (insertedRows[0]) {
+    return { row: insertedRows[0], created: true };
+  }
+
+  const existingRows = await db
+    .select()
+    .from(idempotencyKeysTable)
+    .where(
+      and(
+        eq(idempotencyKeysTable.tenantId, actor.tenantId),
+        eq(idempotencyKeysTable.scope, scope),
+        eq(idempotencyKeysTable.keyHash, keyHash),
+      ),
+    )
+    .limit(1);
+
+  const row = existingRows[0];
+  if (!row) {
+    throw new PreApprovalsServiceError("conflict", "Unable to acquire idempotency lock for this request.");
+  }
+  if (row.requestHash !== requestHash) {
+    throw new PreApprovalsServiceError("conflict", "This idempotency key is already used for a different request payload.");
+  }
+
+  return { row, created: false };
+}
+
+async function claimReceiveFundsIdempotency(actor: PreApprovalActor, key: string, requestHash: string) {
+  return claimPreApprovalIdempotency(actor, "pre_approval_receive_funds", key, requestHash);
 }
 
 export async function listPreApprovalsForActor(actor: PreApprovalActor) {
@@ -313,8 +405,35 @@ export async function deletePreApproval(id: string, actor: PreApprovalActor) {
   });
 }
 
-export async function submitPreApproval(id: string, actor: PreApprovalActor) {
+export async function submitPreApproval(id: string, actor: PreApprovalActor, options?: { idempotencyKey?: string | null }) {
+  const idempotencyKey = options?.idempotencyKey?.trim() || null;
+  const requestHash = idempotencyKey ? requestHashForSubmit({ preApprovalId: id }) : null;
+  const idempotencyClaim =
+    idempotencyKey && requestHash ? await claimPreApprovalIdempotency(actor, "pre_approval_submit", idempotencyKey, requestHash) : null;
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const latest = await getPreApprovalForActor(id, actor);
+      return { preApproval: latest, wasAlreadySubmitted: true };
+    }
+    throw new PreApprovalsServiceError("conflict", "This submit request is already being processed. Please retry shortly.");
+  }
+
+  try {
   const existing = await getPreApprovalForActor(id, actor);
+  if (existing.status === "submitted") {
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: id,
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    return { preApproval: existing, wasAlreadySubmitted: true };
+  }
   if (existing.tasks.length === 0) {
     throw new PreApprovalsServiceError("invalid_state", "Add at least one work row before sending for client approval.");
   }
@@ -354,57 +473,142 @@ export async function submitPreApproval(id: string, actor: PreApprovalActor) {
     },
   });
 
-  return updatedRows[0]!;
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: id,
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+
+    return { preApproval: updatedRows[0]!, wasAlreadySubmitted: false };
+  } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    throw error;
+  }
 }
 
-export async function addPreApprovalComment(id: string, message: string, actor: PreApprovalActor) {
-  const existing = await getPreApprovalForActor(id, actor);
-  assertActorRoleAccess(actor.actorRole, ["admin", "client"], () => new PreApprovalsServiceError("forbidden", "Forbidden"));
+export async function addPreApprovalComment(
+  id: string,
+  message: string,
+  actor: PreApprovalActor,
+  options?: { idempotencyKey?: string | null },
+) {
+  const idempotencyKey = options?.idempotencyKey?.trim() || null;
+  const requestHash = idempotencyKey ? requestHashForComment({ preApprovalId: id, message }) : null;
+  const idempotencyClaim =
+    idempotencyKey && requestHash
+      ? await claimPreApprovalIdempotency(actor, "pre_approval_comment", idempotencyKey, requestHash)
+      : null;
 
-  const comment: PreApprovalCommentRecord = {
-    id: createId("pa_comment"),
-    authorId: actor.userId,
-    authorName: actor.actorName,
-    authorRole: actor.actorRole === "client" ? "client" : "admin",
-    message,
-    createdAt: nowIso(),
-  };
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const latest = await getPreApprovalForActor(id, actor);
+      const replayedComment = idempotencyClaim.row.responseEntityId
+        ? latest.comments.find((item) => item.id === idempotencyClaim.row.responseEntityId)
+        : latest.comments.at(-1);
+      return { preApproval: latest, comment: replayedComment, wasDuplicate: true };
+    }
+    throw new PreApprovalsServiceError("conflict", "This comment request is already being processed. Please retry shortly.");
+  }
 
-  const updatedRows = await db
-    .update(preApprovalsTable)
-    .set({
-      comments: [...existing.comments, comment],
-      updatedAt: new Date(),
-    })
-    .where(eq(preApprovalsTable.id, existing.id))
-    .returning();
+  try {
+    const existing = await getPreApprovalForActor(id, actor);
+    assertActorRoleAccess(actor.actorRole, ["admin", "client"], () => new PreApprovalsServiceError("forbidden", "Forbidden"));
 
-  await insertPreApprovalAudit({
-    tenantId: actor.tenantId,
-    actorUserId: actor.userId,
-    actorName: actor.actorName,
-    actorRole: actor.actorRole,
-    action: "commented",
-    entityType: "pre-approval-comment",
-    entityId: comment.id,
-    summary: `${comment.authorName} commented on ${existing.title}.`,
-    requestId: actor.requestId,
-    details: {
-      entityLabel: existing.title,
+    const comment: PreApprovalCommentRecord = {
+      id: createId("pa_comment"),
+      authorId: actor.userId,
+      authorName: actor.actorName,
+      authorRole: actor.actorRole === "client" ? "client" : "admin",
+      message,
+      createdAt: nowIso(),
+    };
+
+    const updatedRows = await db
+      .update(preApprovalsTable)
+      .set({
+        comments: [...existing.comments, comment],
+        updatedAt: new Date(),
+      })
+      .where(eq(preApprovalsTable.id, existing.id))
+      .returning();
+
+    await insertPreApprovalAudit({
+      tenantId: actor.tenantId,
+      actorUserId: actor.userId,
+      actorName: actor.actorName,
+      actorRole: actor.actorRole,
+      action: "commented",
+      entityType: "pre-approval-comment",
+      entityId: comment.id,
+      summary: `${comment.authorName} commented on ${existing.title}.`,
       requestId: actor.requestId,
-      changedFields: ["comment"],
-      before: null,
-      after: { authorName: comment.authorName, authorRole: comment.authorRole, message: comment.message },
-      context: { operation: "pre_approval_comment", preApprovalId: existing.id },
-    },
-  });
+      details: {
+        entityLabel: existing.title,
+        requestId: actor.requestId,
+        changedFields: ["comment"],
+        before: null,
+        after: { authorName: comment.authorName, authorRole: comment.authorRole, message: comment.message },
+        context: { operation: "pre_approval_comment", preApprovalId: existing.id },
+      },
+    });
 
-  return { preApproval: updatedRows[0]!, comment };
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: comment.id,
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+
+    return { preApproval: updatedRows[0]!, comment, wasDuplicate: false };
+  } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    throw error;
+  }
 }
 
-export async function approvePreApproval(id: string, actor: PreApprovalActor) {
+export async function approvePreApproval(id: string, actor: PreApprovalActor, options?: { idempotencyKey?: string | null }) {
   assertActorRoleAccess(actor.actorRole, ["client", "admin"], () => new PreApprovalsServiceError("forbidden", "Forbidden"));
+  const idempotencyKey = options?.idempotencyKey?.trim() || null;
+  const requestHash = idempotencyKey ? requestHashForApprove({ preApprovalId: id }) : null;
+  const idempotencyClaim =
+    idempotencyKey && requestHash ? await claimPreApprovalIdempotency(actor, "pre_approval_approve", idempotencyKey, requestHash) : null;
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const latest = await getPreApprovalForActor(id, actor);
+      return { preApproval: latest, wasAlreadyApproved: true };
+    }
+    throw new PreApprovalsServiceError("conflict", "This approve request is already being processed. Please retry shortly.");
+  }
+
+  try {
   const existing = await getPreApprovalForActor(id, actor);
+  if (existing.status === "approved") {
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: id,
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    return { preApproval: existing, wasAlreadyApproved: true };
+  }
   try {
     assertWorkflowTransition("preApprovalApproval", existing.status, "approved");
   } catch (error) {
@@ -441,12 +645,65 @@ export async function approvePreApproval(id: string, actor: PreApprovalActor) {
     },
   });
 
-  return updatedRows[0]!;
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: id,
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+
+    return { preApproval: updatedRows[0]!, wasAlreadyApproved: false };
+  } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    throw error;
+  }
 }
 
-export async function requestPreApprovalChanges(id: string, message: string, actor: PreApprovalActor) {
+export async function requestPreApprovalChanges(
+  id: string,
+  message: string,
+  actor: PreApprovalActor,
+  options?: { idempotencyKey?: string | null },
+) {
   assertActorRoleAccess(actor.actorRole, ["client", "admin"], () => new PreApprovalsServiceError("forbidden", "Forbidden"));
+  const idempotencyKey = options?.idempotencyKey?.trim() || null;
+  const requestHash = idempotencyKey ? requestHashForRequestChanges({ preApprovalId: id, message }) : null;
+  const idempotencyClaim =
+    idempotencyKey && requestHash
+      ? await claimPreApprovalIdempotency(actor, "pre_approval_request_changes", idempotencyKey, requestHash)
+      : null;
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const latest = await getPreApprovalForActor(id, actor);
+      const latestComment = latest.comments.at(-1);
+      return { preApproval: latest, comment: latestComment, wasAlreadyRequested: true };
+    }
+    throw new PreApprovalsServiceError("conflict", "This request-changes action is already being processed. Please retry shortly.");
+  }
+
+  try {
   const existing = await getPreApprovalForActor(id, actor);
+  if (existing.status === "changes_requested") {
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: id,
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    const latestComment = existing.comments.at(-1);
+    return { preApproval: existing, comment: latestComment, wasAlreadyRequested: true };
+  }
   try {
     assertWorkflowTransition("preApprovalApproval", existing.status, "changes_requested");
   } catch (error) {
@@ -492,93 +749,151 @@ export async function requestPreApprovalChanges(id: string, message: string, act
     },
   });
 
-  return { preApproval: updatedRows[0]!, comment };
-}
-
-export async function receivePreApprovalFunds(id: string, actor: PreApprovalActor) {
-  assertActorRoleAccess(actor.actorRole, ["admin"], () => new PreApprovalsServiceError("forbidden", "Forbidden"));
-  const existing = await getPreApprovalForActor(id, actor);
-  if (existing.status !== "approved") {
-    throw new PreApprovalsServiceError("invalid_state", "Only client-approved pre-approvals can be marked as received.");
-  }
-
-  const totalAmount = computeTotals(existing).totalAmount;
-  if (totalAmount <= 0) {
-    throw new PreApprovalsServiceError("invalid_state", "This pre-approval does not have a receivable quotation amount.");
-  }
-
-  const now = new Date();
-  const fundId = createId("fund");
-  if (existing.receivedAt || existing.receivedFundId) {
-    return { preApproval: existing, wasAlreadyReceived: true };
-  }
-
-  let updatedPreApproval: DbPreApproval;
-  try {
-    updatedPreApproval = await db.transaction(async (transaction) => {
-      await transaction.insert(fundsTable).values({
-        id: fundId,
-        tenantId: actor.tenantId,
-        source: `Pre Approval - ${existing.title}`,
-        amount: totalAmount,
-        date: now,
-        note: `Received from ${existing.clientNameSnapshot} for ${existing.project}.`,
-        createdAt: now,
-        updatedAt: now,
-      } as never);
-
-      const updatedRows = await transaction
-        .update(preApprovalsTable)
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
         .set({
-          receivedAt: now,
-          receivedFundId: fundId,
-          updatedAt: now,
+          status: "completed",
+          responseEntityId: id,
+          updatedAt: new Date(),
         })
-        .where(and(eq(preApprovalsTable.id, existing.id), eq(preApprovalsTable.status, "approved"), eq(preApprovalsTable.tenantId, actor.tenantId)))
-        .returning();
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
 
-      if (updatedRows.length === 0) {
-        const latestRows = await transaction.select().from(preApprovalsTable).where(eq(preApprovalsTable.id, existing.id)).limit(1);
-        const latest = latestRows[0];
-        if (latest?.receivedFundId || latest?.receivedAt) {
-          throw new PreApprovalsServiceError("invalid_state", "Funds for this pre-approval were already marked as received.");
-        }
-        throw new PreApprovalsServiceError("invalid_state", "Only client-approved pre-approvals can be marked as received.");
-      }
-
-      return updatedRows[0]!;
-    });
+    return { preApproval: updatedRows[0]!, comment, wasAlreadyRequested: false };
   } catch (error) {
-    if (error instanceof PreApprovalsServiceError && error.code === "invalid_state") {
-      const latest = await getPreApprovalForActor(id, actor);
-      if (latest.receivedFundId || latest.receivedAt) {
-        return { preApproval: latest, wasAlreadyReceived: true };
-      }
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
     }
     throw error;
   }
+}
 
-  invalidateBusinessStoreCache();
+export async function receivePreApprovalFunds(id: string, actor: PreApprovalActor, options?: { idempotencyKey?: string | null }) {
+  assertActorRoleAccess(actor.actorRole, ["admin"], () => new PreApprovalsServiceError("forbidden", "Forbidden"));
+  const idempotencyKey = options?.idempotencyKey?.trim() || null;
+  const requestHash = idempotencyKey ? requestHashForReceiveFunds({ preApprovalId: id }) : null;
+  const idempotencyClaim =
+    idempotencyKey && requestHash ? await claimReceiveFundsIdempotency(actor, idempotencyKey, requestHash) : null;
 
-  await insertPreApprovalAudit({
-    tenantId: actor.tenantId,
-    actorUserId: actor.userId,
-    actorName: actor.actorName,
-    actorRole: actor.actorRole,
-    action: "funds_received",
-    entityType: "pre-approval",
-    entityId: existing.id,
-    summary: `Marked INR ${totalAmount} received for pre-approval ${existing.title}.`,
-    requestId: actor.requestId,
-    details: {
-      entityLabel: updatedPreApproval.title,
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const latest = await getPreApprovalForActor(id, actor);
+      return { preApproval: latest, wasAlreadyReceived: true };
+    }
+    throw new PreApprovalsServiceError("conflict", "This receivable request is already being processed. Please retry shortly.");
+  }
+
+  try {
+    const existing = await getPreApprovalForActor(id, actor);
+    if (existing.status !== "approved") {
+      throw new PreApprovalsServiceError("invalid_state", "Only client-approved pre-approvals can be marked as received.");
+    }
+
+    const totalAmount = computeTotals(existing).totalAmount;
+    if (totalAmount <= 0) {
+      throw new PreApprovalsServiceError("invalid_state", "This pre-approval does not have a receivable quotation amount.");
+    }
+
+    const now = new Date();
+    const fundId = createId("fund");
+    let updatedPreApproval: DbPreApproval = existing;
+    let wasAlreadyReceived = false;
+
+    if (existing.receivedAt || existing.receivedFundId) {
+      wasAlreadyReceived = true;
+    } else {
+      try {
+        updatedPreApproval = await db.transaction(async (transaction) => {
+          await transaction.insert(fundsTable).values({
+            id: fundId,
+            tenantId: actor.tenantId,
+            source: `Pre Approval - ${existing.title}`,
+            amount: totalAmount,
+            date: now,
+            note: `Received from ${existing.clientNameSnapshot} for ${existing.project}.`,
+            createdAt: now,
+            updatedAt: now,
+          } as never);
+
+          const updatedRows = await transaction
+            .update(preApprovalsTable)
+            .set({
+              receivedAt: now,
+              receivedFundId: fundId,
+              updatedAt: now,
+            })
+            .where(and(eq(preApprovalsTable.id, existing.id), eq(preApprovalsTable.status, "approved"), eq(preApprovalsTable.tenantId, actor.tenantId)))
+            .returning();
+
+          if (updatedRows.length === 0) {
+            const latestRows = await transaction.select().from(preApprovalsTable).where(eq(preApprovalsTable.id, existing.id)).limit(1);
+            const latest = latestRows[0];
+            if (latest?.receivedFundId || latest?.receivedAt) {
+              throw new PreApprovalsServiceError("invalid_state", "Funds for this pre-approval were already marked as received.");
+            }
+            throw new PreApprovalsServiceError("invalid_state", "Only client-approved pre-approvals can be marked as received.");
+          }
+
+          return updatedRows[0]!;
+        });
+      } catch (error) {
+        if (error instanceof PreApprovalsServiceError && error.code === "invalid_state") {
+          const latest = await getPreApprovalForActor(id, actor);
+          if (latest.receivedFundId || latest.receivedAt) {
+            updatedPreApproval = latest;
+            wasAlreadyReceived = true;
+          } else {
+            throw error;
+          }
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: id,
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+
+    if (wasAlreadyReceived) {
+      return { preApproval: updatedPreApproval, wasAlreadyReceived: true };
+    }
+
+    invalidateBusinessStoreCache();
+
+    await insertPreApprovalAudit({
+      tenantId: actor.tenantId,
+      actorUserId: actor.userId,
+      actorName: actor.actorName,
+      actorRole: actor.actorRole,
+      action: "funds_received",
+      entityType: "pre-approval",
+      entityId: existing.id,
+      summary: `Marked INR ${totalAmount} received for pre-approval ${existing.title}.`,
       requestId: actor.requestId,
-      changedFields: ["receivedAt", "receivedFundId"],
-      before: summarizePreApproval(existing),
-      after: summarizePreApproval(updatedPreApproval),
-      context: { operation: "pre_approval_receive_funds", totalAmount, fundId },
-    },
-  });
+      details: {
+        entityLabel: updatedPreApproval.title,
+        requestId: actor.requestId,
+        changedFields: ["receivedAt", "receivedFundId"],
+        before: summarizePreApproval(existing),
+        after: summarizePreApproval(updatedPreApproval),
+        context: { operation: "pre_approval_receive_funds", totalAmount, fundId },
+      },
+    });
 
-  return { preApproval: updatedPreApproval, wasAlreadyReceived: false };
+    return { preApproval: updatedPreApproval, wasAlreadyReceived: false };
+  } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    throw error;
+  }
 }

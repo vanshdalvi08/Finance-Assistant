@@ -1,4 +1,6 @@
-import { type ActorRole } from "@workspace/db/schema";
+import { and, eq } from "drizzle-orm";
+import { db } from "@workspace/db";
+import { idempotencyKeysTable, type ActorRole } from "@workspace/db/schema";
 import {
   type BusinessStore,
   type ExpenseRecord,
@@ -15,6 +17,7 @@ import {
   updateStore,
 } from "../business-store";
 import { assertEmployeeSelfAccess, assertTenantAccess } from "../policies";
+import { hashSha256 } from "../security";
 import { DEFAULT_TENANT_ID } from "../tenants";
 
 export type SalaryActor = {
@@ -42,9 +45,9 @@ export type SalaryInput = {
 };
 
 export class SalaryServiceError extends Error {
-  code: "not_found" | "forbidden" | "insufficient_funds" | "invalid_input";
+  code: "not_found" | "forbidden" | "insufficient_funds" | "invalid_input" | "conflict";
 
-  constructor(code: "not_found" | "forbidden" | "insufficient_funds" | "invalid_input", message: string) {
+  constructor(code: "not_found" | "forbidden" | "insufficient_funds" | "invalid_input" | "conflict", message: string) {
     super(message);
     this.code = code;
   }
@@ -132,6 +135,61 @@ function changedSalaryFields(previous: SalaryRecord | null, next: SalaryRecord) 
   const before = summarizeSalary(previous);
   const after = summarizeSalary(next);
   return candidates.filter((key) => before[key] !== after[key]);
+}
+
+function requestHashForSalaryPay(input: { salaryId: string; note?: string }) {
+  return hashSha256(
+    JSON.stringify({
+      salaryId: input.salaryId.trim(),
+      note: input.note?.trim() ?? "",
+    }),
+  );
+}
+
+async function claimSalaryPayIdempotency(actor: SalaryActor, key: string, requestHash: string) {
+  const keyHash = hashSha256(key);
+  const createdAt = new Date();
+  const insertedRows = await db
+    .insert(idempotencyKeysTable)
+    .values({
+      id: createId("idem"),
+      tenantId: actor.tenantId,
+      scope: "salary_pay",
+      keyHash,
+      requestHash,
+      status: "processing",
+      createdById: actor.userId ?? null,
+      createdAt,
+      updatedAt: createdAt,
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  if (insertedRows[0]) {
+    return { row: insertedRows[0], created: true };
+  }
+
+  const existingRows = await db
+    .select()
+    .from(idempotencyKeysTable)
+    .where(
+      and(
+        eq(idempotencyKeysTable.tenantId, actor.tenantId),
+        eq(idempotencyKeysTable.scope, "salary_pay"),
+        eq(idempotencyKeysTable.keyHash, keyHash),
+      ),
+    )
+    .limit(1);
+
+  const row = existingRows[0];
+  if (!row) {
+    throw new SalaryServiceError("conflict", "Unable to acquire idempotency lock for this salary pay request.");
+  }
+  if (row.requestHash !== requestHash) {
+    throw new SalaryServiceError("conflict", "This idempotency key is already used for a different salary pay payload.");
+  }
+
+  return { row, created: false };
 }
 
 export async function listSalariesForActor(tenantId: string, requesterRole?: string, requesterUserId?: string, employeeId?: string | null) {
@@ -305,61 +363,91 @@ export async function paySalary(
   id: string,
   note: string | undefined,
   actor: SalaryActor,
+  options?: { idempotencyKey?: string | null },
 ): Promise<{ salary: SalaryRecord; wasAlreadyPaid: boolean }> {
+  const idempotencyKey = options?.idempotencyKey?.trim() || null;
+  const requestHash = idempotencyKey ? requestHashForSalaryPay({ salaryId: id, note }) : null;
+  const idempotencyClaim = idempotencyKey && requestHash ? await claimSalaryPayIdempotency(actor, idempotencyKey, requestHash) : null;
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const existingSalary = await getSalaryForActor(id, actor.tenantId);
+      return { salary: existingSalary, wasAlreadyPaid: true };
+    }
+    throw new SalaryServiceError("conflict", "This salary pay request is already being processed. Please retry shortly.");
+  }
+
   let salary: SalaryRecord | null = null;
   let wasAlreadyPaid = false;
+  try {
+    await updateStore((current) => {
+      const existing = current.salaries.find((item) => item.id === id);
+      if (!existing) {
+        throw new SalaryServiceError("not_found", "Salary not found");
+      }
 
-  await updateStore((current) => {
-    const existing = current.salaries.find((item) => item.id === id);
-    if (!existing) {
-      throw new SalaryServiceError("not_found", "Salary not found");
-    }
+      assertTenantAccess(existing.tenantId, actor.tenantId, () => new SalaryServiceError("forbidden", "Forbidden"));
 
-    assertTenantAccess(existing.tenantId, actor.tenantId, () => new SalaryServiceError("forbidden", "Forbidden"));
+      if (existing.status === "paid") {
+        salary = existing;
+        wasAlreadyPaid = true;
+        return current;
+      }
 
-    if (existing.status === "paid") {
-      salary = existing;
-      wasAlreadyPaid = true;
-      return current;
-    }
+      ensureFunds(current, existing.amount, "this salary payment", actor.tenantId);
 
-    ensureFunds(current, existing.amount, "this salary payment", actor.tenantId);
+      const paidAt = nowIso();
+      salary = {
+        ...existing,
+        tenantId: actor.tenantId,
+        status: "paid",
+        paidAt,
+        date: paidAt,
+        note: note?.trim() || existing.note,
+        updatedAt: paidAt,
+      };
 
-    const paidAt = nowIso();
-    salary = {
-      ...existing,
-      tenantId: actor.tenantId,
-      status: "paid",
-      paidAt,
-      date: paidAt,
-      note: note?.trim() || existing.note,
-      updatedAt: paidAt,
-    };
-
-    return pushAuditEvent(
-      {
-        ...current,
-        salaries: current.salaries.map((item) => (item.id === salary!.id ? salary! : item)),
-      },
-      {
-        ...actor,
-        action: "paid",
-        entityType: "salary",
-        entityId: salary.id,
-        summary: "Marked a salary record as paid.",
-        actorUserId: actor.userId,
-        requestId: actor.requestId,
-        details: {
-          entityLabel: salary.employeeNameSnapshot || undefined,
-          requestId: actor.requestId,
-          changedFields: changedSalaryFields(existing, salary),
-          before: summarizeSalary(existing),
-          after: summarizeSalary(salary),
-          context: { operation: "salary_pay" },
+      return pushAuditEvent(
+        {
+          ...current,
+          salaries: current.salaries.map((item) => (item.id === salary!.id ? salary! : item)),
         },
-      },
-    );
-  });
+        {
+          ...actor,
+          action: "paid",
+          entityType: "salary",
+          entityId: salary.id,
+          summary: "Marked a salary record as paid.",
+          actorUserId: actor.userId,
+          requestId: actor.requestId,
+          details: {
+            entityLabel: salary.employeeNameSnapshot || undefined,
+            requestId: actor.requestId,
+            changedFields: changedSalaryFields(existing, salary),
+            before: summarizeSalary(existing),
+            after: summarizeSalary(salary),
+            context: { operation: "salary_pay" },
+          },
+        },
+      );
+    });
+
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: id,
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+  } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    throw error;
+  }
 
   return { salary: salary!, wasAlreadyPaid };
 }

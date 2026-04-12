@@ -1,4 +1,6 @@
-import { type ActorRole } from "@workspace/db/schema";
+import { and, eq } from "drizzle-orm";
+import { db } from "@workspace/db";
+import { idempotencyKeysTable, type ActorRole } from "@workspace/db/schema";
 import {
   type ApprovalStatus,
   type BusinessStore,
@@ -14,6 +16,7 @@ import {
   updateStore,
 } from "../business-store";
 import { assertEmployeeSelfAccess, assertTenantAccess } from "../policies";
+import { hashSha256 } from "../security";
 import { assertWorkflowTransition } from "../workflow-state";
 import { DEFAULT_TENANT_ID } from "../tenants";
 
@@ -44,9 +47,9 @@ export type ExpenseInput = {
 };
 
 export class ExpensesServiceError extends Error {
-  code: "not_found" | "forbidden" | "insufficient_funds" | "invalid_state" | "invalid_input";
+  code: "not_found" | "forbidden" | "insufficient_funds" | "invalid_state" | "invalid_input" | "conflict";
 
-  constructor(code: "not_found" | "forbidden" | "insufficient_funds" | "invalid_state" | "invalid_input", message: string) {
+  constructor(code: "not_found" | "forbidden" | "insufficient_funds" | "invalid_state" | "invalid_input" | "conflict", message: string) {
     super(message);
     this.code = code;
   }
@@ -132,6 +135,62 @@ function changedExpenseFields(previous: ExpenseRecord | null, next: ExpenseRecor
   const before = summarizeExpense(previous);
   const after = summarizeExpense(next);
   return candidates.filter((key) => before[key] !== after[key]);
+}
+
+function requestHashForExpenseReview(input: { expenseId: string; status: ApprovalStatus; reviewerNote?: string }) {
+  return hashSha256(
+    JSON.stringify({
+      expenseId: input.expenseId.trim(),
+      status: input.status,
+      reviewerNote: input.reviewerNote?.trim() ?? "",
+    }),
+  );
+}
+
+async function claimExpenseReviewIdempotency(actor: ExpenseActor, key: string, requestHash: string) {
+  const keyHash = hashSha256(key);
+  const createdAt = new Date();
+  const insertedRows = await db
+    .insert(idempotencyKeysTable)
+    .values({
+      id: createId("idem"),
+      tenantId: actor.tenantId,
+      scope: "expense_review",
+      keyHash,
+      requestHash,
+      status: "processing",
+      createdById: actor.userId ?? null,
+      createdAt,
+      updatedAt: createdAt,
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  if (insertedRows[0]) {
+    return { row: insertedRows[0], created: true };
+  }
+
+  const existingRows = await db
+    .select()
+    .from(idempotencyKeysTable)
+    .where(
+      and(
+        eq(idempotencyKeysTable.tenantId, actor.tenantId),
+        eq(idempotencyKeysTable.scope, "expense_review"),
+        eq(idempotencyKeysTable.keyHash, keyHash),
+      ),
+    )
+    .limit(1);
+
+  const row = existingRows[0];
+  if (!row) {
+    throw new ExpensesServiceError("conflict", "Unable to acquire idempotency lock for this expense review request.");
+  }
+  if (row.requestHash !== requestHash) {
+    throw new ExpensesServiceError("conflict", "This idempotency key is already used for a different expense review payload.");
+  }
+
+  return { row, created: false };
 }
 
 export async function getExpenseForTenant(id: string, tenantId: string, requesterUserId?: string, requesterRole?: string) {
@@ -287,67 +346,100 @@ export async function setExpenseStatus(
   nextStatus: ApprovalStatus,
   reviewerNote: string | undefined,
   actor: ExpenseActor,
+  options?: { idempotencyKey?: string | null },
 ) {
+  const idempotencyKey = options?.idempotencyKey?.trim() || null;
+  const requestHash = idempotencyKey
+    ? requestHashForExpenseReview({ expenseId: id, status: nextStatus, reviewerNote })
+    : null;
+  const idempotencyClaim =
+    idempotencyKey && requestHash ? await claimExpenseReviewIdempotency(actor, idempotencyKey, requestHash) : null;
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const existingExpense = await getExpenseForTenant(id, actor.tenantId);
+      return { expense: existingExpense, previousStatus: existingExpense.status, wasNoop: true };
+    }
+    throw new ExpensesServiceError("conflict", "This expense review request is already being processed. Please retry shortly.");
+  }
+
   let expense: ExpenseRecord | null = null;
   let previousStatus: ApprovalStatus = "draft";
   let wasNoop = false;
+  try {
+    await updateStore((current) => {
+      const existing = current.expenses.find((item) => item.id === id);
+      if (!existing) {
+        throw new ExpensesServiceError("not_found", "Expense not found");
+      }
 
-  await updateStore((current) => {
-    const existing = current.expenses.find((item) => item.id === id);
-    if (!existing) {
-      throw new ExpensesServiceError("not_found", "Expense not found");
-    }
+      assertTenantAccess(existing.tenantId, actor.tenantId, () => new ExpensesServiceError("forbidden", "Forbidden"));
 
-    assertTenantAccess(existing.tenantId, actor.tenantId, () => new ExpensesServiceError("forbidden", "Forbidden"));
+      previousStatus = existing.status;
+      if (existing.status === nextStatus && (reviewerNote?.trim() || undefined) === (existing.reviewerNote || undefined)) {
+        expense = existing;
+        wasNoop = true;
+        return current;
+      }
 
-    previousStatus = existing.status;
-    if (existing.status === nextStatus && (reviewerNote?.trim() || undefined) === (existing.reviewerNote || undefined)) {
-      expense = existing;
-      wasNoop = true;
-      return current;
-    }
+      try {
+        assertWorkflowTransition("expense", existing.status, nextStatus);
+      } catch (error) {
+        throw new ExpensesServiceError("invalid_state", error instanceof Error ? error.message : "Invalid expense state transition.");
+      }
 
-    try {
-      assertWorkflowTransition("expense", existing.status, nextStatus);
-    } catch (error) {
-      throw new ExpensesServiceError("invalid_state", error instanceof Error ? error.message : "Invalid expense state transition.");
-    }
+      if (nextStatus === "approved" && existing.status !== "approved") {
+        ensureFunds(current, existing.amount, "this expense", actor.tenantId);
+      }
 
-    if (nextStatus === "approved" && existing.status !== "approved") {
-      ensureFunds(current, existing.amount, "this expense", actor.tenantId);
-    }
+      expense = {
+        ...existing,
+        status: nextStatus,
+        reviewerNote: reviewerNote?.trim() || undefined,
+        updatedAt: nowIso(),
+      };
 
-    expense = {
-      ...existing,
-      status: nextStatus,
-      reviewerNote: reviewerNote?.trim() || undefined,
-      updatedAt: nowIso(),
-    };
-
-    return pushAuditEvent(
-      {
-        ...current,
-        expenses: current.expenses.map((item) => (item.id === expense!.id ? expense! : item)),
-      },
-      {
-        ...actor,
-        action: nextStatus === "approved" ? "approved" : "rejected",
-        entityType: "expense",
-        entityId: expense.id,
-        summary: `${nextStatus === "approved" ? "Approved" : "Rejected"} an expense submission.`,
-        actorUserId: actor.userId,
-        requestId: actor.requestId,
-        details: {
-          entityLabel: expense.description,
-          requestId: actor.requestId,
-          changedFields: changedExpenseFields(existing, expense),
-          before: summarizeExpense(existing),
-          after: summarizeExpense(expense),
-          context: { operation: "expense_review", previousStatus: existing.status, nextStatus },
+      return pushAuditEvent(
+        {
+          ...current,
+          expenses: current.expenses.map((item) => (item.id === expense!.id ? expense! : item)),
         },
-      },
-    );
-  });
+        {
+          ...actor,
+          action: nextStatus === "approved" ? "approved" : "rejected",
+          entityType: "expense",
+          entityId: expense.id,
+          summary: `${nextStatus === "approved" ? "Approved" : "Rejected"} an expense submission.`,
+          actorUserId: actor.userId,
+          requestId: actor.requestId,
+          details: {
+            entityLabel: expense.description,
+            requestId: actor.requestId,
+            changedFields: changedExpenseFields(existing, expense),
+            before: summarizeExpense(existing),
+            after: summarizeExpense(expense),
+            context: { operation: "expense_review", previousStatus: existing.status, nextStatus },
+          },
+        },
+      );
+    });
+
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: id,
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+  } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    throw error;
+  }
 
   return { expense: expense!, previousStatus, wasNoop };
 }

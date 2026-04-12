@@ -1,3 +1,1 @@
-import LoginPage from "../login-impl";
-
-export default LoginPage;
+export { default } from "../LoginPage";

@@ -108,7 +108,7 @@ function renderKeyValueBlock(value: Record<string, unknown> | null | undefined) 
 }
 
 export default function AdminAuditTrailPage() {
-  const [selectedMonth, setSelectedMonth] = useState(() => format(new Date(), "yyyy-MM"));
+  const [selectedMonth, setSelectedMonth] = useState<string>("all");
   const [selectedRole, setSelectedRole] = useState<(typeof ROLE_OPTIONS)[number]>("all");
   const [selectedEntity, setSelectedEntity] = useState<(typeof ENTITY_OPTIONS)[number]>("all");
   const [search, setSearch] = useState("");
@@ -120,7 +120,7 @@ export default function AdminAuditTrailPage() {
 
   const filtered = useMemo(() => {
     return auditTrail.filter((entry) => {
-      if (selectedMonth && monthValue(entry.createdAt) !== selectedMonth) return false;
+      if (selectedMonth !== "all" && monthValue(entry.createdAt) !== selectedMonth) return false;
       if (selectedRole !== "all" && entry.actorRole !== selectedRole) return false;
       if (selectedEntity !== "all" && entry.entityType !== selectedEntity) return false;
 
@@ -145,13 +145,30 @@ export default function AdminAuditTrailPage() {
     });
   }, [auditTrail, search, selectedEntity, selectedMonth, selectedRole]);
 
-  const groupedByDay = useMemo(() => {
-    const groups = new Map<string, AuditTrailEntry[]>();
+  const monthOptions = useMemo(
+    () =>
+      [...new Set(auditTrail.map((entry) => monthValue(entry.createdAt)))]
+        .filter(Boolean)
+        .sort((left, right) => right.localeCompare(left)),
+    [auditTrail],
+  );
+
+  const groupedByMonth = useMemo(() => {
+    const monthMap = new Map<string, Map<string, AuditTrailEntry[]>>();
     for (const entry of filtered) {
-      const key = dayValue(entry.createdAt);
-      groups.set(key, [...(groups.get(key) ?? []), entry]);
+      const monthKey = monthValue(entry.createdAt);
+      const dayKey = dayValue(entry.createdAt);
+      const monthGroup = monthMap.get(monthKey) ?? new Map<string, AuditTrailEntry[]>();
+      monthGroup.set(dayKey, [...(monthGroup.get(dayKey) ?? []), entry]);
+      monthMap.set(monthKey, monthGroup);
     }
-    return [...groups.entries()].sort((left, right) => right[0].localeCompare(left[0]));
+
+    return [...monthMap.entries()]
+      .sort((left, right) => right[0].localeCompare(left[0]))
+      .map(([month, dayMap]) => ({
+        month,
+        dayGroups: [...dayMap.entries()].sort((left, right) => right[0].localeCompare(left[0])),
+      }));
   }, [filtered]);
 
   const totals = useMemo(() => {
@@ -247,7 +264,19 @@ export default function AdminAuditTrailPage() {
             <div className="grid gap-4 lg:grid-cols-[0.8fr_0.7fr_0.7fr_1fr]">
               <div className="space-y-2">
                 <Label className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Month</Label>
-                <Input type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} />
+                <Select value={selectedMonth} onValueChange={setSelectedMonth}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="All months" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All months</SelectItem>
+                    {monthOptions.map((month) => (
+                      <SelectItem key={month} value={month}>
+                        {formatMonthLabel(month)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2">
                 <Label className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Actor role</Label>
@@ -303,7 +332,11 @@ export default function AdminAuditTrailPage() {
             <CardContent className="space-y-3">
               {[
                 { label: "Selected month", value: formatMonthLabel(selectedMonth), icon: Layers3 },
-                { label: "Grouped day wrappers", value: String(groupedByDay.length), icon: Clock3 },
+                {
+                  label: "Grouped wrappers",
+                  value: `${groupedByMonth.length} month / ${groupedByMonth.reduce((sum, month) => sum + month.dayGroups.length, 0)} day`,
+                  icon: Clock3,
+                },
                 { label: "Finance activity", value: String(totals.finance), icon: ShieldCheck },
                 { label: "Entries with details", value: String(totals.withDiff), icon: FileJson },
               ].map((item) => (
@@ -323,102 +356,131 @@ export default function AdminAuditTrailPage() {
           </Card>
 
           <div className="space-y-4">
-            {groupedByDay.length === 0 ? (
+            {groupedByMonth.length === 0 ? (
               <Card className="border-border/60 bg-card/80">
                 <CardContent className="py-16 text-center text-muted-foreground">
                   No audit events match the current filters.
                 </CardContent>
               </Card>
             ) : (
-              groupedByDay.map(([day, entries], index) => (
-                <Collapsible key={day} defaultOpen={index < 2}>
+              groupedByMonth.map((monthGroup, monthIndex) => (
+                <Collapsible key={monthGroup.month} defaultOpen={selectedMonth !== "all" || monthIndex === 0}>
                   <Card className="overflow-hidden border-border/60 bg-card/80">
                     <CollapsibleTrigger asChild>
                       <button className="flex w-full items-center justify-between gap-4 border-b border-border/50 px-5 py-4 text-left transition-colors hover:bg-secondary/20">
                         <div>
-                          <p className="text-sm font-semibold">{format(new Date(day), "EEEE, dd MMMM yyyy")}</p>
-                          <p className="mt-1 text-xs text-muted-foreground">{entries.length} events in this wrapper</p>
+                          <p className="text-sm font-semibold">{formatMonthLabel(monthGroup.month)}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {monthGroup.dayGroups.reduce((sum, [, entries]) => sum + entries.length, 0)} events in {monthGroup.dayGroups.length} day wrappers
+                          </p>
                         </div>
                         <div className="flex items-center gap-3">
-                          <Badge variant="outline" className="border-border/60 bg-background/70">{entries.filter((entry) => FINANCE_ENTITIES.has(entry.entityType)).length} finance</Badge>
+                          <Badge variant="outline" className="border-border/60 bg-background/70">
+                            {monthGroup.dayGroups.reduce(
+                              (sum, [, entries]) => sum + entries.filter((entry) => FINANCE_ENTITIES.has(entry.entityType)).length,
+                              0,
+                            )} finance
+                          </Badge>
                           <ChevronDown className="h-4 w-4 text-muted-foreground" />
                         </div>
                       </button>
                     </CollapsibleTrigger>
                     <CollapsibleContent>
                       <CardContent className="space-y-4 p-5">
-                        {entries.map((entry) => (
-                          <article key={entry.id} className="rounded-[22px] border border-border/50 bg-[linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0))] p-4">
-                            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                              <div className="min-w-0 space-y-3">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <Badge variant="outline" className={roleBadgeClass(entry.actorRole)}>{entry.actorRole}</Badge>
-                                  <Badge variant="outline" className={entityBadgeClass(entry.entityType)}>{labelize(entry.entityType)}</Badge>
-                                  <Badge variant="outline" className="border-border/60 bg-background/70 capitalize">{actionLabel(entry.action)}</Badge>
-                                  {entry.details?.entityLabel ? (
-                                    <Badge variant="outline" className="border-border/60 bg-background/70">{entry.details.entityLabel}</Badge>
-                                  ) : null}
-                                </div>
-                                <div>
-                                  <p className="font-medium">{entry.summary}</p>
-                                  <p className="mt-1 text-sm text-muted-foreground">
-                                    {entry.actorName} triggered this event {formatDistanceToNow(new Date(entry.createdAt), { addSuffix: true })}.
-                                  </p>
-                                </div>
-                              </div>
-                              <div className="grid min-w-[240px] gap-2 sm:grid-cols-2 lg:grid-cols-1">
-                                <div className="rounded-xl border border-border/50 bg-background/70 px-3 py-2">
-                                  <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Entity ID</p>
-                                  <p className="mt-1 break-all text-sm">{entry.entityId}</p>
-                                </div>
-                                <div className="rounded-xl border border-border/50 bg-background/70 px-3 py-2">
-                                  <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Request</p>
-                                  <p className="mt-1 break-all text-sm">{entry.requestId ?? entry.details?.requestId ?? "Not linked"}</p>
-                                </div>
-                              </div>
-                            </div>
+                        {monthGroup.dayGroups.map(([day, entries], dayIndex) => (
+                          <Collapsible key={day} defaultOpen={monthIndex === 0 && dayIndex < 2}>
+                            <Card className="overflow-hidden border-border/60 bg-card/70">
+                              <CollapsibleTrigger asChild>
+                                <button className="flex w-full items-center justify-between gap-4 border-b border-border/50 px-5 py-4 text-left transition-colors hover:bg-secondary/20">
+                                  <div>
+                                    <p className="text-sm font-semibold">{format(new Date(day), "EEEE, dd MMMM yyyy")}</p>
+                                    <p className="mt-1 text-xs text-muted-foreground">{entries.length} events in this wrapper</p>
+                                  </div>
+                                  <div className="flex items-center gap-3">
+                                    <Badge variant="outline" className="border-border/60 bg-background/70">{entries.filter((entry) => FINANCE_ENTITIES.has(entry.entityType)).length} finance</Badge>
+                                    <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                                  </div>
+                                </button>
+                              </CollapsibleTrigger>
+                              <CollapsibleContent>
+                                <CardContent className="space-y-4 p-5">
+                                  {entries.map((entry) => (
+                                    <article key={entry.id} className="rounded-[22px] border border-border/50 bg-[linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0))] p-4">
+                                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                                        <div className="min-w-0 space-y-3">
+                                          <div className="flex flex-wrap items-center gap-2">
+                                            <Badge variant="outline" className={roleBadgeClass(entry.actorRole)}>{entry.actorRole}</Badge>
+                                            <Badge variant="outline" className={entityBadgeClass(entry.entityType)}>{labelize(entry.entityType)}</Badge>
+                                            <Badge variant="outline" className="border-border/60 bg-background/70 capitalize">{actionLabel(entry.action)}</Badge>
+                                            {entry.details?.entityLabel ? (
+                                              <Badge variant="outline" className="border-border/60 bg-background/70">{entry.details.entityLabel}</Badge>
+                                            ) : null}
+                                          </div>
+                                          <div>
+                                            <p className="font-medium">{entry.summary}</p>
+                                            <p className="mt-1 text-sm text-muted-foreground">
+                                              {entry.actorName} triggered this event {formatDistanceToNow(new Date(entry.createdAt), { addSuffix: true })}.
+                                            </p>
+                                          </div>
+                                        </div>
+                                        <div className="grid min-w-[240px] gap-2 sm:grid-cols-2 lg:grid-cols-1">
+                                          <div className="rounded-xl border border-border/50 bg-background/70 px-3 py-2">
+                                            <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Entity ID</p>
+                                            <p className="mt-1 break-all text-sm">{entry.entityId}</p>
+                                          </div>
+                                          <div className="rounded-xl border border-border/50 bg-background/70 px-3 py-2">
+                                            <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Request</p>
+                                            <p className="mt-1 break-all text-sm">{entry.requestId ?? entry.details?.requestId ?? "Not linked"}</p>
+                                          </div>
+                                        </div>
+                                      </div>
 
-                            <div className="mt-4 grid gap-4 xl:grid-cols-[0.7fr_1.3fr]">
-                              <div className="space-y-3">
-                                <div className="rounded-2xl border border-border/50 bg-secondary/20 px-4 py-3">
-                                  <div className="flex items-center gap-2 text-sm font-medium">
-                                    <Fingerprint className="h-4 w-4 text-muted-foreground" />
-                                    Change signal
-                                  </div>
-                                  <div className="mt-3 flex flex-wrap gap-2">
-                                    {(entry.details?.changedFields?.length ? entry.details.changedFields : ["summary"]).map((field) => (
-                                      <Badge key={field} variant="secondary" className="bg-background/80 text-foreground/80">
-                                        {field}
-                                      </Badge>
-                                    ))}
-                                  </div>
-                                </div>
-                                {entry.details?.context ? (
-                                  <div className="rounded-2xl border border-border/50 bg-secondary/20 px-4 py-3">
-                                    <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Context</p>
-                                    <div className="mt-3">
-                                      {renderKeyValueBlock(entry.details.context)}
-                                    </div>
-                                  </div>
-                                ) : null}
-                              </div>
+                                      <div className="mt-4 grid gap-4 xl:grid-cols-[0.7fr_1.3fr]">
+                                        <div className="space-y-3">
+                                          <div className="rounded-2xl border border-border/50 bg-secondary/20 px-4 py-3">
+                                            <div className="flex items-center gap-2 text-sm font-medium">
+                                              <Fingerprint className="h-4 w-4 text-muted-foreground" />
+                                              Change signal
+                                            </div>
+                                            <div className="mt-3 flex flex-wrap gap-2">
+                                              {(entry.details?.changedFields?.length ? entry.details.changedFields : ["summary"]).map((field) => (
+                                                <Badge key={field} variant="secondary" className="bg-background/80 text-foreground/80">
+                                                  {field}
+                                                </Badge>
+                                              ))}
+                                            </div>
+                                          </div>
+                                          {entry.details?.context ? (
+                                            <div className="rounded-2xl border border-border/50 bg-secondary/20 px-4 py-3">
+                                              <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Context</p>
+                                              <div className="mt-3">
+                                                {renderKeyValueBlock(entry.details.context)}
+                                              </div>
+                                            </div>
+                                          ) : null}
+                                        </div>
 
-                              <div className="grid gap-4 md:grid-cols-2">
-                                <div className="rounded-2xl border border-border/50 bg-secondary/20 p-4">
-                                  <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Before</p>
-                                  <div className="mt-3">
-                                    {renderKeyValueBlock(entry.details?.before)}
-                                  </div>
-                                </div>
-                                <div className="rounded-2xl border border-border/50 bg-secondary/20 p-4">
-                                  <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">After</p>
-                                  <div className="mt-3">
-                                    {renderKeyValueBlock(entry.details?.after)}
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          </article>
+                                        <div className="grid gap-4 md:grid-cols-2">
+                                          <div className="rounded-2xl border border-border/50 bg-secondary/20 p-4">
+                                            <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Before</p>
+                                            <div className="mt-3">
+                                              {renderKeyValueBlock(entry.details?.before)}
+                                            </div>
+                                          </div>
+                                          <div className="rounded-2xl border border-border/50 bg-secondary/20 p-4">
+                                            <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">After</p>
+                                            <div className="mt-3">
+                                              {renderKeyValueBlock(entry.details?.after)}
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </article>
+                                  ))}
+                                </CardContent>
+                              </CollapsibleContent>
+                            </Card>
+                          </Collapsible>
                         ))}
                       </CardContent>
                     </CollapsibleContent>
