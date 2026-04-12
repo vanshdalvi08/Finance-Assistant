@@ -68,7 +68,7 @@ const LoginPage = () => {
           <p className="mt-1 text-[22px] font-semibold text-white">Payroll</p>
         </div>
 
-        <div className="relative z-10 mb-auto mt-24">
+        <div className="relative z-10 mb-auto mt-20">
           <h1 className="mb-3 text-[42px] font-bold leading-tight text-white">Welcome Back!</h1>
           <p className="max-w-[400px] text-[28px] font-bold leading-snug text-white">
             {heroCopy[selectedCopyIndex]}
