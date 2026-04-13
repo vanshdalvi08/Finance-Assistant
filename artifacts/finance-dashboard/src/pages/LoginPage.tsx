@@ -1,8 +1,10 @@
 import React, { useState } from "react";
 import { motion } from "framer-motion";
+import { useLocation } from "wouter";
 import RigVector from "@/assets/images/login-rig.png";
 import RigVectorTwo from "@/assets/images/2 image.png";
 import RigVectorThree from "@/assets/images/3 image.png";
+import { useAuthStore } from "@/store/auth";
 
 const heroVectors = [RigVector, RigVectorTwo, RigVectorThree];
 const heroVectorClasses = [
@@ -13,7 +15,7 @@ const heroVectorClasses = [
 
 const heroCopy = [
   "Smarter workforce management starts here.",
-  "Hope you're having a great day, let’s get started.",
+  "Hope you're having a great day, let's get started.",
 ];
 
 const VECTOR_STORAGE_KEY = "login.hero.vector.index";
@@ -55,8 +57,51 @@ function getInitialCopyIndex() {
 
 const LoginPage = () => {
   const [showPassword, setShowPassword] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [selectedVectorIndex] = useState(getInitialVectorIndex);
   const [selectedCopyIndex] = useState(getInitialCopyIndex);
+  const login = useAuthStore((state) => state.login);
+  const [, setLocation] = useLocation();
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (isSubmitting) {
+      return;
+    }
+
+    setSubmitError(null);
+    setIsSubmitting(true);
+
+    try {
+      const session = await login({
+        email: email.trim(),
+        password,
+      });
+
+      switch (session.user.role) {
+        case "employee":
+          setLocation("/employee/timesheet");
+          break;
+        case "client":
+          setLocation("/client/pre-approvals");
+          break;
+        case "platform_super_admin":
+          setLocation("/platform/dashboard");
+          break;
+        default:
+          setLocation("/");
+          break;
+      }
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : "Sign in failed.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
 
   return (
     <div className="flex min-h-screen w-full overflow-hidden bg-white font-sans">
@@ -106,7 +151,13 @@ const LoginPage = () => {
             </div>
           </div>
 
-          <form className="space-y-5" onSubmit={(event) => event.preventDefault()}>
+          <form className="space-y-5" onSubmit={handleSubmit}>
+            {submitError ? (
+              <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700">
+                {submitError}
+              </p>
+            ) : null}
+
             <div>
               <label className="mb-2 block text-[13px] font-bold text-black" htmlFor="email">
                 E-mail
@@ -115,6 +166,10 @@ const LoginPage = () => {
                 id="email"
                 type="email"
                 placeholder="example@gmail.com"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                autoComplete="username"
+                required
                 className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm placeholder:text-gray-400 transition-colors focus:border-[#2c353f] focus:outline-none"
               />
             </div>
@@ -127,7 +182,11 @@ const LoginPage = () => {
                 <input
                   id="password"
                   type={showPassword ? "text" : "password"}
-                  placeholder="••••••••"
+                  placeholder="********"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  autoComplete="current-password"
+                  required
                   className="w-full rounded-lg border border-gray-300 px-4 py-2.5 pr-12 text-sm tracking-widest placeholder:text-gray-400 transition-colors focus:border-[#2c353f] focus:outline-none"
                 />
                 <button
@@ -171,9 +230,10 @@ const LoginPage = () => {
 
             <button
               type="submit"
-              className="w-full rounded-lg bg-[#2c353f] py-3 text-[13px] font-bold text-white transition-colors hover:bg-[#1f262d]"
+              disabled={isSubmitting}
+              className="w-full rounded-lg bg-[#2c353f] py-3 text-[13px] font-bold text-white transition-colors hover:bg-[#1f262d] disabled:cursor-not-allowed disabled:opacity-70"
             >
-              Sign in
+              {isSubmitting ? "Signing in..." : "Sign in"}
             </button>
 
             <div className="relative flex items-center py-3">
