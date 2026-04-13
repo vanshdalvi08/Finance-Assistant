@@ -170,7 +170,8 @@ const LoginPage = () => {
                 onChange={(event) => setEmail(event.target.value)}
                 autoComplete="username"
                 required
-                className="w-full rounded-lg border border-gray-300 px-4 py-2.5 text-sm placeholder:text-gray-400 transition-colors focus:border-[#2c353f] focus:outline-none"
+                className="w-full rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm text-gray-900 caret-gray-900 placeholder:text-gray-400 transition-colors focus:border-[#2c353f] focus:outline-none"
+                style={{ WebkitTextFillColor: "rgb(17 24 39)" }}
               />
             </div>
 
@@ -187,7 +188,8 @@ const LoginPage = () => {
                   onChange={(event) => setPassword(event.target.value)}
                   autoComplete="current-password"
                   required
-                  className="w-full rounded-lg border border-gray-300 px-4 py-2.5 pr-12 text-sm tracking-widest placeholder:text-gray-400 transition-colors focus:border-[#2c353f] focus:outline-none"
+                  className="w-full rounded-lg border border-gray-300 bg-white px-4 py-2.5 pr-12 text-sm tracking-widest text-gray-900 caret-gray-900 placeholder:text-gray-400 transition-colors focus:border-[#2c353f] focus:outline-none"
+                  style={{ WebkitTextFillColor: "rgb(17 24 39)" }}
                 />
                 <button
                   type="button"
