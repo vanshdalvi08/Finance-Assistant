@@ -46,6 +46,18 @@ export interface AuthSession {
   accessToken: string;
 }
 
+export interface MfaChallenge {
+  mfaRequired: true;
+  mfaSetupRequired: boolean;
+  rememberDeviceAvailable: boolean;
+  mfaToken: string;
+  user: AuthUser;
+  mfaSecret?: string;
+  otpauthUrl?: string;
+}
+
+export type LoginResponse = AuthSession | MfaChallenge;
+
 export interface PasswordResetRequest {
   email: string;
 }

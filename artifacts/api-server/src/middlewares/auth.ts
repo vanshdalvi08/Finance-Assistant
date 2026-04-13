@@ -1,9 +1,10 @@
 import { type NextFunction, type Request, type Response } from "express";
 import { db } from "@workspace/db";
-import { tenantsTable, usersTable } from "@workspace/db/schema";
-import { eq } from "drizzle-orm";
+import { refreshSessionsTable, tenantsTable, usersTable } from "@workspace/db/schema";
+import { and, eq, isNull } from "drizzle-orm";
 import { verifyAccessToken } from "../lib/jwt";
 import { type PublicUser } from "../lib/auth-service";
+import { hashSha256 } from "../lib/security";
 
 export type TenantRole = "admin" | "employee" | "client";
 export type PlatformRole = "platform_super_admin";
@@ -52,6 +53,18 @@ async function loadTenant(tenantId: string) {
   return rows[0] ?? null;
 }
 
+async function loadRefreshSession(jtiHash: string) {
+  const rows = await db.select().from(refreshSessionsTable).where(eq(refreshSessionsTable.jtiHash, jtiHash)).limit(1);
+  return rows[0] ?? null;
+}
+
+async function revokeAllSessions(userId: string) {
+  await db
+    .update(refreshSessionsTable)
+    .set({ revokedAt: new Date(), updatedAt: new Date() })
+    .where(and(eq(refreshSessionsTable.userId, userId), isNull(refreshSessionsTable.revokedAt)));
+}
+
 export async function requireAuth(request: Request, response: Response, next: NextFunction) {
   const token = extractBearerToken(request);
   if (!token) {
@@ -62,8 +75,25 @@ export async function requireAuth(request: Request, response: Response, next: Ne
   try {
     const payload = verifyAccessToken(token);
     const user = await loadUser(payload.sub);
+    if (!user) {
+      response.status(401).json({ message: "Unauthorized" });
+      return;
+    }
+
+    if (payload.role !== user.role) {
+      await revokeAllSessions(user.id);
+      response.status(401).json({ message: "Unauthorized" });
+      return;
+    }
+
+    const session = await loadRefreshSession(hashSha256(payload.sessionId));
+    if (!session || session.userId !== user.id || session.revokedAt || session.expiresAt.getTime() <= Date.now()) {
+      response.status(401).json({ message: "Unauthorized" });
+      return;
+    }
+
     const tenant = user ? await loadTenant(user.tenantId) : null;
-    if (!user || user.status !== "active" || user.tenantId !== payload.tenantId || !tenant || tenant.status !== "active") {
+    if (user.status !== "active" || user.tenantId !== payload.tenantId || !tenant || tenant.status !== "active") {
       response.status(401).json({ message: "Unauthorized" });
       return;
     }

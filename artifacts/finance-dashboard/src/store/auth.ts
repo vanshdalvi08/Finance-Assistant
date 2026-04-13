@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { bootstrapSession, signIn, signOut } from "@/auth/auth-service";
 import { clearAccessToken, setAccessToken } from "@/auth/session";
-import type { AuthSession, LoginCredentials, UserRole } from "@/auth/types";
+import type { AuthSession, LoginCredentials, LoginResponse, UserRole } from "@/auth/types";
 
 const TAB_SESSION_USER_KEY = "yojak.auth.tab.user";
 
@@ -52,7 +52,7 @@ interface AuthState {
   hydrateFromStorage: () => Promise<void>;
   loginWithSession: (session: AuthSession) => void;
   replaceUser: (user: AuthSession["user"]) => void;
-  login: (credentials: LoginCredentials) => Promise<AuthSession>;
+  login: (credentials: LoginCredentials) => Promise<LoginResponse>;
   logout: () => Promise<void>;
 }
 
@@ -134,6 +134,18 @@ export const useAuthStore = create<AuthState>((set) => ({
 
     try {
       const session = await signIn(credentials);
+      if ("mfaRequired" in session) {
+        set({
+          status: "anonymous",
+          hydrated: true,
+          accessToken: null,
+          user: null,
+          role: null,
+          userEmail: "",
+          isAuthenticated: false,
+        });
+        return session;
+      }
       applySession(set, session);
       return session;
     } catch (error) {

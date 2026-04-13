@@ -1,8 +1,16 @@
 import { Router, type IRouter } from "express";
 import { z } from "zod";
-import { loginWithPassword, logoutRefreshToken, refreshLogin, requestPasswordReset, resetPassword, updateOwnProfile } from "../lib/auth-service";
+import {
+  loginWithPassword,
+  logoutRefreshToken,
+  refreshLogin,
+  requestPasswordReset,
+  resetPassword,
+  updateOwnProfile,
+  verifyMfaChallenge,
+} from "../lib/auth-service";
 import { requireAuth } from "../middlewares/auth";
-import { REFRESH_COOKIE_NAME, refreshCookieOptions } from "../lib/cookies";
+import { MFA_TRUSTED_COOKIE_NAME, mfaTrustedCookieOptions, REFRESH_COOKIE_NAME, refreshCookieOptions } from "../lib/cookies";
 import { rateLimit, rateLimitKeyByRemoteAddress, rateLimitKeyByRemoteAddressAndField } from "../middlewares/rate-limit";
 import { recordPlatformEventSafe } from "../lib/platform";
 
@@ -69,6 +77,12 @@ const resetSchema = z.object({
   password: z.string().min(8),
 });
 
+const mfaVerifySchema = z.object({
+  mfaToken: z.string().min(16),
+  code: z.string().min(6).max(10),
+  rememberDevice: z.boolean().optional(),
+});
+
 const updateProfileSchema = z.object({
   name: z.string().trim().min(2),
   email: z.string().trim().email(),
@@ -86,7 +100,16 @@ router.post("/login", loginLimiter, async (request, response) => {
   }
 
   try {
-    const result = await loginWithPassword(parsed.data.email, parsed.data.password);
+    const trustedDevice = request.cookies?.[MFA_TRUSTED_COOKIE_NAME];
+    const result = await loginWithPassword(parsed.data.email, parsed.data.password, {
+      trustedDeviceToken: typeof trustedDevice === "string" ? trustedDevice : null,
+    });
+
+    if ("mfaRequired" in result) {
+      response.status(202).json(result);
+      return;
+    }
+
     response.cookie(REFRESH_COOKIE_NAME, result.refreshToken, refreshCookieOptions());
     response.json({
       accessToken: result.accessToken,
@@ -106,6 +129,34 @@ router.post("/login", loginLimiter, async (request, response) => {
       },
     });
     response.status(401).json({ message: "Invalid email or password" });
+  }
+});
+
+router.post("/mfa/verify", loginLimiter, async (request, response) => {
+  const parsed = mfaVerifySchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid MFA payload" });
+    return;
+  }
+
+  try {
+    const result = await verifyMfaChallenge({
+      mfaToken: parsed.data.mfaToken,
+      code: parsed.data.code,
+      rememberDevice: parsed.data.rememberDevice,
+      userAgent: request.header("user-agent") ?? null,
+      ipAddress: request.ip ?? null,
+    });
+    response.cookie(REFRESH_COOKIE_NAME, result.session.refreshToken, refreshCookieOptions());
+    if (result.trustedDeviceToken) {
+      response.cookie(MFA_TRUSTED_COOKIE_NAME, result.trustedDeviceToken, mfaTrustedCookieOptions());
+    }
+    response.json({
+      accessToken: result.session.accessToken,
+      user: result.session.user,
+    });
+  } catch (error) {
+    response.status(401).json({ message: error instanceof Error ? error.message : "Invalid MFA code" });
   }
 });
 
@@ -158,6 +209,7 @@ router.post("/logout", logoutLimiter, async (request, response) => {
   }
 
   response.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions());
+  response.clearCookie(MFA_TRUSTED_COOKIE_NAME, mfaTrustedCookieOptions());
   response.status(204).send();
 });
 

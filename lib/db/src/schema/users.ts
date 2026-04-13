@@ -1,5 +1,5 @@
 import { createInsertSchema } from "drizzle-zod";
-import { index, integer, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, index, integer, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { tenantsTable } from "./tenants";
 
 export const userRoleEnum = pgEnum("user_role", ["admin", "employee", "client", "platform_super_admin"]);
@@ -33,6 +33,10 @@ export const usersTable = pgTable(
     clientInfo: jsonb("client_info").$type<ClientBillingInfo>().notNull().default({}),
     hashedPassword: text("hashed_password").notNull(),
     status: userStatusEnum("status").notNull().default("active"),
+    mfaEnabled: boolean("mfa_enabled").notNull().default(false),
+    mfaSecret: text("mfa_secret"),
+    mfaEnrolledAt: timestamp("mfa_enrolled_at", { withTimezone: true }),
+    mfaUpdatedAt: timestamp("mfa_updated_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),

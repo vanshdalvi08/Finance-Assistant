@@ -8,7 +8,9 @@ import type {
   EmployeeAccountsListResult,
   EmployeeAccountProvisionResult,
   EmployeeAccountUpdateResult,
+  LoginResponse,
   LoginCredentials,
+  MfaChallenge,
   PasswordResetPayload,
   PasswordResetRequest,
   UpdateCurrentUserProfilePayload,
@@ -16,8 +18,8 @@ import type {
   UpdateEmployeeAccountPayload,
 } from "./types";
 
-export async function signIn(credentials: LoginCredentials): Promise<AuthSession> {
-  const session = await rawAuthRequest<AuthSession>("/auth/login", {
+export async function signIn(credentials: LoginCredentials): Promise<LoginResponse> {
+  const session = await rawAuthRequest<LoginResponse>("/auth/login", {
     method: "POST",
     data: {
       email: credentials.email.trim().toLowerCase(),
@@ -25,6 +27,21 @@ export async function signIn(credentials: LoginCredentials): Promise<AuthSession
     },
   });
 
+  if (!("mfaRequired" in session)) {
+    setAccessToken(session.accessToken);
+  }
+  return session;
+}
+
+export async function verifyMfaChallenge(payload: {
+  mfaToken: string;
+  code: string;
+  rememberDevice?: boolean;
+}): Promise<AuthSession> {
+  const session = await rawAuthRequest<AuthSession>("/auth/mfa/verify", {
+    method: "POST",
+    data: payload,
+  });
   setAccessToken(session.accessToken);
   return session;
 }

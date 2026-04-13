@@ -1,15 +1,34 @@
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull, lt } from "drizzle-orm";
 import { db } from "@workspace/db";
-import { passwordResetTokensTable, refreshSessionsTable, tenantsTable, usersTable, type ClientBillingInfo, type User } from "@workspace/db/schema";
+import {
+  mfaTrustedDevicesTable,
+  passwordResetTokensTable,
+  refreshSessionsTable,
+  tenantsTable,
+  usersTable,
+  type ClientBillingInfo,
+  type User,
+} from "@workspace/db/schema";
 import { DEFAULT_TENANT_ID } from "./tenants";
 import { getAppUrl, getSmtpConfig, isProduction, optionalEnv } from "./env";
 import { generateRandomToken, generateTemporaryPassword, hashPassword, hashSha256, verifyPassword } from "./security";
-import { ACCESS_TOKEN_TTL, REFRESH_TOKEN_TTL, signAccessToken, signRefreshToken, verifyRefreshToken } from "./jwt";
+import { ACCESS_TOKEN_TTL, REFRESH_TOKEN_TTL, signAccessToken, signMfaToken, signRefreshToken, verifyMfaToken, verifyRefreshToken } from "./jwt";
 import { sendMail } from "./mailer";
 import { onboardingEmailTemplate, passwordResetEmailTemplate } from "./email-templates";
 import { createWelcomeNotification } from "./notifications";
 import { logger } from "./logger";
 import { uploadProfilePhotoDataUrl } from "./storage";
+import { authenticator } from "otplib";
+
+const MFA_ISSUER = optionalEnv("MFA_ISSUER_NAME")?.trim() || "Reforix Payroll";
+const MFA_TRUST_DAYS = Math.max(1, Number(optionalEnv("MFA_TRUST_DAYS") ?? "7") || 7);
+const MFA_ENFORCED = (() => {
+  const override = optionalEnv("MFA_ENFORCE");
+  if (override === undefined) {
+    return isProduction();
+  }
+  return String(override).toLowerCase() === "true";
+})();
 
 export interface PublicUser {
   id: string;
@@ -27,6 +46,7 @@ export interface PublicUser {
   profilePhotoUrl: string | null;
   clientInfo: ClientBillingInfo;
   status: "active" | "inactive";
+  mfaEnabled: boolean;
   createdAt: Date;
   updatedAt: Date;
   lastLoginAt: Date | null;
@@ -37,6 +57,18 @@ export interface LoginResult {
   accessToken: string;
   refreshToken: string;
 }
+
+export interface MfaChallenge {
+  mfaRequired: true;
+  mfaSetupRequired: boolean;
+  rememberDeviceAvailable: boolean;
+  mfaToken: string;
+  user: PublicUser;
+  mfaSecret?: string;
+  otpauthUrl?: string;
+}
+
+export type LoginResponse = LoginResult | MfaChallenge;
 
 export interface CreateEmployeeInput {
   tenantId?: string;
@@ -141,6 +173,7 @@ function publicUser(user: User): PublicUser {
     profilePhotoUrl: user.profilePhotoUrl ?? null,
     clientInfo: user.clientInfo ?? {},
     status: user.status,
+    mfaEnabled: Boolean(user.mfaEnabled),
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
     lastLoginAt: user.lastLoginAt ?? null,
@@ -243,7 +276,105 @@ async function getTenantById(tenantId: string) {
   return rows[0] ?? null;
 }
 
-export async function loginWithPassword(email: string, password: string): Promise<LoginResult> {
+function shouldRequireMfa(user: User): boolean {
+  if (!MFA_ENFORCED) {
+    return false;
+  }
+  return user.role === "admin" || user.role === "platform_super_admin";
+}
+
+function buildOtpAuthUrl(email: string, secret: string): string {
+  return authenticator.keyuri(email, MFA_ISSUER, secret);
+}
+
+async function ensureMfaSecret(user: User): Promise<string> {
+  if (user.mfaSecret) {
+    return user.mfaSecret;
+  }
+
+  const secret = authenticator.generateSecret();
+  const now = new Date();
+  await db
+    .update(usersTable)
+    .set({ mfaSecret: secret, mfaUpdatedAt: now, updatedAt: now })
+    .where(eq(usersTable.id, user.id));
+  return secret;
+}
+
+async function issueSession(user: User): Promise<LoginResult> {
+  const now = new Date();
+  await db.update(usersTable).set({ lastLoginAt: now, updatedAt: now }).where(eq(usersTable.id, user.id));
+
+  const session = await createRefreshSession(user.id);
+  const accessToken = signAccessToken({
+    sub: user.id,
+    tenantId: user.tenantId,
+    role: user.role,
+    email: user.email,
+    name: user.name,
+    sessionId: session.jti,
+  });
+
+  return {
+    user: publicUser(user),
+    accessToken,
+    refreshToken: session.refreshToken,
+  };
+}
+
+async function findTrustedDevice(userId: string, token?: string | null) {
+  if (!token) {
+    return null;
+  }
+
+  const tokenHash = hashSha256(token);
+  const rows = await db
+    .select()
+    .from(mfaTrustedDevicesTable)
+    .where(and(eq(mfaTrustedDevicesTable.userId, userId), eq(mfaTrustedDevicesTable.tokenHash, tokenHash)))
+    .limit(1);
+  const record = rows[0];
+  if (!record) {
+    return null;
+  }
+  if (record.expiresAt.getTime() <= Date.now()) {
+    return null;
+  }
+
+  return record;
+}
+
+async function touchTrustedDevice(id: string) {
+  await db
+    .update(mfaTrustedDevicesTable)
+    .set({ lastUsedAt: new Date() })
+    .where(eq(mfaTrustedDevicesTable.id, id));
+}
+
+async function createTrustedDevice(userId: string, token: string, meta: { userAgent?: string; ipAddress?: string }) {
+  const now = new Date();
+  const expiresAt = new Date(Date.now() + MFA_TRUST_DAYS * 24 * 60 * 60 * 1000);
+  await db.insert(mfaTrustedDevicesTable).values({
+    userId,
+    tokenHash: hashSha256(token),
+    expiresAt,
+    createdAt: now,
+    lastUsedAt: now,
+    userAgent: meta.userAgent?.trim() || null,
+    ipAddress: meta.ipAddress?.trim() || null,
+  });
+  return { expiresAt };
+}
+
+async function pruneExpiredTrustedDevices() {
+  await db.delete(mfaTrustedDevicesTable).where(lt(mfaTrustedDevicesTable.expiresAt, new Date()));
+}
+
+export async function loginWithPassword(
+  email: string,
+  password: string,
+  options?: { trustedDeviceToken?: string | null },
+): Promise<LoginResponse> {
   const user = await findUserByEmail(email);
 
   if (!user) {
@@ -264,27 +395,43 @@ export async function loginWithPassword(email: string, password: string): Promis
     throw new Error("This workspace is inactive");
   }
 
-  const now = new Date();
-  await db
-    .update(usersTable)
-    .set({ lastLoginAt: now, updatedAt: now })
-    .where(eq(usersTable.id, user.id));
+  if (shouldRequireMfa(user)) {
+    await pruneExpiredTrustedDevices();
+    const trusted = await findTrustedDevice(user.id, options?.trustedDeviceToken ?? null);
+    if (trusted) {
+      await touchTrustedDevice(trusted.id);
+      return issueSession(user);
+    }
 
-  const session = await createRefreshSession(user.id);
-  const accessToken = signAccessToken({
-    sub: user.id,
-    tenantId: user.tenantId,
-    role: user.role,
-    email: user.email,
-    name: user.name,
-    sessionId: session.jti,
-  });
+    const mfaToken = signMfaToken({
+      sub: user.id,
+      jti: generateRandomToken(16),
+      typ: "mfa",
+    });
 
-  return {
-    user: publicUser(user),
-    accessToken,
-    refreshToken: session.refreshToken,
-  };
+    if (!user.mfaEnabled) {
+      const secret = await ensureMfaSecret(user);
+      return {
+        mfaRequired: true,
+        mfaSetupRequired: true,
+        rememberDeviceAvailable: true,
+        mfaToken,
+        user: publicUser(user),
+        mfaSecret: secret,
+        otpauthUrl: buildOtpAuthUrl(user.email, secret),
+      };
+    }
+
+    return {
+      mfaRequired: true,
+      mfaSetupRequired: false,
+      rememberDeviceAvailable: true,
+      mfaToken,
+      user: publicUser(user),
+    };
+  }
+
+  return issueSession(user);
 }
 
 export async function refreshLogin(refreshToken: string): Promise<LoginResult> {
@@ -325,6 +472,60 @@ export async function refreshLogin(refreshToken: string): Promise<LoginResult> {
     accessToken,
     refreshToken: nextSession.refreshToken,
   };
+}
+
+export async function verifyMfaChallenge(input: {
+  mfaToken: string;
+  code: string;
+  rememberDevice?: boolean;
+  userAgent?: string | null;
+  ipAddress?: string | null;
+}): Promise<{ session: LoginResult; trustedDeviceToken?: string }> {
+  const payload = verifyMfaToken(input.mfaToken);
+  if (payload.typ !== "mfa") {
+    throw new Error("Invalid MFA token");
+  }
+
+  const user = await findUserById(payload.sub);
+  if (!user || user.status !== "active") {
+    throw new Error("User not available");
+  }
+
+  if (!shouldRequireMfa(user)) {
+    return { session: await issueSession(user) };
+  }
+
+  const secret = user.mfaSecret;
+  if (!secret) {
+    throw new Error("MFA is not configured for this account");
+  }
+
+  const normalizedCode = input.code.trim().replace(/\s+/g, "");
+  const valid = authenticator.check(normalizedCode, secret);
+  if (!valid) {
+    throw new Error("Invalid MFA code");
+  }
+
+  if (!user.mfaEnabled) {
+    const now = new Date();
+    await db
+      .update(usersTable)
+      .set({ mfaEnabled: true, mfaEnrolledAt: now, mfaUpdatedAt: now, updatedAt: now })
+      .where(eq(usersTable.id, user.id));
+  }
+
+  const session = await issueSession(user);
+  if (!input.rememberDevice) {
+    return { session };
+  }
+
+  const token = generateRandomToken(24);
+  await createTrustedDevice(user.id, token, {
+    userAgent: input.userAgent ?? null,
+    ipAddress: input.ipAddress ?? null,
+  });
+
+  return { session, trustedDeviceToken: token };
 }
 
 export async function logoutRefreshToken(refreshToken: string): Promise<void> {

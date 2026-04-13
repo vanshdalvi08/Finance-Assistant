@@ -6,6 +6,7 @@ const REFRESH_TOKEN_SECRET = getJwtSecret("JWT_REFRESH_SECRET", "yojak-dev-refre
 
 export const ACCESS_TOKEN_TTL = "20m";
 export const REFRESH_TOKEN_TTL = "14d";
+export const MFA_TOKEN_TTL = "5m";
 
 export interface AccessTokenPayload {
   sub: string;
@@ -22,6 +23,12 @@ export interface RefreshTokenPayload {
   typ: "refresh";
 }
 
+export interface MfaTokenPayload {
+  sub: string;
+  jti: string;
+  typ: "mfa";
+}
+
 export function signAccessToken(payload: AccessTokenPayload): string {
   return jwt.sign(payload, ACCESS_TOKEN_SECRET, { expiresIn: ACCESS_TOKEN_TTL });
 }
@@ -30,12 +37,20 @@ export function signRefreshToken(payload: RefreshTokenPayload): string {
   return jwt.sign(payload, REFRESH_TOKEN_SECRET, { expiresIn: REFRESH_TOKEN_TTL });
 }
 
+export function signMfaToken(payload: MfaTokenPayload): string {
+  return jwt.sign(payload, ACCESS_TOKEN_SECRET, { expiresIn: MFA_TOKEN_TTL });
+}
+
 export function verifyAccessToken(token: string): AccessTokenPayload {
   return jwt.verify(token, ACCESS_TOKEN_SECRET) as AccessTokenPayload;
 }
 
 export function verifyRefreshToken(token: string): RefreshTokenPayload {
   return jwt.verify(token, REFRESH_TOKEN_SECRET) as RefreshTokenPayload;
+}
+
+export function verifyMfaToken(token: string): MfaTokenPayload {
+  return jwt.verify(token, ACCESS_TOKEN_SECRET) as MfaTokenPayload;
 }
 
 export function decodeExpiryTokenDate(expiresIn: string): Date {

@@ -1,10 +1,15 @@
-import test, { before } from "node:test";
+import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import path from "node:path";
+import process from "node:process";
 
-const apiPort = 3001;
+const apiPort = 3103;
 const baseUrl = `http://127.0.0.1:${apiPort}/api`;
+const cwd = path.resolve("C:/Users/vansh/Desktop/Finance-Assistant/artifacts/api-server");
 
 const loginCache = new Map();
+let serverProcess;
 
 function randomSuffix(prefix) {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
@@ -146,7 +151,19 @@ async function createPreApproval(adminToken, clientId, suffix) {
 }
 
 before(async () => {
+  serverProcess = spawn("node", ["--enable-source-maps", "dist/index.mjs"], {
+    cwd,
+    env: { ...process.env, PORT: String(apiPort), NODE_ENV: "development" },
+    stdio: "ignore",
+    windowsHide: true,
+  });
   await waitForHealth();
+});
+
+after(async () => {
+  if (serverProcess && !serverProcess.killed) {
+    serverProcess.kill();
+  }
 });
 
 test("employee cannot access admin, platform, or client-only routes", { concurrency: false }, async () => {
