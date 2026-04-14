@@ -57,3 +57,11 @@ Thumbs.db
 # local package manager caches
 .corepack*/
 .pnpm-store/
+
+# runtime/debug logs
+*.log
+*.err.log
+*.out.log
+
+# local tool output
+.vercel/output/

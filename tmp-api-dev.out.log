@@ -1,8 +1,0 @@
-
-> @workspace/api-server@0.0.0 dev C:\Users\vansh\Desktop\Finance-Assistant\artifacts\api-server
-> cross-env NODE_ENV=development node ./build.mjs && cross-env NODE_ENV=development node --enable-source-maps ./dist/index.mjs
-
-{"level":50,"time":1775889109984,"pid":18420,"hostname":"DESKTOP-VUMLN6S","err":{"type":"Error","message":"listen EADDRINUSE: address already in use :::3001","stack":"Error: listen EADDRINUSE: address already in use :::3001\n    at Server.setupListenHandle [as _listen2] (node:net:1940:16)\n    at listenInCluster (node:net:1997:12)\n    at Server.listen (node:net:2102:7)\n    at Function.listen (C:\\Users\\vansh\\Desktop\\Finance-Assistant\\node_modules\\.pnpm\\express@5.2.1\\node_modules\\express\\lib\\application.js:605:24)\n    at startServer (C:\\Users\\vansh\\Desktop\\Finance-Assistant\\artifacts\\api-server\\src\\index.ts:23:7)\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)","code":"EADDRINUSE","errno":-4091,"syscall":"listen","address":"::","port":3001},"msg":"Error listening on port"}
-C:\Users\vansh\Desktop\Finance-Assistant\artifacts\api-server:
- ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL  @workspace/api-server@0.0.0 dev: `cross-env NODE_ENV=development node ./build.mjs && cross-env NODE_ENV=development node --enable-source-maps ./dist/index.mjs`
-Exit status 1

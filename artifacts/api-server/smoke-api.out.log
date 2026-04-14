@@ -1,3 +1,0 @@
-{"level":30,"time":1775947079175,"pid":1116,"hostname":"DESKTOP-VUMLN6S","port":3001,"msg":"Server listening"}
-{"level":30,"time":1775947101434,"pid":1116,"hostname":"DESKTOP-VUMLN6S","req":{"id":1,"method":"POST","url":"/api/auth/login"},"res":{"statusCode":200},"responseTime":1425,"msg":"request completed"}
-{"level":30,"time":1775947102550,"pid":1116,"hostname":"DESKTOP-VUMLN6S","req":{"id":2,"method":"POST","url":"/api/platform/tenants"},"res":{"statusCode":409},"responseTime":1100,"msg":"request completed"}
