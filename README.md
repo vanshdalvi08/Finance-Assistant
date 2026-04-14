@@ -107,6 +107,19 @@ Backend env variables:
 - `SUPABASE_STORAGE_AVATARS_BUCKET`
 - `SUPABASE_STORAGE_EXPENSE_ATTACHMENTS_BUCKET`
 
+## Auth hardening controls
+
+The API now supports additional session and MFA hardening toggles:
+
+- `MFA_ENFORCE`
+- `MFA_TRUST_DAYS`
+- `MFA_ISSUER_NAME`
+- `MFA_REQUIRED_ROLES` (comma-separated roles)
+- `AUTH_MAX_ACTIVE_SESSIONS` (max active refresh sessions per user)
+- `AUTH_REVOKE_ON_REFRESH_REUSE` (revoke all sessions if a reused refresh token is detected)
+
+The auth API also includes a `POST /api/auth/logout-all` endpoint that revokes all refresh sessions and trusted MFA devices for the authenticated user.
+
 Example env files:
 
 - `artifacts/api-server/.env.example`

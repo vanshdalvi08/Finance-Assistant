@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, lt } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, lt } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   mfaTrustedDevicesTable,
@@ -22,6 +22,14 @@ import { authenticator } from "otplib";
 
 const MFA_ISSUER = optionalEnv("MFA_ISSUER_NAME")?.trim() || "Reforix Payroll";
 const MFA_TRUST_DAYS = Math.max(1, Number(optionalEnv("MFA_TRUST_DAYS") ?? "7") || 7);
+const MAX_ACTIVE_REFRESH_SESSIONS = Math.max(1, Number(optionalEnv("AUTH_MAX_ACTIVE_SESSIONS") ?? "5") || 5);
+const REFRESH_REUSE_REVOKE_ALL = String(optionalEnv("AUTH_REVOKE_ON_REFRESH_REUSE") ?? "true").toLowerCase() !== "false";
+const MFA_REQUIRED_ROLES = new Set(
+  (optionalEnv("MFA_REQUIRED_ROLES") ?? "admin,platform_super_admin")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value === "admin" || value === "platform_super_admin" || value === "employee" || value === "client"),
+);
 const MFA_ENFORCED = (() => {
   const override = optionalEnv("MFA_ENFORCE");
   if (override === undefined) {
@@ -238,12 +246,15 @@ async function createRefreshSession(userId: string) {
   const jti = generateRandomToken(24);
   const refreshToken = signRefreshToken({ sub: userId, jti, typ: "refresh" });
   const expiresAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+  const jtiHash = hashSha256(jti);
 
   await db.insert(refreshSessionsTable).values({
     userId,
-    jtiHash: hashSha256(jti),
+    jtiHash,
     expiresAt,
   });
+
+  await enforceRefreshSessionCap(userId, jtiHash);
 
   return { refreshToken, expiresAt, jti };
 }
@@ -260,6 +271,44 @@ async function revokeAllSessions(userId: string) {
     .update(refreshSessionsTable)
     .set({ revokedAt: new Date(), updatedAt: new Date() })
     .where(and(eq(refreshSessionsTable.userId, userId), isNull(refreshSessionsTable.revokedAt)));
+}
+
+async function enforceRefreshSessionCap(userId: string, keepJtiHash: string) {
+  if (MAX_ACTIVE_REFRESH_SESSIONS < 1) {
+    return;
+  }
+
+  const activeSessions = await db
+    .select()
+    .from(refreshSessionsTable)
+    .where(
+      and(
+        eq(refreshSessionsTable.userId, userId),
+        isNull(refreshSessionsTable.revokedAt),
+        gt(refreshSessionsTable.expiresAt, new Date()),
+      ),
+    )
+    .orderBy(desc(refreshSessionsTable.createdAt));
+
+  if (activeSessions.length <= MAX_ACTIVE_REFRESH_SESSIONS) {
+    return;
+  }
+
+  const keep = new Set(
+    activeSessions
+      .slice(0, MAX_ACTIVE_REFRESH_SESSIONS)
+      .map((session) => session.jtiHash)
+      .concat(keepJtiHash),
+  );
+
+  const sessionsToRevoke = activeSessions.filter((session) => !keep.has(session.jtiHash));
+  if (sessionsToRevoke.length === 0) {
+    return;
+  }
+
+  for (const session of sessionsToRevoke) {
+    await revokeSessionByJtiHash(session.jtiHash);
+  }
 }
 
 async function getRefreshSession(jtiHash: string) {
@@ -280,7 +329,7 @@ function shouldRequireMfa(user: User): boolean {
   if (!MFA_ENFORCED) {
     return false;
   }
-  return user.role === "admin" || user.role === "platform_super_admin";
+  return MFA_REQUIRED_ROLES.has(user.role);
 }
 
 function buildOtpAuthUrl(email: string, secret: string): string {
@@ -351,7 +400,7 @@ async function touchTrustedDevice(id: string) {
     .where(eq(mfaTrustedDevicesTable.id, id));
 }
 
-async function createTrustedDevice(userId: string, token: string, meta: { userAgent?: string; ipAddress?: string }) {
+async function createTrustedDevice(userId: string, token: string, meta: { userAgent?: string | null; ipAddress?: string | null }) {
   const now = new Date();
   const expiresAt = new Date(Date.now() + MFA_TRUST_DAYS * 24 * 60 * 60 * 1000);
   await db.insert(mfaTrustedDevicesTable).values({
@@ -442,7 +491,10 @@ export async function refreshLogin(refreshToken: string): Promise<LoginResult> {
 
   const jtiHash = hashSha256(payload.jti);
   const session = await getRefreshSession(jtiHash);
-  if (!session || session.revokedAt || session.expiresAt.getTime() <= Date.now()) {
+  if (!session || session.userId !== payload.sub || session.revokedAt || session.expiresAt.getTime() <= Date.now()) {
+    if (REFRESH_REUSE_REVOKE_ALL) {
+      await revokeAllSessions(payload.sub);
+    }
     throw new Error("Refresh session expired");
   }
 
@@ -539,6 +591,11 @@ export async function logoutRefreshToken(refreshToken: string): Promise<void> {
   } catch {
     return;
   }
+}
+
+export async function logoutAllSessions(userId: string): Promise<void> {
+  await revokeAllSessions(userId.trim());
+  await db.delete(mfaTrustedDevicesTable).where(eq(mfaTrustedDevicesTable.userId, userId.trim()));
 }
 
 export async function createEmployeeAccount(input: CreateEmployeeInput): Promise<{ user: PublicUser; temporaryPassword: string; onboardingEmailSent: boolean }> {
@@ -997,6 +1054,8 @@ export async function resetPassword(token: string, password: string): Promise<vo
       .update(refreshSessionsTable)
       .set({ revokedAt: now, updatedAt: now })
       .where(eq(refreshSessionsTable.userId, resetRow.userId));
+
+    await trx.delete(mfaTrustedDevicesTable).where(eq(mfaTrustedDevicesTable.userId, resetRow.userId));
   });
 }
 

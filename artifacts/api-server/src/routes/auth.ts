@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import { z } from "zod";
 import {
   loginWithPassword,
+  logoutAllSessions,
   logoutRefreshToken,
   refreshLogin,
   requestPasswordReset,
@@ -40,6 +41,14 @@ const resetLimiter = rateLimit({
   keyFn: rateLimitKeyByRemoteAddressAndField("token"),
 });
 
+const mfaVerifyLimiter = rateLimit({
+  name: "auth-mfa-verify",
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: "Too many MFA attempts. Please try again later.",
+  keyFn: rateLimitKeyByRemoteAddress,
+});
+
 const refreshLimiter = rateLimit({
   name: "auth-refresh",
   windowMs: 15 * 60 * 1000,
@@ -53,6 +62,14 @@ const logoutLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 60,
   message: "Too many logout attempts. Please try again later.",
+  keyFn: rateLimitKeyByRemoteAddress,
+});
+
+const logoutAllLimiter = rateLimit({
+  name: "auth-logout-all",
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: "Too many global logout attempts. Please try again later.",
   keyFn: rateLimitKeyByRemoteAddress,
 });
 
@@ -132,7 +149,7 @@ router.post("/login", loginLimiter, async (request, response) => {
   }
 });
 
-router.post("/mfa/verify", loginLimiter, async (request, response) => {
+router.post("/mfa/verify", mfaVerifyLimiter, async (request, response) => {
   const parsed = mfaVerifySchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid MFA payload" });
@@ -210,6 +227,22 @@ router.post("/logout", logoutLimiter, async (request, response) => {
 
   response.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions());
   response.clearCookie(MFA_TRUSTED_COOKIE_NAME, mfaTrustedCookieOptions());
+  response.status(204).send();
+});
+
+router.post("/logout-all", requireAuth, logoutAllLimiter, async (request, response) => {
+  if (!request.auth?.user.id) {
+    response.status(401).json({ message: "Unauthorized" });
+    return;
+  }
+
+  try {
+    await logoutAllSessions(request.auth.user.id);
+  } finally {
+    response.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions());
+    response.clearCookie(MFA_TRUSTED_COOKIE_NAME, mfaTrustedCookieOptions());
+  }
+
   response.status(204).send();
 });
 

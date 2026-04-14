@@ -41,6 +41,7 @@ async function loadUser(userId: string): Promise<PublicUser | null> {
     hourlyRate: user.hourlyRate,
     profilePhotoUrl: user.profilePhotoUrl ?? null,
     clientInfo: user.clientInfo ?? {},
+    mfaEnabled: Boolean(user.mfaEnabled),
     status: user.status,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
