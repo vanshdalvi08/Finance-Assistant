@@ -244,3 +244,47 @@ test("platform super admin cannot enter tenant admin routes", { concurrency: fal
   assert.equal(overviewResponse.status, 200, JSON.stringify(overviewResponse.json));
   assert.equal(adminResponse.status, 403, JSON.stringify(adminResponse.json));
 });
+
+test("business mutation routes enforce explicit role guards", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("rbac-mutations");
+  const createdEmployee = await createEmployee(adminToken, `${suffix}-employee`);
+  const createdClient = await createClient(adminToken, `${suffix}-client`);
+  const employeeToken = await login(createdEmployee.user.email, createdEmployee.temporaryPassword);
+  const clientToken = await login(createdClient.user.email, createdClient.temporaryPassword);
+  const fakeId = "11111111-1111-1111-1111-111111111111";
+
+  try {
+    const clientDeleteLeaveResponse = await api(`/business/leave-requests/${fakeId}`, {
+      method: "DELETE",
+      token: clientToken,
+    });
+    const employeeApprovePreApprovalResponse = await api(`/business/pre-approvals/${fakeId}/approve`, {
+      method: "POST",
+      token: employeeToken,
+    });
+    const clientSubmitPreApprovalResponse = await api(`/business/pre-approvals/${fakeId}/submit`, {
+      method: "POST",
+      token: clientToken,
+    });
+    const adminRequestChangesResponse = await api(`/business/pre-approvals/${fakeId}/request-changes`, {
+      method: "POST",
+      token: adminToken,
+      body: { message: "Please update this draft." },
+    });
+    const employeeCommentResponse = await api(`/business/pre-approvals/${fakeId}/comments`, {
+      method: "POST",
+      token: employeeToken,
+      body: { message: "Comment from employee should be blocked." },
+    });
+
+    assert.equal(clientDeleteLeaveResponse.status, 403, JSON.stringify(clientDeleteLeaveResponse.json));
+    assert.equal(employeeApprovePreApprovalResponse.status, 403, JSON.stringify(employeeApprovePreApprovalResponse.json));
+    assert.equal(clientSubmitPreApprovalResponse.status, 403, JSON.stringify(clientSubmitPreApprovalResponse.json));
+    assert.equal(adminRequestChangesResponse.status, 403, JSON.stringify(adminRequestChangesResponse.json));
+    assert.equal(employeeCommentResponse.status, 403, JSON.stringify(employeeCommentResponse.json));
+  } finally {
+    await api(`/admin/employees/${createdEmployee.user.id}`, { method: "DELETE", token: adminToken });
+    await api(`/admin/clients/${createdClient.user.id}`, { method: "DELETE", token: adminToken });
+  }
+});

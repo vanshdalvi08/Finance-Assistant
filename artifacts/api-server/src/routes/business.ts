@@ -1568,7 +1568,7 @@ router.post("/leave-requests", requireTenantRole("employee"), async (request, re
   response.status(201).json({ leaveRequest, duplicate: false });
 });
 
-router.delete("/leave-requests/:id", async (request, response) => {
+router.delete("/leave-requests/:id", requireTenantRole("admin", "employee"), async (request, response) => {
   const store = await readStore();
   const existing = store.leaveRequests.find((leaveRequest) => leaveRequest.id === request.params.id);
   if (!existing) {
@@ -2258,14 +2258,7 @@ router.get("/projects/names", async (_request, response) => {
   response.json({ projectNames: Array.from(names).sort((left, right) => left.localeCompare(right)) });
 });
 
-router.get("/pre-approvals", async (request, response) => {
-  try {
-    assertActorRoleAccess(request.auth?.user.role, ["admin", "client"], () => new Error("Forbidden"));
-  } catch {
-    response.status(403).json({ message: "Forbidden" });
-    return;
-  }
-
+router.get("/pre-approvals", requireTenantRole("admin", "client"), async (request, response) => {
   const rows = await listPreApprovalsForActor(preApprovalActor(request));
   response.json({ preApprovals: rows.map(serializePreApproval) });
 });
@@ -2334,14 +2327,7 @@ router.post("/pre-approvals", requireTenantRole("admin"), async (request, respon
   }
 });
 
-router.route("/pre-approvals/:id").get(async (request, response) => {
-  try {
-    assertActorRoleAccess(request.auth?.user.role, ["admin", "client"], () => new Error("Forbidden"));
-  } catch {
-    response.status(403).json({ message: "Forbidden" });
-    return;
-  }
-
+router.route("/pre-approvals/:id").get(requireTenantRole("admin", "client"), async (request, response) => {
   try {
     const preApproval = await getPreApprovalForActor(routeParam(request.params.id), preApprovalActor(request));
     response.json({ preApproval: serializePreApproval(preApproval) });
@@ -2495,14 +2481,7 @@ router.post("/pre-approvals/:id/submit", requireTenantRole("admin"), async (requ
   }
 });
 
-router.post("/pre-approvals/:id/comments", async (request, response) => {
-  try {
-    assertActorRoleAccess(request.auth?.user.role, ["admin", "client"], () => new Error("Forbidden"));
-  } catch {
-    response.status(403).json({ message: "Forbidden" });
-    return;
-  }
-
+router.post("/pre-approvals/:id/comments", requireTenantRole("admin", "client"), async (request, response) => {
   const parsed = preApprovalCommentSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Comment is required." });
@@ -2524,14 +2503,7 @@ router.post("/pre-approvals/:id/comments", async (request, response) => {
   }
 });
 
-router.post("/pre-approvals/:id/approve", async (request, response) => {
-  try {
-    assertActorRoleAccess(request.auth?.user.role, ["client"], () => new Error("Forbidden"));
-  } catch {
-    response.status(403).json({ message: "Forbidden" });
-    return;
-  }
-
+router.post("/pre-approvals/:id/approve", requireTenantRole("client"), async (request, response) => {
   try {
     const result = await approvePreApproval(routeParam(request.params.id), preApprovalActor(request), {
       idempotencyKey: idempotencyKeyFrom(request),
@@ -2570,14 +2542,7 @@ router.post("/pre-approvals/:id/approve", async (request, response) => {
   }
 });
 
-router.post("/pre-approvals/:id/request-changes", async (request, response) => {
-  try {
-    assertActorRoleAccess(request.auth?.user.role, ["client"], () => new Error("Forbidden"));
-  } catch {
-    response.status(403).json({ message: "Forbidden" });
-    return;
-  }
-
+router.post("/pre-approvals/:id/request-changes", requireTenantRole("client"), async (request, response) => {
   const parsed = preApprovalCommentSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Please add a comment explaining the requested changes." });
