@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { useLocation } from "wouter";
 import RigVector from "@/assets/images/login-rig.png";
@@ -7,6 +7,7 @@ import RigVectorThree from "@/assets/images/3 image.png";
 import { useAuthStore } from "@/store/auth";
 import { verifyMfaChallenge } from "@/auth/auth-service";
 import type { MfaChallenge } from "@/auth/types";
+import QRCode from "qrcode";
 
 const heroVectors = [RigVector, RigVectorTwo, RigVectorThree];
 const heroVectorClasses = [
@@ -66,11 +67,37 @@ const LoginPage = () => {
   const [mfaChallenge, setMfaChallenge] = useState<MfaChallenge | null>(null);
   const [mfaCode, setMfaCode] = useState("");
   const [rememberDevice, setRememberDevice] = useState(true);
+  const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string | null>(null);
   const [selectedVectorIndex] = useState(getInitialVectorIndex);
   const [selectedCopyIndex] = useState(getInitialCopyIndex);
   const login = useAuthStore((state) => state.login);
   const loginWithSession = useAuthStore((state) => state.loginWithSession);
   const [, setLocation] = useLocation();
+
+  useEffect(() => {
+    const otpauthUrl = mfaChallenge?.otpauthUrl;
+    if (!otpauthUrl) {
+      setQrCodeDataUrl(null);
+      return;
+    }
+
+    let active = true;
+    QRCode.toDataURL(otpauthUrl, { margin: 1, width: 180 })
+      .then((dataUrl) => {
+        if (active) {
+          setQrCodeDataUrl(dataUrl);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setQrCodeDataUrl(null);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [mfaChallenge?.otpauthUrl]);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -269,6 +296,15 @@ const LoginPage = () => {
                     <p className="mt-1">
                       Add a new account in your authenticator app using this key, then enter the 6-digit code below.
                     </p>
+                    {qrCodeDataUrl ? (
+                      <div className="mt-3 flex justify-center">
+                        <img
+                          src={qrCodeDataUrl}
+                          alt="Authenticator QR code"
+                          className="h-[180px] w-[180px] rounded-md border border-gray-200 bg-white p-2"
+                        />
+                      </div>
+                    ) : null}
                     {mfaChallenge.mfaSecret ? (
                       <div className="mt-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-[12px] text-gray-900">
                         {mfaChallenge.mfaSecret}
