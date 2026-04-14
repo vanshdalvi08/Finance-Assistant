@@ -5,6 +5,8 @@ import type { AuthSession } from "./types";
 const DEFAULT_DEV_API_BASE_URL = "http://localhost:3001/api";
 const DEFAULT_PROD_API_BASE_URL = "https://finance-assistant-api-nmc7.onrender.com/api";
 const TAB_SESSION_USER_KEY = "yojak.auth.tab.user";
+const CSRF_COOKIE_NAME = "yojak_csrf_token";
+const CSRF_HEADER_NAME = "X-CSRF-Token";
 
 function getApiBaseUrl() {
   const configuredBaseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "");
@@ -63,10 +65,86 @@ const authlessAxios = axios.create({
 });
 
 let refreshPromise: Promise<AuthSession> | null = null;
+let csrfBootstrapPromise: Promise<void> | null = null;
 
 function shouldSkipRefresh(config?: AxiosRequestConfig) {
   const url = config?.url ?? "";
   return url.includes("/auth/login") || url.includes("/auth/refresh") || url.includes("/auth/logout");
+}
+
+function isMutatingMethod(method?: string) {
+  const value = (method ?? "GET").toUpperCase();
+  return value === "POST" || value === "PUT" || value === "PATCH" || value === "DELETE";
+}
+
+function readCookie(name: string): string | null {
+  if (typeof document === "undefined") {
+    return null;
+  }
+
+  const prefix = `${name}=`;
+  const value = document.cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix));
+
+  if (!value) {
+    return null;
+  }
+
+  const raw = value.slice(prefix.length);
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function shouldAttachCsrfHeader(config: AxiosRequestConfig) {
+  const url = config.url ?? "";
+  if (!isMutatingMethod(config.method)) {
+    return false;
+  }
+
+  if (url.includes("/auth/csrf")) {
+    return false;
+  }
+
+  return url.includes("/auth/refresh") || url.includes("/auth/logout");
+}
+
+async function ensureCsrfTokenCookie() {
+  if (readCookie(CSRF_COOKIE_NAME)) {
+    return;
+  }
+
+  if (!csrfBootstrapPromise) {
+    csrfBootstrapPromise = authlessAxios
+      .get<{ csrfToken: string }>("/auth/csrf")
+      .then(() => undefined)
+      .finally(() => {
+        csrfBootstrapPromise = null;
+      });
+  }
+
+  await csrfBootstrapPromise;
+}
+
+async function withCsrfHeader(config: InternalAxiosRequestConfig) {
+  if (!shouldAttachCsrfHeader(config)) {
+    return config;
+  }
+
+  if (!readCookie(CSRF_COOKIE_NAME)) {
+    await ensureCsrfTokenCookie();
+  }
+
+  const token = readCookie(CSRF_COOKIE_NAME);
+  if (token) {
+    config.headers.set(CSRF_HEADER_NAME, token);
+  }
+
+  return config;
 }
 
 async function performRefresh(): Promise<AuthSession> {
@@ -90,12 +168,18 @@ async function performRefresh(): Promise<AuthSession> {
   return refreshPromise;
 }
 
-authAxios.interceptors.request.use((config) => {
+authAxios.interceptors.request.use(async (config) => {
+  await withCsrfHeader(config);
   const token = getAccessToken();
   if (token) {
     config.headers.set("Authorization", `Bearer ${token}`);
   }
 
+  return config;
+});
+
+authlessAxios.interceptors.request.use(async (config) => {
+  await withCsrfHeader(config);
   return config;
 });
 

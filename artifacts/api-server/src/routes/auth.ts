@@ -1,4 +1,4 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Response } from "express";
 import { z } from "zod";
 import {
   loginWithPassword,
@@ -11,9 +11,18 @@ import {
   verifyMfaChallenge,
 } from "../lib/auth-service";
 import { requireAuth } from "../middlewares/auth";
-import { MFA_TRUSTED_COOKIE_NAME, mfaTrustedCookieOptions, REFRESH_COOKIE_NAME, refreshCookieOptions } from "../lib/cookies";
+import {
+  CSRF_COOKIE_NAME,
+  MFA_TRUSTED_COOKIE_NAME,
+  csrfCookieOptions,
+  mfaTrustedCookieOptions,
+  REFRESH_COOKIE_NAME,
+  refreshCookieOptions,
+} from "../lib/cookies";
 import { rateLimit, rateLimitKeyByRemoteAddress, rateLimitKeyByRemoteAddressAndField } from "../middlewares/rate-limit";
 import { recordPlatformEventSafe } from "../lib/platform";
+import { generateRandomToken } from "../lib/security";
+import { requireCsrfToken, requireSameOriginAuthMutation } from "../middlewares/csrf";
 
 const router: IRouter = Router();
 
@@ -109,6 +118,19 @@ const updateProfileSchema = z.object({
   profilePhotoUrl: z.string().trim().max(2_500_000).nullable().optional(),
 });
 
+function issueCsrfToken(response: Response) {
+  const csrfToken = generateRandomToken(24);
+  response.cookie(CSRF_COOKIE_NAME, csrfToken, csrfCookieOptions());
+  return csrfToken;
+}
+
+router.use(requireSameOriginAuthMutation);
+
+router.get("/csrf", (_request, response) => {
+  const csrfToken = issueCsrfToken(response);
+  response.json({ csrfToken });
+});
+
 router.post("/login", loginLimiter, async (request, response) => {
   const parsed = loginSchema.safeParse(request.body);
   if (!parsed.success) {
@@ -128,9 +150,11 @@ router.post("/login", loginLimiter, async (request, response) => {
     }
 
     response.cookie(REFRESH_COOKIE_NAME, result.refreshToken, refreshCookieOptions());
+    const csrfToken = issueCsrfToken(response);
     response.json({
       accessToken: result.accessToken,
       user: result.user,
+      csrfToken,
     });
   } catch {
     await recordPlatformEventSafe({
@@ -168,16 +192,18 @@ router.post("/mfa/verify", mfaVerifyLimiter, async (request, response) => {
     if (result.trustedDeviceToken) {
       response.cookie(MFA_TRUSTED_COOKIE_NAME, result.trustedDeviceToken, mfaTrustedCookieOptions());
     }
+    const csrfToken = issueCsrfToken(response);
     response.json({
       accessToken: result.session.accessToken,
       user: result.session.user,
+      csrfToken,
     });
   } catch (error) {
     response.status(401).json({ message: error instanceof Error ? error.message : "Invalid MFA code" });
   }
 });
 
-router.post("/refresh", refreshLimiter, async (request, response) => {
+router.post("/refresh", refreshLimiter, requireCsrfToken, async (request, response) => {
   const refreshToken = request.cookies?.[REFRESH_COOKIE_NAME];
   if (typeof refreshToken !== "string" || !refreshToken) {
     await recordPlatformEventSafe({
@@ -196,12 +222,15 @@ router.post("/refresh", refreshLimiter, async (request, response) => {
   try {
     const result = await refreshLogin(refreshToken);
     response.cookie(REFRESH_COOKIE_NAME, result.refreshToken, refreshCookieOptions());
+    const csrfToken = issueCsrfToken(response);
     response.json({
       accessToken: result.accessToken,
       user: result.user,
+      csrfToken,
     });
   } catch {
     response.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions());
+    response.clearCookie(CSRF_COOKIE_NAME, csrfCookieOptions());
     await recordPlatformEventSafe({
       severity: "warning",
       category: "auth",
@@ -215,7 +244,7 @@ router.post("/refresh", refreshLimiter, async (request, response) => {
   }
 });
 
-router.post("/logout", logoutLimiter, async (request, response) => {
+router.post("/logout", logoutLimiter, requireCsrfToken, async (request, response) => {
   const refreshToken = request.cookies?.[REFRESH_COOKIE_NAME];
   if (typeof refreshToken === "string" && refreshToken) {
     try {
@@ -227,10 +256,11 @@ router.post("/logout", logoutLimiter, async (request, response) => {
 
   response.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions());
   response.clearCookie(MFA_TRUSTED_COOKIE_NAME, mfaTrustedCookieOptions());
+  response.clearCookie(CSRF_COOKIE_NAME, csrfCookieOptions());
   response.status(204).send();
 });
 
-router.post("/logout-all", requireAuth, logoutAllLimiter, async (request, response) => {
+router.post("/logout-all", requireAuth, logoutAllLimiter, requireCsrfToken, async (request, response) => {
   if (!request.auth?.user.id) {
     response.status(401).json({ message: "Unauthorized" });
     return;
@@ -241,6 +271,7 @@ router.post("/logout-all", requireAuth, logoutAllLimiter, async (request, respon
   } finally {
     response.clearCookie(REFRESH_COOKIE_NAME, refreshCookieOptions());
     response.clearCookie(MFA_TRUSTED_COOKIE_NAME, mfaTrustedCookieOptions());
+    response.clearCookie(CSRF_COOKIE_NAME, csrfCookieOptions());
   }
 
   response.status(204).send();

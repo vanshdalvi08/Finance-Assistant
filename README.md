@@ -117,8 +117,13 @@ The API now supports additional session and MFA hardening toggles:
 - `MFA_REQUIRED_ROLES` (comma-separated roles)
 - `AUTH_MAX_ACTIVE_SESSIONS` (max active refresh sessions per user)
 - `AUTH_REVOKE_ON_REFRESH_REUSE` (revoke all sessions if a reused refresh token is detected)
+- `AUTH_CSRF_ENFORCE` (enable CSRF token enforcement for cookie-auth mutation routes)
+- `AUTH_STRICT_ORIGIN_CHECK` (enforce trusted `Origin`/`Referer` checks for auth mutation routes)
 
-The auth API also includes a `POST /api/auth/logout-all` endpoint that revokes all refresh sessions and trusted MFA devices for the authenticated user.
+The auth API includes:
+
+- `GET /api/auth/csrf` to issue/refresh a CSRF token cookie.
+- `POST /api/auth/logout-all` to revoke all refresh sessions and trusted MFA devices for the authenticated user.
 
 Example env files:
 

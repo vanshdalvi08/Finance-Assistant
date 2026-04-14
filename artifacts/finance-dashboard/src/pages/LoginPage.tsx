@@ -83,7 +83,7 @@ const LoginPage = () => {
 
     let active = true;
     QRCode.toDataURL(otpauthUrl, { margin: 1, width: 180 })
-      .then((dataUrl) => {
+      .then((dataUrl: string) => {
         if (active) {
           setQrCodeDataUrl(dataUrl);
         }

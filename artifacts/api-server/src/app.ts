@@ -63,7 +63,7 @@ app.use(
     },
     credentials: true,
     methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Authorization", "Content-Type", "X-File-Name"],
+    allowedHeaders: ["Authorization", "Content-Type", "X-File-Name", "X-CSRF-Token"],
     exposedHeaders: ["X-Request-Id", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry-After"],
     maxAge: 60 * 60 * 24,
     optionsSuccessStatus: 204,
