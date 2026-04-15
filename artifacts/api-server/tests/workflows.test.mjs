@@ -6,7 +6,7 @@ import process from "node:process";
 
 const apiPort = 3102;
 const baseUrl = `http://127.0.0.1:${apiPort}/api`;
-const cwd = path.resolve("C:/Users/vansh/Desktop/Finance-Assistant/artifacts/api-server");
+const cwd = path.resolve(process.cwd());
 
 let serverProcess;
 const loginCache = new Map();
@@ -113,7 +113,7 @@ async function createClient(adminToken, suffix) {
 }
 
 before(async () => {
-  serverProcess = spawn("node", ["--enable-source-maps", "dist/index.mjs"], {
+  serverProcess = spawn(process.execPath, ["--enable-source-maps", "dist/index.mjs"], {
     cwd,
     env: { ...process.env, PORT: String(apiPort), NODE_ENV: "development" },
     stdio: "ignore",

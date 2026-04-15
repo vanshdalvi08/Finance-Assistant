@@ -6,7 +6,7 @@ import process from "node:process";
 
 const apiPort = 3103;
 const baseUrl = `http://127.0.0.1:${apiPort}/api`;
-const cwd = path.resolve("C:/Users/vansh/Desktop/Finance-Assistant/artifacts/api-server");
+const cwd = path.resolve(process.cwd());
 
 const loginCache = new Map();
 let serverProcess;
@@ -151,7 +151,7 @@ async function createPreApproval(adminToken, clientId, suffix) {
 }
 
 before(async () => {
-  serverProcess = spawn("node", ["--enable-source-maps", "dist/index.mjs"], {
+  serverProcess = spawn(process.execPath, ["--enable-source-maps", "dist/index.mjs"], {
     cwd,
     env: { ...process.env, PORT: String(apiPort), NODE_ENV: "development" },
     stdio: "ignore",
