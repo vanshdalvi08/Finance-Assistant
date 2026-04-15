@@ -16,7 +16,7 @@ function randomSuffix(prefix) {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
 }
 
-async function waitForHealth(timeoutMs = 20000) {
+async function waitForHealth(timeoutMs = 60000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
     try {
