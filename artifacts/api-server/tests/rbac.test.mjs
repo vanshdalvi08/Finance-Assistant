@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 const apiPort = 3103;
 const baseUrl = `http://127.0.0.1:${apiPort}/api`;
-const cwd = path.resolve(process.cwd());
+const cwd = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const loginCache = new Map();
 let serverProcess;
@@ -154,8 +155,11 @@ before(async () => {
   serverProcess = spawn(process.execPath, ["--enable-source-maps", "dist/index.mjs"], {
     cwd,
     env: { ...process.env, PORT: String(apiPort), NODE_ENV: "development" },
-    stdio: "ignore",
+    stdio: ["ignore", "ignore", "pipe"],
     windowsHide: true,
+  });
+  serverProcess.stderr?.on("data", (chunk) => {
+    process.stderr.write(chunk);
   });
   await waitForHealth();
 });
