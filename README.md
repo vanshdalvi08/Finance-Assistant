@@ -137,6 +137,8 @@ Secrets rotation runbook:
 
 GitHub Actions now includes:
 
+- `.github/workflows/quality-gate.yml`
+  - API typecheck and workflow/RBAC integration tests on push/PR
 - `.github/workflows/security-ci.yml`
   - Dependency review on pull requests
   - CodeQL SAST analysis
