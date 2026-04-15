@@ -52,17 +52,20 @@ export function requireSameOriginAuthMutation(request: Request, response: Respon
     return;
   }
 
+  const originHeader = request.header("origin");
+  const refererHeader = request.header("referer");
+  const origin = originHeader ? normalizeOrigin(originHeader) : refererHeader ? normalizeOrigin(refererHeader) : null;
+  const isTrustedOrigin = Boolean(origin && allowedOrigins.has(origin));
   const secFetchSite = request.header("sec-fetch-site")?.toLowerCase();
-  if (secFetchSite && secFetchSite !== "same-origin" && secFetchSite !== "same-site" && secFetchSite !== "none") {
+
+  // Browsers may report cross-site for split frontend/API domains. We still allow the request
+  // when the caller origin is explicitly trusted via CORS_ALLOWED_ORIGINS/APP_URL/FRONTEND_URL.
+  if (secFetchSite && secFetchSite !== "same-origin" && secFetchSite !== "same-site" && secFetchSite !== "none" && !isTrustedOrigin) {
     response.status(403).json({ message: "Cross-site request blocked." });
     return;
   }
 
-  const originHeader = request.header("origin");
-  const refererHeader = request.header("referer");
-  const origin = originHeader ? normalizeOrigin(originHeader) : refererHeader ? normalizeOrigin(refererHeader) : null;
-
-  if (!origin || !allowedOrigins.has(origin)) {
+  if (!isTrustedOrigin) {
     response.status(403).json({ message: "Untrusted request origin." });
     return;
   }
