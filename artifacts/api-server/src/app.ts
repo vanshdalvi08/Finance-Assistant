@@ -59,6 +59,18 @@ app.use(
       }
 
       logger.warn({ origin }, "Blocked request from disallowed CORS origin");
+      void recordPlatformEventSafe({
+        severity: "warning",
+        category: "request",
+        title: "CORS origin blocked",
+        message: "Request blocked because origin is not in CORS allowlist.",
+        path: null,
+        method: null,
+        statusCode: 403,
+        metadata: {
+          origin,
+        },
+      });
       callback(null, false);
     },
     credentials: true,

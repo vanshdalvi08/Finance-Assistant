@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import { getApiOriginCandidates, isProduction, optionalEnv } from "../lib/env";
 import { CSRF_COOKIE_NAME } from "../lib/cookies";
+import { recordPlatformEventSafe } from "../lib/platform";
 
 export const CSRF_HEADER_NAME = "x-csrf-token";
 
@@ -61,11 +62,42 @@ export function requireSameOriginAuthMutation(request: Request, response: Respon
   // Browsers may report cross-site for split frontend/API domains. We still allow the request
   // when the caller origin is explicitly trusted via CORS_ALLOWED_ORIGINS/APP_URL/FRONTEND_URL.
   if (secFetchSite && secFetchSite !== "same-origin" && secFetchSite !== "same-site" && secFetchSite !== "none" && !isTrustedOrigin) {
+    void recordPlatformEventSafe({
+      severity: "warning",
+      category: "auth",
+      title: "Cross-site auth mutation blocked",
+      message: "Auth mutation request was blocked due to cross-site context from an untrusted origin.",
+      path: request.originalUrl?.split("?")[0] ?? request.url,
+      method: request.method,
+      statusCode: 403,
+      tenantId: request.auth?.user.tenantId ?? null,
+      actorUserId: request.auth?.user.id ?? null,
+      requestId: String(request.id ?? ""),
+      metadata: {
+        secFetchSite: secFetchSite ?? null,
+        origin: origin ?? null,
+      },
+    });
     response.status(403).json({ message: "Cross-site request blocked." });
     return;
   }
 
   if (!isTrustedOrigin) {
+    void recordPlatformEventSafe({
+      severity: "warning",
+      category: "auth",
+      title: "Untrusted auth origin blocked",
+      message: "Auth mutation request origin was not in the trusted origin allowlist.",
+      path: request.originalUrl?.split("?")[0] ?? request.url,
+      method: request.method,
+      statusCode: 403,
+      tenantId: request.auth?.user.tenantId ?? null,
+      actorUserId: request.auth?.user.id ?? null,
+      requestId: String(request.id ?? ""),
+      metadata: {
+        origin: origin ?? null,
+      },
+    });
     response.status(403).json({ message: "Untrusted request origin." });
     return;
   }
@@ -83,11 +115,39 @@ export function requireCsrfToken(request: Request, response: Response, next: Nex
   const headerToken = request.header(CSRF_HEADER_NAME);
 
   if (typeof cookieToken !== "string" || typeof headerToken !== "string") {
+    void recordPlatformEventSafe({
+      severity: "warning",
+      category: "auth",
+      title: "CSRF token missing",
+      message: "Auth mutation request is missing CSRF cookie or header.",
+      path: request.originalUrl?.split("?")[0] ?? request.url,
+      method: request.method,
+      statusCode: 403,
+      tenantId: request.auth?.user.tenantId ?? null,
+      actorUserId: request.auth?.user.id ?? null,
+      requestId: String(request.id ?? ""),
+      metadata: {
+        hasCookieToken: typeof cookieToken === "string",
+        hasHeaderToken: typeof headerToken === "string",
+      },
+    });
     response.status(403).json({ message: "Missing CSRF token." });
     return;
   }
 
   if (!equalsSafe(cookieToken, headerToken)) {
+    void recordPlatformEventSafe({
+      severity: "warning",
+      category: "auth",
+      title: "CSRF token mismatch",
+      message: "Auth mutation request was blocked due to CSRF token mismatch.",
+      path: request.originalUrl?.split("?")[0] ?? request.url,
+      method: request.method,
+      statusCode: 403,
+      tenantId: request.auth?.user.tenantId ?? null,
+      actorUserId: request.auth?.user.id ?? null,
+      requestId: String(request.id ?? ""),
+    });
     response.status(403).json({ message: "Invalid CSRF token." });
     return;
   }
