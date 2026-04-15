@@ -48,6 +48,8 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Apply database migrations
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_assistant?sslmode=disable
         run: corepack pnpm db:migrate
 
       - name: Workspace typecheck
@@ -57,4 +59,6 @@ jobs:
         run: corepack pnpm --filter @workspace/api-server run build
 
       - name: Workflow and RBAC integration tests
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_assistant?sslmode=disable
         run: corepack pnpm --filter @workspace/api-server run test:workflow
