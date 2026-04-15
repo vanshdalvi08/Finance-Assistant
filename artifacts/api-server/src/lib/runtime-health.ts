@@ -99,11 +99,12 @@ function checkExternalMonitoringHealth(): RuntimeDependencyCheck {
 export async function getRuntimeHealthReport(): Promise<RuntimeHealthReport> {
   const configuration = getDeploymentConfigReport();
   const startup = getStartupState();
+  const startupCheck: RuntimeDependencyCheck = {
+    status: startup.status === "ready" ? "ok" : "degraded",
+    detail: startup.detail,
+  };
   const checks = {
-    startup: {
-      status: startup.status === "ready" ? "ok" : "degraded",
-      detail: startup.detail,
-    },
+    startup: startupCheck,
     configuration: {
       status: configuration.status,
       detail:
