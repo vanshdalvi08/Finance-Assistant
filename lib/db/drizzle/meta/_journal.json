@@ -183,6 +183,13 @@
       "when": 1775894400000,
       "tag": "0024_purchase_order_archival",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1776076200000,
+      "tag": "0025_admin_mfa",
+      "breakpoints": true
     }
   ]
 }
