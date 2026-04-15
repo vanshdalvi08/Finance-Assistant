@@ -35,8 +35,15 @@ import { logger } from "../../lib/logger";
 import { assertTenantEmployeeAccess } from "../../lib/policies";
 import { hashSha256 } from "../../lib/security";
 import { WorkflowStateError } from "../../lib/workflow-state";
+import { rateLimit } from "../../middlewares/rate-limit";
 
 const router: IRouter = Router();
+const timesheetReviewLimiter = rateLimit({
+  name: "timesheet-review",
+  windowMs: 15 * 60 * 1000,
+  max: 80,
+  message: "Too many timesheet review actions. Please wait and retry.",
+});
 
 const dateSchema = z.string().min(1);
 const businessIdSchema = z.string().trim().min(1);
@@ -1243,7 +1250,7 @@ router.post("/timesheets/:id/submit", requireTenantRole("admin", "employee"), as
   response.json({ timesheet: submittedEntry ?? existing, duplicate: false });
 });
 
-router.post("/timesheets/:id/approve", requireTenantRole("admin"), async (request, response) => {
+router.post("/timesheets/:id/approve", requireTenantRole("admin"), timesheetReviewLimiter, async (request, response) => {
   const parsed = z.object({ note: z.string().trim().optional() }).safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid approval payload" });
@@ -1377,7 +1384,7 @@ router.post("/timesheets/:id/approve", requireTenantRole("admin"), async (reques
   response.json({ timesheet: reviewResult.timesheet, duplicate: false });
 });
 
-router.post("/timesheets/:id/reject", requireTenantRole("admin"), async (request, response) => {
+router.post("/timesheets/:id/reject", requireTenantRole("admin"), timesheetReviewLimiter, async (request, response) => {
   const parsed = z.object({ note: z.string().trim().min(1) }).safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid rejection payload" });

@@ -9,6 +9,7 @@ import { DEFAULT_TENANT_ID } from "../../lib/tenants";
 import { notifyEmployee, notifyUsersByIds } from "../../lib/notifications";
 import { logger } from "../../lib/logger";
 import { hashSha256 } from "../../lib/security";
+import { rateLimit } from "../../middlewares/rate-limit";
 import {
   deleteSalary,
   getSalaryForActor,
@@ -19,6 +20,12 @@ import {
 } from "../../lib/services/salary-service";
 
 const router: IRouter = Router();
+const salaryPaymentLimiter = rateLimit({
+  name: "salary-pay",
+  windowMs: 15 * 60 * 1000,
+  max: 40,
+  message: "Too many salary payment actions. Please wait and retry.",
+});
 
 const businessIdSchema = z.string().trim().min(1);
 const dateSchema = z.string().min(1);
@@ -486,7 +493,7 @@ router.route("/salaries/:id").get(async (request, response) => {
   response.status(204).send();
 });
 
-router.post("/salaries/:id/pay", requireTenantRole("admin"), async (request, response) => {
+router.post("/salaries/:id/pay", requireTenantRole("admin"), salaryPaymentLimiter, async (request, response) => {
   const parsed = z.object({ note: z.string().trim().optional() }).safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid salary payment payload" });

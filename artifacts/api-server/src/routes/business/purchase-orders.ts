@@ -9,6 +9,7 @@ import { DEFAULT_TENANT_ID } from "../../lib/tenants";
 import { notifyAdmins, notifyUsersByIds } from "../../lib/notifications";
 import { logger } from "../../lib/logger";
 import { hashSha256 } from "../../lib/security";
+import { rateLimit } from "../../middlewares/rate-limit";
 import {
   addPurchaseOrderTask,
   deletePurchaseOrder,
@@ -20,6 +21,12 @@ import {
 } from "../../lib/services/purchase-orders-service";
 
 const router: IRouter = Router();
+const purchaseOrderPaymentLimiter = rateLimit({
+  name: "purchase-order-task-pay",
+  windowMs: 15 * 60 * 1000,
+  max: 50,
+  message: "Too many purchase order payment actions. Please wait before retrying.",
+});
 
 const businessIdSchema = z.string().trim().min(1);
 const dateSchema = z.string().min(1);
@@ -503,7 +510,11 @@ router.post("/purchase-orders/:id/tasks", requireTenantRole("admin"), async (req
   }
 });
 
-router.post("/purchase-orders/:id/tasks/:taskId/pay", requireTenantRole("admin"), async (request, response) => {
+router.post(
+  "/purchase-orders/:id/tasks/:taskId/pay",
+  requireTenantRole("admin"),
+  purchaseOrderPaymentLimiter,
+  async (request, response) => {
   let purchaseOrder: PurchaseOrder;
   let paidTaskAmount = 0;
   let paidTaskName = "";
@@ -561,6 +572,7 @@ router.post("/purchase-orders/:id/tasks/:taskId/pay", requireTenantRole("admin")
   }
 
   response.json({ purchaseOrder, duplicate });
-});
+  },
+);
 
 export default router;

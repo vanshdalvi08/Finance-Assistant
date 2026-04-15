@@ -10,6 +10,7 @@ import { resolveExpenseAttachmentUrl } from "../../lib/storage";
 import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../../lib/notifications";
 import { logger } from "../../lib/logger";
 import { hashSha256 } from "../../lib/security";
+import { rateLimit } from "../../middlewares/rate-limit";
 import {
   deleteExpense,
   ExpensesServiceError,
@@ -19,6 +20,18 @@ import {
 } from "../../lib/services/expenses-service";
 
 const router: IRouter = Router();
+const expenseSubmitLimiter = rateLimit({
+  name: "expense-submit",
+  windowMs: 15 * 60 * 1000,
+  max: 40,
+  message: "Too many expense submissions. Please wait before trying again.",
+});
+const expenseReviewLimiter = rateLimit({
+  name: "expense-review",
+  windowMs: 15 * 60 * 1000,
+  max: 80,
+  message: "Too many expense review actions. Please slow down and try again.",
+});
 
 const businessIdSchema = z.string().trim().min(1);
 const dateSchema = z.string().min(1);
@@ -222,7 +235,7 @@ function handleServiceError(error: unknown, response: Response) {
   return false;
 }
 
-router.post("/expenses", async (request, response) => {
+router.post("/expenses", expenseSubmitLimiter, async (request, response) => {
   const parsed = expenseSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid expense payload" });
@@ -500,7 +513,7 @@ router.route("/expenses/:id").get(async (request, response) => {
   response.status(204).send();
 });
 
-router.patch("/expenses/:id/status", requireTenantRole("admin"), async (request, response) => {
+router.patch("/expenses/:id/status", requireTenantRole("admin"), expenseReviewLimiter, async (request, response) => {
   const parsed = z.object({
     status: approvalStatusSchema,
     reviewerNote: z.string().trim().optional(),

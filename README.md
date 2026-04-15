@@ -93,6 +93,10 @@ Optional platform monitoring + recovery env vars:
 - `PLATFORM_RECOVERY_RUNBOOK_URL`
 - `PLATFORM_LAST_RECOVERY_DRILL_DATE`
 
+Security monitoring and SIEM setup:
+
+- `docs/operations/security-monitoring-siem.md`
+
 ## Upload storage
 
 The backend now includes Supabase Storage helpers for:
@@ -124,6 +128,22 @@ The auth API includes:
 
 - `GET /api/auth/csrf` to issue/refresh a CSRF token cookie.
 - `POST /api/auth/logout-all` to revoke all refresh sessions and trusted MFA devices for the authenticated user.
+
+Secrets rotation runbook:
+
+- `docs/operations/secrets-rotation-policy.md`
+
+## Security CI/CD
+
+GitHub Actions now includes:
+
+- `.github/workflows/security-ci.yml`
+  - Dependency review on pull requests
+  - CodeQL SAST analysis
+  - Dependency audit for high-severity vulnerabilities
+- `.github/workflows/dast-baseline.yml`
+  - Scheduled/manual OWASP ZAP baseline scan
+  - Uses repo variable `DAST_TARGET_URL` or workflow input `target_url`
 
 Example env files:
 
