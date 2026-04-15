@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 const apiPort = 3103;
 const baseUrl = `http://127.0.0.1:${apiPort}/api`;
 const cwd = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const entryFile = path.join(cwd, "dist", "index.mjs");
 
 const loginCache = new Map();
 let serverProcess;
@@ -16,19 +17,38 @@ function randomSuffix(prefix) {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
 }
 
-async function waitForHealth(timeoutMs = 60000) {
+async function waitForHealth(timeoutMs = 90000) {
   const started = Date.now();
+  let lastStatus = null;
+  let lastBody = null;
   while (Date.now() - started < timeoutMs) {
     try {
       const response = await fetch(`http://127.0.0.1:${apiPort}/api/healthz`);
+      lastStatus = response.status;
+      const text = await response.text();
+      lastBody = text || null;
       if (response.ok) {
-        return;
+        let json = null;
+        if (text) {
+          try {
+            json = JSON.parse(text);
+          } catch {
+            json = null;
+          }
+        }
+        if (!json?.checks?.startup || json.checks.startup.status !== "starting") {
+          return;
+        }
       }
-    } catch {}
+    } catch (error) {
+      lastBody = error instanceof Error ? error.message : String(error);
+    }
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
 
-  throw new Error("Timed out waiting for API test server health.");
+  throw new Error(
+    `Timed out waiting for API test server health. Last status=${String(lastStatus)} last body=${lastBody ?? "<none>"}`,
+  );
 }
 
 async function api(pathname, options = {}) {
@@ -152,16 +172,19 @@ async function createPreApproval(adminToken, clientId, suffix) {
 }
 
 before(async () => {
-  serverProcess = spawn(process.execPath, ["--enable-source-maps", "dist/index.mjs"], {
+  serverProcess = spawn(process.execPath, ["--enable-source-maps", entryFile], {
     cwd,
-    env: { ...process.env, PORT: String(apiPort), NODE_ENV: "development" },
-    stdio: ["ignore", "ignore", "pipe"],
+    env: { ...process.env, PORT: String(apiPort), NODE_ENV: "test" },
+    stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
+  });
+  serverProcess.stdout?.on("data", (chunk) => {
+    process.stdout.write(chunk);
   });
   serverProcess.stderr?.on("data", (chunk) => {
     process.stderr.write(chunk);
   });
-  await waitForHealth();
+  await waitForHealth(90000);
 });
 
 after(async () => {

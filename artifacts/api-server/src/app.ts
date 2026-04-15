@@ -4,8 +4,9 @@ import cookieParser from "cookie-parser";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import { logger } from "./lib/logger";
-import { getApiOriginCandidates, isProduction, optionalEnv } from "./lib/env";
+import { getApiOriginCandidates, isProduction, isTest, optionalEnv } from "./lib/env";
 import { recordPlatformEvent, recordPlatformEventSafe } from "./lib/platform";
+import { getStartupState } from "./lib/startup-state";
 
 const app: Express = express();
 const REQUEST_BODY_LIMIT = "4mb";
@@ -137,6 +138,33 @@ app.use((request, response, next) => {
 app.use(cookieParser());
 app.use(express.json({ limit: REQUEST_BODY_LIMIT }));
 app.use(express.urlencoded({ extended: true, limit: REQUEST_BODY_LIMIT }));
+
+app.use("/api", (request, response, next) => {
+  if (!isTest()) {
+    next();
+    return;
+  }
+
+  if (request.path === "/healthz") {
+    next();
+    return;
+  }
+
+  const startup = getStartupState();
+  if (startup.status === "ready") {
+    next();
+    return;
+  }
+
+  response.status(503).json({
+    message:
+      startup.status === "starting"
+        ? "API test runtime is still starting."
+        : "API test runtime started in degraded mode.",
+    detail: startup.detail,
+    requestId: String(request.id ?? ""),
+  });
+});
 
 app.use("/api", router);
 

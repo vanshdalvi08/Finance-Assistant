@@ -29,6 +29,7 @@ jobs:
           --health-retries 5
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_assistant?sslmode=disable
+      NODE_ENV: test
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,6 +51,7 @@ jobs:
       - name: Apply database migrations
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_assistant?sslmode=disable
+          NODE_ENV: test
         run: corepack pnpm db:migrate
 
       - name: Workspace typecheck
@@ -61,4 +63,5 @@ jobs:
       - name: Workflow and RBAC integration tests
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_assistant?sslmode=disable
+          NODE_ENV: test
         run: corepack pnpm --filter @workspace/api-server run test:workflow

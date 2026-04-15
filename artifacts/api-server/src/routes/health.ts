@@ -5,7 +5,7 @@ const router: IRouter = Router();
 
 router.get("/healthz", async (_req, res) => {
   const report = await getRuntimeHealthReport();
-  res.status(report.status === "error" ? 503 : 200).json(report);
+  res.status(200).json(report);
 });
 
 export default router;

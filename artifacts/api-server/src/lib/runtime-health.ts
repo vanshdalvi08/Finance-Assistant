@@ -1,6 +1,7 @@
 import { pool } from "@workspace/db";
 import { getSupabaseStorageConfig, optionalEnv } from "./env";
 import { getDeploymentConfigReport } from "./deployment-config";
+import { getStartupState } from "./startup-state";
 
 export type RuntimeHealthStatus = "ok" | "degraded" | "error";
 
@@ -17,6 +18,7 @@ export type RuntimeHealthReport = {
   timestamp: string;
   uptimeSeconds: number;
   checks: {
+    startup: RuntimeDependencyCheck;
     configuration: RuntimeDependencyCheck;
     database: RuntimeDependencyCheck;
     storage: RuntimeDependencyCheck;
@@ -96,7 +98,12 @@ function checkExternalMonitoringHealth(): RuntimeDependencyCheck {
 
 export async function getRuntimeHealthReport(): Promise<RuntimeHealthReport> {
   const configuration = getDeploymentConfigReport();
+  const startup = getStartupState();
   const checks = {
+    startup: {
+      status: startup.status === "ready" ? "ok" : "degraded",
+      detail: startup.detail,
+    },
     configuration: {
       status: configuration.status,
       detail:

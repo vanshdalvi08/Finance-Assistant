@@ -1,4 +1,4 @@
-import { getApiOriginCandidates, getSmtpConfig, getSupabaseStorageConfig, isProduction, optionalEnv } from "./env";
+import { getApiOriginCandidates, getSmtpConfig, getSupabaseStorageConfig, isProduction, isTest, optionalEnv } from "./env";
 
 export type DeploymentConfigStatus = "ok" | "degraded" | "error";
 
@@ -37,7 +37,7 @@ function summarizeStatus(issues: DeploymentConfigIssue[]): DeploymentConfigStatu
 
 export function getDeploymentConfigReport(): DeploymentConfigReport {
   const environment = process.env.NODE_ENV ?? "development";
-  if (!isProduction()) {
+  if (!isProduction() || isTest()) {
     return {
       status: "ok",
       environment,
@@ -46,7 +46,9 @@ export function getDeploymentConfigReport(): DeploymentConfigReport {
           "production-config",
           false,
           "ok",
-          "Production configuration checks are skipped outside production.",
+          isTest()
+            ? "Strict production configuration checks are skipped in test mode."
+            : "Production configuration checks are skipped outside production.",
         ),
       ],
     };

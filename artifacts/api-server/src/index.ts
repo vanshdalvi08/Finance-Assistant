@@ -9,6 +9,8 @@ import { assertDatabaseSchemaReady } from "./lib/schema-ready";
 import { ensureDefaultTenant, ensurePlatformTenant } from "./lib/tenants";
 import { ensureInitialPlatformAdmin } from "./lib/platform";
 import { assertProductionConfigReady } from "./lib/deployment-config";
+import { isTest } from "./lib/env";
+import { markStartupDegraded, markStartupReady, markStartupStarting } from "./lib/startup-state";
 
 const rawPort = process.env["PORT"] ?? "3001";
 const port = Number(rawPort);
@@ -19,6 +21,7 @@ if (Number.isNaN(port) || port <= 0) {
 
 let server: Server | null = null;
 let shuttingDown = false;
+markStartupStarting();
 
 async function closeRuntime() {
   const tasks: Array<Promise<unknown>> = [];
@@ -106,12 +109,36 @@ function installProcessHandlers() {
 
 async function startServer() {
   installProcessHandlers();
-  assertProductionConfigReady();
-  await assertDatabaseSchemaReady();
-  await ensureDefaultTenant();
-  await ensurePlatformTenant();
-  await ensureInitialAdmin();
-  await ensureInitialPlatformAdmin();
+  const bootstrap = async () => {
+    assertProductionConfigReady();
+    await assertDatabaseSchemaReady();
+    await ensureDefaultTenant();
+    await ensurePlatformTenant();
+    await ensureInitialAdmin();
+    await ensureInitialPlatformAdmin();
+    markStartupReady();
+  };
+
+  if (isTest()) {
+    server = app.listen(port, (err) => {
+      if (err) {
+        logger.error({ err }, "Error listening on port");
+        markStartupDegraded(err instanceof Error ? err.message : "Unknown listen error");
+        return;
+      }
+
+      logger.info({ port }, "Server listening in test mode");
+    });
+
+    void bootstrap().catch((err) => {
+      const detail = err instanceof Error ? err.message : "Unknown startup failure";
+      markStartupDegraded(detail);
+      logger.warn({ err }, "Test-mode startup degraded");
+    });
+    return;
+  }
+
+  await bootstrap();
 
   server = app.listen(port, (err) => {
     if (err) {
@@ -125,5 +152,9 @@ async function startServer() {
 
 startServer().catch((err) => {
   logger.error({ err }, "Failed to start server");
+  if (isTest()) {
+    markStartupDegraded(err instanceof Error ? err.message : "Unknown startup failure");
+    return;
+  }
   process.exit(1);
 });
