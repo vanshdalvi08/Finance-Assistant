@@ -1,12 +1,13 @@
 import { pool } from "@workspace/db";
-import { getSupabaseStorageConfig, optionalEnv } from "./env";
+import { getSupabaseStorageConfig, isTest, optionalEnv } from "./env";
 import { getDeploymentConfigReport } from "./deployment-config";
 import { getStartupState } from "./startup-state";
 
 export type RuntimeHealthStatus = "ok" | "degraded" | "error";
+type RuntimeCheckStatus = RuntimeHealthStatus | "starting";
 
 type RuntimeDependencyCheck = {
-  status: RuntimeHealthStatus;
+  status: RuntimeCheckStatus;
   detail: string;
   latencyMs?: number;
 };
@@ -39,6 +40,10 @@ function summarizeOverallStatus(checks: RuntimeHealthReport["checks"]): RuntimeH
     return "error";
   }
 
+  if (checks.startup.status !== "ok") {
+    return "degraded";
+  }
+
   if (Object.values(checks).some((check) => check.status === "degraded")) {
     return "degraded";
   }
@@ -68,6 +73,13 @@ async function checkDatabaseHealth(): Promise<RuntimeDependencyCheck> {
 function checkStorageHealth(): RuntimeDependencyCheck {
   const storage = getSupabaseStorageConfig();
   if (!storage) {
+    if (isTest()) {
+      return {
+        status: "ok",
+        detail: "Supabase storage is not configured in test mode.",
+      };
+    }
+
     return {
       status: "degraded",
       detail: "Supabase storage is not configured.",
@@ -83,6 +95,13 @@ function checkStorageHealth(): RuntimeDependencyCheck {
 function checkExternalMonitoringHealth(): RuntimeDependencyCheck {
   const webhookUrl = optionalEnv("PLATFORM_MONITORING_WEBHOOK_URL")?.trim();
   if (!webhookUrl) {
+    if (isTest()) {
+      return {
+        status: "ok",
+        detail: "External monitoring webhook is not configured in test mode.",
+      };
+    }
+
     return {
       status: "degraded",
       detail: "External monitoring webhook is not configured.",
@@ -99,8 +118,15 @@ function checkExternalMonitoringHealth(): RuntimeDependencyCheck {
 export async function getRuntimeHealthReport(): Promise<RuntimeHealthReport> {
   const configuration = getDeploymentConfigReport();
   const startup = getStartupState();
+  let startupStatus: RuntimeCheckStatus = "degraded";
+  if (startup.status === "ready") {
+    startupStatus = "ok";
+  } else if (startup.status === "starting") {
+    startupStatus = "starting";
+  }
+
   const startupCheck: RuntimeDependencyCheck = {
-    status: startup.status === "ready" ? "ok" : "degraded",
+    status: startupStatus,
     detail: startup.detail,
   };
   const checks = {

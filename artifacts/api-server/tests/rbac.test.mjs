@@ -17,6 +17,10 @@ function randomSuffix(prefix) {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function waitForHealth(timeoutMs = 90000) {
   const started = Date.now();
   let lastStatus = null;
@@ -36,7 +40,7 @@ async function waitForHealth(timeoutMs = 90000) {
             json = null;
           }
         }
-        if (!json?.checks?.startup || json.checks.startup.status !== "starting") {
+        if (json?.status === "ok" && json?.checks?.startup?.status === "ok") {
           return;
         }
       }
@@ -87,13 +91,33 @@ async function login(email, password) {
     return cached;
   }
 
-  const response = await api("/auth/login", {
-    method: "POST",
-    body: { email, password },
-  });
-  assert.equal(response.status, 200, `Login failed for ${email}: ${JSON.stringify(response.json)}`);
-  loginCache.set(cacheKey, response.json.accessToken);
-  return response.json.accessToken;
+  const deadline = Date.now() + 5000;
+  let lastResponse = null;
+
+  while (Date.now() <= deadline) {
+    lastResponse = await api("/auth/login", {
+      method: "POST",
+      body: { email, password },
+    });
+
+    if (lastResponse.status === 200) {
+      loginCache.set(cacheKey, lastResponse.json.accessToken);
+      return lastResponse.json.accessToken;
+    }
+
+    if (lastResponse.status !== 503) {
+      break;
+    }
+
+    await sleep(250);
+  }
+
+  assert.equal(
+    lastResponse?.status,
+    200,
+    `Login failed for ${email}: ${JSON.stringify(lastResponse?.json)}`,
+  );
+  return lastResponse.json.accessToken;
 }
 
 async function createEmployee(adminToken, suffix) {
