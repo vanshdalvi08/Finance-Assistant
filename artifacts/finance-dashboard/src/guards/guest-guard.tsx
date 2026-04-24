@@ -1,6 +1,20 @@
 import { Redirect } from "wouter";
 import { routes } from "@/app/route-map";
 import { useAuthStore } from "@/store/auth";
+import type { UserRole } from "@/auth/types";
+
+function workspacePath(role: UserRole | null) {
+  switch (role) {
+    case "employee":
+      return routes.employeeTimesheet;
+    case "client":
+      return routes.clientPreApprovals;
+    case "platform_super_admin":
+      return routes.platformDashboard;
+    default:
+      return routes.adminDashboard;
+  }
+}
 
 export function GuestGuard({ children }: { children: React.ReactNode }) {
   const hydrated = useAuthStore((state) => state.hydrated);
@@ -19,5 +33,5 @@ export function GuestGuard({ children }: { children: React.ReactNode }) {
     return <>{children}</>;
   }
 
-  return <Redirect to={role === "admin" ? routes.adminDashboard : routes.employeeTimesheet} />;
+  return <Redirect to={workspacePath(role)} />;
 }

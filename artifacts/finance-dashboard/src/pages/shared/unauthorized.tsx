@@ -2,6 +2,20 @@ import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { routes } from "@/app/route-map";
 import { useAuthStore } from "@/store/auth";
+import type { UserRole } from "@/auth/types";
+
+function workspacePath(role: UserRole | null) {
+  switch (role) {
+    case "employee":
+      return routes.employeeTimesheet;
+    case "client":
+      return routes.clientPreApprovals;
+    case "platform_super_admin":
+      return routes.platformDashboard;
+    default:
+      return routes.adminDashboard;
+  }
+}
 
 export default function UnauthorizedPage() {
   const role = useAuthStore((state) => state.role);
@@ -15,7 +29,7 @@ export default function UnauthorizedPage() {
           YOJAK keeps admin and employee surfaces strictly separated. Move back to the correct workspace for your account.
         </p>
         <div className="mt-6">
-          <Link href={role === "admin" ? routes.adminDashboard : routes.employeeTimesheet}>
+          <Link href={workspacePath(role)}>
             <Button>Go to my workspace</Button>
           </Link>
         </div>

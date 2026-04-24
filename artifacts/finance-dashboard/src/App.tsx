@@ -40,56 +40,34 @@ function FullScreenLoader() {
   );
 }
 
+function workspacePath(role: UserRole | null) {
+  switch (role) {
+    case "employee":
+      return "/employee/timesheet";
+    case "client":
+      return "/client/pre-approvals";
+    case "platform_super_admin":
+      return "/platform/dashboard";
+    default:
+      return "/";
+  }
+}
+
 function redirectForSession(isAuthenticated: boolean, role: UserRole | null) {
   if (!isAuthenticated) {
     return <Redirect to="/login" />;
   }
 
-  if (role === "employee") {
-    return <Redirect to="/employee/timesheet" />;
-  }
-
-  if (role === "client") {
-    return <Redirect to="/client/pre-approvals" />;
-  }
-
-  if (role === "platform_super_admin") {
-    return <Redirect to="/platform/dashboard" />;
-  }
-
-  return <Redirect to="/" />;
+  return <Redirect to={workspacePath(role)} />;
 }
 
-function renderAdminRoute(
+function renderRoleRoute(
   isAuthenticated: boolean,
   role: UserRole | null,
+  expectedRole: UserRole,
   element: React.ReactNode,
 ) {
-  return isAuthenticated && role === "admin" ? element : redirectForSession(isAuthenticated, role);
-}
-
-function renderEmployeeRoute(
-  isAuthenticated: boolean,
-  role: UserRole | null,
-  element: React.ReactNode,
-) {
-  return isAuthenticated && role === "employee" ? element : redirectForSession(isAuthenticated, role);
-}
-
-function renderClientRoute(
-  isAuthenticated: boolean,
-  role: UserRole | null,
-  element: React.ReactNode,
-) {
-  return isAuthenticated && role === "client" ? element : redirectForSession(isAuthenticated, role);
-}
-
-function renderPlatformRoute(
-  isAuthenticated: boolean,
-  role: UserRole | null,
-  element: React.ReactNode,
-) {
-  return isAuthenticated && role === "platform_super_admin" ? element : redirectForSession(isAuthenticated, role);
+  return isAuthenticated && role === expectedRole ? element : redirectForSession(isAuthenticated, role);
 }
 
 function LegacyRouter() {
@@ -111,103 +89,103 @@ function LegacyRouter() {
           {isAuthenticated ? redirectForSession(isAuthenticated, role) : <ResetPasswordPage />}
         </Route>
         <Route path="/">
-          {renderAdminRoute(isAuthenticated, role, <DashboardPage />)}
+          {isAuthenticated ? redirectForSession(isAuthenticated, role) : <Redirect to="/login" />}
         </Route>
         <Route path="/transactions">
-          {renderAdminRoute(isAuthenticated, role, <TransactionsPage />)}
+          {renderRoleRoute(isAuthenticated, role, "admin", <TransactionsPage />)}
         </Route>
         <Route path="/employees">
-          {renderAdminRoute(isAuthenticated, role, <EmployeesPage />)}
+          {renderRoleRoute(isAuthenticated, role, "admin", <EmployeesPage />)}
         </Route>
         <Route path="/salary">
-          {renderAdminRoute(isAuthenticated, role, <SalaryPage />)}
+          {renderRoleRoute(isAuthenticated, role, "admin", <SalaryPage />)}
         </Route>
         <Route path="/funds">
-          {renderAdminRoute(isAuthenticated, role, <FundsPage />)}
+          {renderRoleRoute(isAuthenticated, role, "admin", <FundsPage />)}
         </Route>
         <Route path="/clients">
-          {renderAdminRoute(isAuthenticated, role, <ClientsPage />)}
+          {renderRoleRoute(isAuthenticated, role, "admin", <ClientsPage />)}
         </Route>
         <Route path="/purchase-orders">
-          {renderAdminRoute(isAuthenticated, role, <PurchaseOrdersPage />)}
+          {renderRoleRoute(isAuthenticated, role, "admin", <PurchaseOrdersPage />)}
         </Route>
         <Route path="/pre-approvals">
-          {renderAdminRoute(isAuthenticated, role, <PreApprovalsPage />)}
+          {renderRoleRoute(isAuthenticated, role, "admin", <PreApprovalsPage />)}
         </Route>
         <Route path="/project-budgets">
-          {renderAdminRoute(isAuthenticated, role, <ProjectBudgetsPage />)}
+          {renderRoleRoute(isAuthenticated, role, "admin", <ProjectBudgetsPage />)}
         </Route>
         <Route path="/expenses">
-          {renderAdminRoute(isAuthenticated, role, <ExpensesPage />)}
+          {renderRoleRoute(isAuthenticated, role, "admin", <ExpensesPage />)}
         </Route>
         <Route path="/settings">
-          {renderAdminRoute(isAuthenticated, role, <SettingsPage />)}
+          {renderRoleRoute(isAuthenticated, role, "admin", <SettingsPage />)}
         </Route>
         <Route path="/timesheets">
-          {renderAdminRoute(isAuthenticated, role, <AdminTimesheetValidationPage />)}
+          {renderRoleRoute(isAuthenticated, role, "admin", <AdminTimesheetValidationPage />)}
         </Route>
         <Route path="/leave-management">
-          {renderAdminRoute(isAuthenticated, role, <AdminLeaveManagementPage />)}
+          {renderRoleRoute(isAuthenticated, role, "admin", <AdminLeaveManagementPage />)}
         </Route>
         <Route path="/reports">
-          {renderAdminRoute(isAuthenticated, role, <AdminReportsPage />)}
+          {renderRoleRoute(isAuthenticated, role, "admin", <AdminReportsPage />)}
         </Route>
         <Route path="/audit-trail">
-          {renderAdminRoute(isAuthenticated, role, <AdminAuditTrailPage />)}
+          {renderRoleRoute(isAuthenticated, role, "admin", <AdminAuditTrailPage />)}
         </Route>
-        <Route path="/admin/dashboard">{renderAdminRoute(isAuthenticated, role, <Redirect to="/" />)}</Route>
-        <Route path="/admin/transactions">{renderAdminRoute(isAuthenticated, role, <Redirect to="/transactions" />)}</Route>
-        <Route path="/admin/employees">{renderAdminRoute(isAuthenticated, role, <Redirect to="/employees" />)}</Route>
-        <Route path="/admin/salary">{renderAdminRoute(isAuthenticated, role, <Redirect to="/salary" />)}</Route>
-        <Route path="/admin/funds">{renderAdminRoute(isAuthenticated, role, <Redirect to="/funds" />)}</Route>
-        <Route path="/admin/clients">{renderAdminRoute(isAuthenticated, role, <Redirect to="/clients" />)}</Route>
-        <Route path="/admin/purchase-orders">{renderAdminRoute(isAuthenticated, role, <Redirect to="/purchase-orders" />)}</Route>
-        <Route path="/admin/pre-approvals">{renderAdminRoute(isAuthenticated, role, <Redirect to="/pre-approvals" />)}</Route>
-        <Route path="/admin/project-budgets">{renderAdminRoute(isAuthenticated, role, <Redirect to="/project-budgets" />)}</Route>
-        <Route path="/admin/expenses">{renderAdminRoute(isAuthenticated, role, <Redirect to="/expenses" />)}</Route>
-        <Route path="/admin/settings">{renderAdminRoute(isAuthenticated, role, <Redirect to="/settings" />)}</Route>
-        <Route path="/admin/timesheets">{renderAdminRoute(isAuthenticated, role, <Redirect to="/timesheets" />)}</Route>
-        <Route path="/admin/leave-management">{renderAdminRoute(isAuthenticated, role, <Redirect to="/leave-management" />)}</Route>
-        <Route path="/admin/reports">{renderAdminRoute(isAuthenticated, role, <Redirect to="/reports" />)}</Route>
-        <Route path="/admin/audit-trail">{renderAdminRoute(isAuthenticated, role, <Redirect to="/audit-trail" />)}</Route>
+        <Route path="/admin/dashboard">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/" />)}</Route>
+        <Route path="/admin/transactions">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/transactions" />)}</Route>
+        <Route path="/admin/employees">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/employees" />)}</Route>
+        <Route path="/admin/salary">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/salary" />)}</Route>
+        <Route path="/admin/funds">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/funds" />)}</Route>
+        <Route path="/admin/clients">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/clients" />)}</Route>
+        <Route path="/admin/purchase-orders">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/purchase-orders" />)}</Route>
+        <Route path="/admin/pre-approvals">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/pre-approvals" />)}</Route>
+        <Route path="/admin/project-budgets">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/project-budgets" />)}</Route>
+        <Route path="/admin/expenses">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/expenses" />)}</Route>
+        <Route path="/admin/settings">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/settings" />)}</Route>
+        <Route path="/admin/timesheets">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/timesheets" />)}</Route>
+        <Route path="/admin/leave-management">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/leave-management" />)}</Route>
+        <Route path="/admin/reports">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/reports" />)}</Route>
+        <Route path="/admin/audit-trail">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/audit-trail" />)}</Route>
         <Route path="/employee/dashboard">
-          {renderEmployeeRoute(isAuthenticated, role, <Redirect to="/employee/timesheet" />)}
+          {renderRoleRoute(isAuthenticated, role, "employee", <Redirect to="/employee/timesheet" />)}
         </Route>
         <Route path="/employee/timesheet">
-          {renderEmployeeRoute(isAuthenticated, role, <EmployeeTimesheetPage />)}
+          {renderRoleRoute(isAuthenticated, role, "employee", <EmployeeTimesheetPage />)}
         </Route>
         <Route path="/employee/leaves">
-          {renderEmployeeRoute(isAuthenticated, role, <EmployeeLeavesPage />)}
+          {renderRoleRoute(isAuthenticated, role, "employee", <EmployeeLeavesPage />)}
         </Route>
         <Route path="/employee/expenses">
-          {renderEmployeeRoute(isAuthenticated, role, <EmployeeExpensesPage />)}
+          {renderRoleRoute(isAuthenticated, role, "employee", <EmployeeExpensesPage />)}
         </Route>
         <Route path="/employee/salary-slips">
-          {renderEmployeeRoute(isAuthenticated, role, <EmployeeSalarySlipsPage />)}
+          {renderRoleRoute(isAuthenticated, role, "employee", <EmployeeSalarySlipsPage />)}
         </Route>
         <Route path="/employee/profile">
-          {renderEmployeeRoute(isAuthenticated, role, <EmployeeProfilePage />)}
+          {renderRoleRoute(isAuthenticated, role, "employee", <EmployeeProfilePage />)}
         </Route>
         <Route path="/client/dashboard">
-          {renderClientRoute(isAuthenticated, role, <Redirect to="/client/pre-approvals" />)}
+          {renderRoleRoute(isAuthenticated, role, "client", <Redirect to="/client/pre-approvals" />)}
         </Route>
         <Route path="/client/pre-approvals">
-          {renderClientRoute(isAuthenticated, role, <ClientPreApprovalsPage />)}
+          {renderRoleRoute(isAuthenticated, role, "client", <ClientPreApprovalsPage />)}
         </Route>
         <Route path="/platform/dashboard">
-          {renderPlatformRoute(isAuthenticated, role, <PlatformDashboardPage />)}
+          {renderRoleRoute(isAuthenticated, role, "platform_super_admin", <PlatformDashboardPage />)}
         </Route>
         <Route path="/platform/tenants">
-          {renderPlatformRoute(isAuthenticated, role, <PlatformTenantsPage />)}
+          {renderRoleRoute(isAuthenticated, role, "platform_super_admin", <PlatformTenantsPage />)}
         </Route>
         <Route path="/platform/monitoring">
-          {renderPlatformRoute(isAuthenticated, role, <PlatformMonitoringPage />)}
+          {renderRoleRoute(isAuthenticated, role, "platform_super_admin", <PlatformMonitoringPage />)}
         </Route>
         <Route path="/platform/recovery">
-          {renderPlatformRoute(isAuthenticated, role, <PlatformRecoveryPage />)}
+          {renderRoleRoute(isAuthenticated, role, "platform_super_admin", <PlatformRecoveryPage />)}
         </Route>
         <Route path="/platform/settings">
-          {renderPlatformRoute(isAuthenticated, role, <PlatformSettingsPage />)}
+          {renderRoleRoute(isAuthenticated, role, "platform_super_admin", <PlatformSettingsPage />)}
         </Route>
         <Route>
           {isAuthenticated ? <NotFoundPage /> : <Redirect to="/login" />}
