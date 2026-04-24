@@ -89,7 +89,15 @@ function LegacyRouter() {
           {isAuthenticated ? redirectForSession(isAuthenticated, role) : <ResetPasswordPage />}
         </Route>
         <Route path="/">
-          {isAuthenticated ? redirectForSession(isAuthenticated, role) : <Redirect to="/login" />}
+          {!hydrated ? (
+            <FullScreenLoader />
+          ) : !isAuthenticated ? (
+            <Redirect to="/login" />
+          ) : role === "admin" ? (
+            <DashboardPage />
+          ) : (
+            redirectForSession(isAuthenticated, role)
+          )}
         </Route>
         <Route path="/transactions">
           {renderRoleRoute(isAuthenticated, role, "admin", <TransactionsPage />)}
