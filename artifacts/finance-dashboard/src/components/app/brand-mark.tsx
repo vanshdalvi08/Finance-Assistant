@@ -13,7 +13,6 @@ export function BrandMark({ className }: BrandMarkProps) {
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
     >
-      <rect x="8" y="8" width="240" height="240" rx="44" fill="#050505" />
       <path fill="#F7F6F2" d="M45 56H61L130 125L114 141L45 72V56Z" />
       <path fill="#F7F6F2" d="M69 56H125L169 100L128 141L112 125L136 101L109 74H85L69 56Z" />
       <path fill="#F7F6F2" d="M143 56H211L191 76H167L120 123L104 107L143 56Z" />

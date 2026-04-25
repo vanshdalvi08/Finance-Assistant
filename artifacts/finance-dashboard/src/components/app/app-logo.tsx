@@ -4,12 +4,7 @@ import { BrandMark } from "@/components/app/brand-mark";
 export function AppLogo({ compact = false }: { compact?: boolean }) {
   return (
     <div className="flex items-center gap-3">
-      <div
-        className={cn(
-          "grid place-items-center overflow-hidden rounded-2xl border border-white/10 bg-[#050505] shadow-[0_10px_40px_rgba(0,0,0,0.28)]",
-          compact ? "h-10 w-10" : "h-12 w-12",
-        )}
-      >
+      <div className={cn("grid place-items-center", compact ? "h-10 w-10" : "h-12 w-12")}>
         <BrandMark className={compact ? "h-10 w-10" : "h-12 w-12"} />
       </div>
       {!compact && (

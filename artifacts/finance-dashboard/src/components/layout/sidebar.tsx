@@ -333,14 +333,14 @@ export function Sidebar() {
       <div className={cn("flex h-16 items-center border-b border-sidebar-border", sidebarCollapsed ? "justify-center px-2" : "justify-between px-4")}>
         {!sidebarCollapsed ? (
           <div className="flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-[#050505]">
+            <div className="flex h-10 w-10 items-center justify-center">
               <BrandMark className="h-9 w-9" />
             </div>
             <span className="font-bold tracking-tight text-sidebar-foreground">Reforix Payroll</span>
           </div>
         ) : (
-          <div className="mx-auto flex h-11 w-11 items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-[#050505] shadow-[0_10px_22px_rgba(0,0,0,0.25)]">
-            <BrandMark className="h-11 w-11" />
+          <div className="mx-auto flex h-11 w-11 items-center justify-center">
+            <BrandMark className="h-10 w-10" />
           </div>
         )}
       </div>
