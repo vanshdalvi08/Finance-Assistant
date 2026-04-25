@@ -169,8 +169,7 @@ const LoginPage = () => {
 
   return (
     <div className="flex min-h-screen w-full overflow-hidden bg-[#edf4fb] font-sans">
-      <section className="relative hidden w-[60%] flex-col justify-between overflow-hidden bg-[#10233f] pt-12 pl-12 lg:flex">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(56,132,255,0.28),transparent_34%),radial-gradient(circle_at_bottom_right,rgba(46,204,196,0.18),transparent_30%)]" />
+      <section className="relative hidden w-[60%] flex-col justify-between overflow-hidden bg-[#2a3441] pt-12 pl-12 lg:flex">
         <div className="relative z-10">
           <h2 className="text-[28px] font-bold leading-none tracking-wide text-white">
             REFORIX<span className="ml-0.5 align-text-top text-[12px] font-normal">TM</span>

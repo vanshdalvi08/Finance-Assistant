@@ -30,6 +30,7 @@ import { useAuthStore } from "@/store/auth";
 import { useToast } from "@/hooks/use-toast";
 import { EmployeeAvatar } from "@/components/employee-avatar";
 import { api } from "@/lib/api";
+import { BrandMark } from "@/components/app/brand-mark";
 
 type NavItem = {
   href: string;
@@ -332,14 +333,14 @@ export function Sidebar() {
       <div className={cn("flex h-16 items-center border-b border-sidebar-border", sidebarCollapsed ? "justify-center px-2" : "justify-between px-4")}>
         {!sidebarCollapsed ? (
           <div className="flex items-center gap-2">
-            <div className="flex h-6 w-6 items-center justify-center rounded bg-primary">
-              <span className="text-xs font-bold text-primary-foreground">R</span>
+            <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-lg bg-primary/10">
+              <BrandMark className="h-7 w-7" />
             </div>
             <span className="font-bold tracking-tight text-sidebar-foreground">Reforix Payroll</span>
           </div>
         ) : (
-          <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl border border-sidebar-border/70 bg-primary/95 shadow-[0_10px_22px_rgba(0,0,0,0.25)]">
-            <span className="text-sm font-bold text-primary-foreground">R</span>
+          <div className="mx-auto flex h-11 w-11 items-center justify-center overflow-hidden rounded-2xl border border-sidebar-border/70 bg-primary/10 shadow-[0_10px_22px_rgba(0,0,0,0.25)]">
+            <BrandMark className="h-9 w-9" />
           </div>
         )}
       </div>

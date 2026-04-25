@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowDownRight, ArrowRight, ArrowUpRight, DollarSign, Wallet, Receipt } from "lucide-react";
+import { ArrowDownRight, ArrowRight, ArrowUpRight, IndianRupee, Wallet, Receipt } from "lucide-react";
 import { format } from "date-fns";
 
 function getMonthWindow(offset: number) {
@@ -224,18 +224,18 @@ export default function Dashboard() {
             icon={<Wallet className="w-5 h-5" />}
           />
           <DashboardCard
-            label={selectedMonth ? "Expenses" : "Total Expenses"}
+            label={selectedMonth ? "Miscellaneous Expenditure" : "Total Miscellaneous Expenditure"}
             value={totalExpenses.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
             trend={expensesTrend}
             trendLabel="vs last month"
-            icon={<Receipt className="w-5 h-5" />}
+            icon={<IndianRupee className="w-5 h-5" />}
           />
           <DashboardCard
             label={selectedMonth ? "Salary Paid" : "Total Salary Paid"}
             value={totalSalaryPaid.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
             trend={salaryTrend}
             trendLabel="vs last month"
-            icon={<DollarSign className="w-5 h-5" />}
+            icon={<IndianRupee className="w-5 h-5" />}
           />
         </div>
 

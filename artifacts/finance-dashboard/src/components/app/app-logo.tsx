@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { BrandMark } from "@/components/app/brand-mark";
 
 export function AppLogo({ compact = false }: { compact?: boolean }) {
   return (
@@ -9,7 +10,7 @@ export function AppLogo({ compact = false }: { compact?: boolean }) {
           compact ? "h-10 w-10" : "h-12 w-12",
         )}
       >
-        <span className="font-serif text-lg font-semibold text-white">R</span>
+        <BrandMark className={compact ? "h-8 w-8" : "h-9 w-9"} />
       </div>
       {!compact && (
         <div className="min-w-0">
