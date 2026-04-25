@@ -52,7 +52,7 @@ export default function AdminLeaveManagementPage() {
   const [holidayDate, setHolidayDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [holidayName, setHolidayName] = useState("");
   const [annualLimitInput, setAnnualLimitInput] = useState("10");
-  const [showPreviousApprovedLeaves, setShowPreviousApprovedLeaves] = useState(false);
+  const [showPreviousLeaveHistory, setShowPreviousLeaveHistory] = useState(false);
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
   const { data: leaveRequests = [] } = useQuery({
@@ -88,8 +88,21 @@ export default function AdminLeaveManagementPage() {
 
   const pendingRequests = leaveRequests.filter((request) => request.status === "pending");
   const approvedRequests = leaveRequests.filter((request) => request.status === "approved");
-  const activeRequests = leaveRequests.filter((request) => request.status !== "approved");
+  const reviewedRequests = leaveRequests.filter((request) => request.status !== "pending");
+  const activeRequests = pendingRequests;
   const selectedEmployee = employees.find((employee) => employee.id === selectedEmployeeId) ?? null;
+  const selectedEmployeeLeaveBalance = useMemo(() => {
+    if (!monthCalendar) {
+      return null;
+    }
+
+    return {
+      annualLimit: monthCalendar.summary.annualLeaveLimit ?? leavePolicy?.annualLimit ?? 10,
+      approvedDaysYear: monthCalendar.summary.approvedLeaveDaysYear ?? 0,
+      pendingDaysYear: monthCalendar.summary.pendingLeaveDaysYear ?? 0,
+      remainingDaysYear: monthCalendar.summary.remainingLeaveDaysYear ?? Math.max(0, (leavePolicy?.annualLimit ?? 10)),
+    };
+  }, [leavePolicy?.annualLimit, monthCalendar]);
 
   const stats = useMemo(
     () => ({
@@ -293,31 +306,31 @@ export default function AdminLeaveManagementPage() {
                 ))
               )}
 
-              {approvedRequests.length > 0 ? (
+              {reviewedRequests.length > 0 ? (
                 <div className="pt-2">
                   <div className="flex justify-end">
                     <Button
                       variant="ghost"
                       size="sm"
                       className="rounded-full px-4 text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
-                      onClick={() => setShowPreviousApprovedLeaves((current) => !current)}
+                      onClick={() => setShowPreviousLeaveHistory((current) => !current)}
                     >
-                      {showPreviousApprovedLeaves
-                        ? "Hide Approved Leaves"
-                        : `Previous Approved Leaves (${approvedRequests.length})`}
+                      {showPreviousLeaveHistory
+                        ? "Hide Leave History"
+                        : `Previous Leaves (${reviewedRequests.length})`}
                     </Button>
                   </div>
 
-                  {showPreviousApprovedLeaves ? (
+                  {showPreviousLeaveHistory ? (
                     <Card className="mt-3 border-border/60 bg-background/70 shadow-none">
                       <CardHeader className="pb-3">
-                        <CardTitle className="text-sm font-medium">Previous Approved Leaves</CardTitle>
+                        <CardTitle className="text-sm font-medium">Previous Leave Decisions</CardTitle>
                         <CardDescription>
-                          Approved leave requests that are already reflected in the employee calendar.
+                          Reviewed leave requests that are already closed out and no longer need action.
                         </CardDescription>
                       </CardHeader>
                       <CardContent className="space-y-3">
-                        {approvedRequests.map((request) => (
+                        {reviewedRequests.map((request) => (
                           <div
                             key={request.id}
                             className="flex flex-col gap-3 rounded-xl border border-border/60 bg-secondary/10 px-4 py-4 md:flex-row md:items-center md:justify-between"
@@ -326,7 +339,7 @@ export default function AdminLeaveManagementPage() {
                               <div className="flex flex-wrap items-center gap-2">
                                 <p className="font-medium text-foreground">{request.employeeNameSnapshot}</p>
                                 <Badge className={cn("rounded-full border px-2.5 py-1 text-[11px] font-medium shadow-none", statusClass(request.status))}>
-                                  Approved
+                                  {request.status}
                                 </Badge>
                               </div>
                               <p className="text-sm text-muted-foreground">
@@ -450,6 +463,22 @@ export default function AdminLeaveManagementPage() {
             ) : (
               <>
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                  <div className="rounded-xl border border-border/60 bg-background/70 px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Annual Leave Limit</p>
+                    <p className="mt-2 text-2xl font-semibold">{selectedEmployeeLeaveBalance?.annualLimit ?? 0}d</p>
+                  </div>
+                  <div className="rounded-xl border border-border/60 bg-background/70 px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Approved This Year</p>
+                    <p className="mt-2 text-2xl font-semibold">{selectedEmployeeLeaveBalance?.approvedDaysYear ?? 0}d</p>
+                  </div>
+                  <div className="rounded-xl border border-border/60 bg-background/70 px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Pending This Year</p>
+                    <p className="mt-2 text-2xl font-semibold">{selectedEmployeeLeaveBalance?.pendingDaysYear ?? 0}d</p>
+                  </div>
+                  <div className="rounded-xl border border-border/60 bg-background/70 px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Leave Left</p>
+                    <p className="mt-2 text-2xl font-semibold">{selectedEmployeeLeaveBalance?.remainingDaysYear ?? 0}d</p>
+                  </div>
                   <div className="rounded-xl border border-border/60 bg-background/70 px-4 py-3">
                     <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Hours Logged</p>
                     <p className="mt-2 text-2xl font-semibold">{monthCalendar.summary.hoursLogged.toFixed(1)}h</p>

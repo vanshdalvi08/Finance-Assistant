@@ -730,6 +730,10 @@ export interface MonthCalendar {
   month: string;
   monthLabel: string;
   summary: {
+    annualLeaveLimit?: number;
+    approvedLeaveDaysYear?: number;
+    pendingLeaveDaysYear?: number;
+    remainingLeaveDaysYear?: number;
     daysWorked: number;
     hoursLogged: number;
     leaveDays: number;
@@ -1073,11 +1077,12 @@ async function fallbackDeleteLeaveRequest(id: string) {
 }
 
 async function fallbackGetEmployeeMonthCalendar({ employeeId, month }: { employeeId: string; month: string }) {
-  const [timesheets, expenses, holidays, leaveRequests] = await Promise.all([
+  const [timesheets, expenses, holidays, leaveRequests, leavePolicy] = await Promise.all([
     api.getTimesheets({ employeeId }).catch(() => [] as TimesheetEntry[]),
     api.getExpenses({ employeeId }).catch(() => [] as Expense[]),
     fallbackGetHolidays({ month }),
-    fallbackGetLeaveRequests({ employeeId, month, status: "all" }),
+    fallbackGetLeaveRequests({ employeeId, status: "all" }),
+    fallbackGetLeavePolicy(),
   ]);
 
   const [yearString, monthString] = month.split("-");
@@ -1163,11 +1168,23 @@ async function fallbackGetEmployeeMonthCalendar({ employeeId, month }: { employe
       expenseSubmissions: 0,
     },
   );
+  const approvedLeaveDaysYear = leaveRequests
+    .filter((request) => request.kind !== "holiday" && request.status === "approved" && request.startDate.slice(0, 4) === yearString)
+    .reduce((sum, request) => sum + dayRange(request.startDate, request.endDate).length, 0);
+  const pendingLeaveDaysYear = leaveRequests
+    .filter((request) => request.kind !== "holiday" && request.status === "pending" && request.startDate.slice(0, 4) === yearString)
+    .reduce((sum, request) => sum + dayRange(request.startDate, request.endDate).length, 0);
+  const annualLeaveLimit = Math.max(0, Number(leavePolicy.annualLimit ?? 0));
+  const remainingLeaveDaysYear = Math.max(0, annualLeaveLimit - approvedLeaveDaysYear - pendingLeaveDaysYear);
 
   return {
     month,
     monthLabel: new Date(`${month}-01T00:00:00`).toLocaleString("en-US", { month: "long", year: "numeric" }),
     summary: {
+      annualLeaveLimit,
+      approvedLeaveDaysYear,
+      pendingLeaveDaysYear,
+      remainingLeaveDaysYear,
       ...summary,
       hoursLogged: Number(summary.hoursLogged.toFixed(1)),
     },

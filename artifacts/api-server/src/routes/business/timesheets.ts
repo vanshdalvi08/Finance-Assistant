@@ -2,7 +2,7 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
-import { idempotencyKeysTable, type ActorRole } from "@workspace/db/schema";
+import { companySettingsTable, idempotencyKeysTable, type ActorRole } from "@workspace/db/schema";
 import { requireTenantRole } from "../../middlewares/auth";
 import {
   DAY_KEYS,
@@ -11,6 +11,7 @@ import {
   type HolidayRecord,
   type LeaveRequestKind,
   type LeaveRequestRecord,
+  type LeavePolicyRecord,
   type LeaveRequestStatus,
   type TimesheetEntry,
   blankHours,
@@ -359,6 +360,10 @@ interface MonthCalendar {
   month: string;
   monthLabel: string;
   summary: {
+    annualLeaveLimit: number;
+    approvedLeaveDaysYear: number;
+    pendingLeaveDaysYear: number;
+    remainingLeaveDaysYear: number;
     daysWorked: number;
     hoursLogged: number;
     leaveDays: number;
@@ -372,7 +377,39 @@ interface MonthCalendar {
   days: MonthCalendarDay[];
 }
 
-function buildMonthCalendar(store: BusinessStore, employeeId: string, month: string, tenantId: string): MonthCalendar {
+function countLeaveDaysInYearByStatus(
+  store: BusinessStore,
+  employeeId: string,
+  tenantId: string,
+  year: number,
+  status: LeaveRequestStatus,
+) {
+  return store.leaveRequests.reduce((sum, request) => {
+    if (
+      (request.tenantId ?? DEFAULT_TENANT_ID) !== tenantId ||
+      request.employeeId !== employeeId ||
+      request.kind !== "leave" ||
+      request.status !== status
+    ) {
+      return sum;
+    }
+
+    return (
+      sum +
+      enumerateDays(request.startDate, request.endDate).filter(
+        (day) => new Date(`${day}T00:00:00.000Z`).getUTCFullYear() === year,
+      ).length
+    );
+  }, 0);
+}
+
+function buildMonthCalendar(
+  store: BusinessStore,
+  employeeId: string,
+  month: string,
+  tenantId: string,
+  leavePolicy: LeavePolicyRecord,
+): MonthCalendar {
   const [yearString, monthString] = month.split("-");
   const year = Number(yearString);
   const monthIndex = Number(monthString) - 1;
@@ -436,6 +473,10 @@ function buildMonthCalendar(store: BusinessStore, employeeId: string, month: str
   let pendingHolidayDays = 0;
   let hoursLogged = 0;
   let expenseSubmissions = 0;
+  const approvedLeaveDaysYear = countLeaveDaysInYearByStatus(store, employeeId, tenantId, year, "approved");
+  const pendingLeaveDaysYear = countLeaveDaysInYearByStatus(store, employeeId, tenantId, year, "pending");
+  const annualLeaveLimit = Math.max(0, Number(leavePolicy.annualLimit ?? 0));
+  const remainingLeaveDaysYear = Math.max(0, annualLeaveLimit - approvedLeaveDaysYear - pendingLeaveDaysYear);
 
   for (let day = 1; day <= daysInMonth; day += 1) {
     const date = new Date(year, monthIndex, day, 12, 0, 0, 0);
@@ -487,6 +528,10 @@ function buildMonthCalendar(store: BusinessStore, employeeId: string, month: str
     month,
     monthLabel: new Date(year, monthIndex, 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" }),
     summary: {
+      annualLeaveLimit,
+      approvedLeaveDaysYear,
+      pendingLeaveDaysYear,
+      remainingLeaveDaysYear,
       daysWorked,
       hoursLogged,
       leaveDays,
@@ -526,7 +571,9 @@ router.get("/month-calendar", requireTenantRole("admin", "employee"), async (req
   }
 
   const store = await readStore();
-  response.json({ monthCalendar: buildMonthCalendar(store, employeeId, month, tenantId) });
+  const leavePolicyRows = await db.select().from(companySettingsTable).where(eq(companySettingsTable.tenantId, tenantId)).limit(1);
+  const leavePolicy = (leavePolicyRows[0]?.data as { leavePolicy?: LeavePolicyRecord } | undefined)?.leavePolicy ?? store.leavePolicy;
+  response.json({ monthCalendar: buildMonthCalendar(store, employeeId, month, tenantId, leavePolicy) });
 });
 
 router.get("/timesheets", requireTenantRole("admin", "employee"), async (request, response) => {
