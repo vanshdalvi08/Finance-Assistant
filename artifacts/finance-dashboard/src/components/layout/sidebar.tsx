@@ -333,11 +333,11 @@ export function Sidebar() {
       <div className={cn("flex h-16 items-center border-b border-sidebar-border", sidebarCollapsed ? "justify-center px-2" : "justify-between px-4")}>
         {!sidebarCollapsed ? (
           <div className="flex min-w-0 items-center gap-3">
-            <img src={sidebarLogo} alt="Reforix Payroll" className="h-11 w-11 shrink-0 object-contain" />
+            <img src={sidebarLogo} alt="Reforix Payroll" className="h-8 w-8 shrink-0 object-contain" />
             <span className="block truncate font-bold tracking-tight text-sidebar-foreground">Reforix Payroll</span>
           </div>
         ) : (
-          <img src={sidebarLogo} alt="Reforix Payroll" className="h-11 w-11 object-contain" />
+          <img src={sidebarLogo} alt="Reforix Payroll" className="h-8 w-8 object-contain" />
         )}
       </div>
 

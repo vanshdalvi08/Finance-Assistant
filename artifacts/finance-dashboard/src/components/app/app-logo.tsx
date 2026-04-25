@@ -7,7 +7,7 @@ export function AppLogo({ compact = false }: { compact?: boolean }) {
       <img
         src={sidebarLogo}
         alt="Reforix Payroll"
-        className={cn("shrink-0 object-contain", compact ? "h-10 w-10" : "h-11 w-11")}
+        className={cn("shrink-0 object-contain", compact ? "h-8 w-8" : "h-8 w-8")}
       />
       {!compact && (
         <div className="min-w-0 space-y-0.5">
