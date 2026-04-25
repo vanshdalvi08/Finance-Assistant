@@ -33,6 +33,7 @@ type TaskDraft = {
   name: string;
   description: string;
   maxHours: string;
+  durationDays: string;
   status: "active" | "archived";
 };
 
@@ -48,6 +49,7 @@ const EMPTY_TASK: TaskDraft = {
   name: "",
   description: "",
   maxHours: "",
+  durationDays: "",
   status: "active",
 };
 
@@ -70,12 +72,13 @@ function toForm(project?: ProjectRecord | null): ProjectForm {
     project: project.project,
     client: project.client ?? "",
     note: project.note ?? "",
-    tasks: project.tasks.length
-      ? project.tasks.map((task) => ({
+          tasks: project.tasks.length
+            ? project.tasks.map((task) => ({
           id: task.id,
           name: task.name,
           description: task.description ?? "",
           maxHours: task.maxHours ? String(task.maxHours) : "",
+          durationDays: task.durationDays ? String(task.durationDays) : "",
           status: task.status === "archived" ? "archived" : "active",
         }))
       : [cloneEmptyTask()],
@@ -93,6 +96,16 @@ export default function ProjectBudgetsPage() {
     queryKey: ["projectBudgets"],
     queryFn: () => api.getProjectBudgets(),
   });
+
+  const { data: projectBudgetSummary = [] } = useQuery({
+    queryKey: ["projectBudgetSummary"],
+    queryFn: api.getProjectBudgetSummary,
+  });
+
+  const summaryLookup = useMemo(
+    () => new Map(projectBudgetSummary.map((summary) => [summary.id, summary])),
+    [projectBudgetSummary],
+  );
 
   const filteredProjects = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -138,6 +151,7 @@ export default function ProjectBudgetsPage() {
           name: task.name.trim(),
           description: task.description.trim(),
           maxHours: Math.max(0, Number(task.maxHours || 0)) || undefined,
+          durationDays: Math.max(0, Number(task.durationDays || 0)) || undefined,
           status: task.status,
         }))
         .filter((task) => task.name.length > 0);
@@ -381,26 +395,50 @@ export default function ProjectBudgetsPage() {
                         No tasks added yet. Edit this project to add work items for employees.
                       </div>
                     ) : (
-                      project.tasks.map((task) => (
-                        <div key={task.id} className="rounded-xl border border-border/60 bg-background/60 px-4 py-3">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="font-medium text-foreground">{task.name}</p>
-                              {task.description ? (
-                                <p className="mt-1 text-sm text-muted-foreground">{task.description}</p>
-                              ) : null}
-                              {task.maxHours ? (
-                                <p className="mt-2 text-xs text-muted-foreground">
-                                  Max claimable hours: <span className="font-medium text-foreground">{task.maxHours}h</span>
-                                </p>
-                              ) : null}
+                      project.tasks.map((task) => {
+                        const summary = summaryLookup.get(project.id);
+                        const summaryTask = summary?.tasks.find((item) => item.id === task.id);
+                        const limitHours = summaryTask?.maxHours ?? task.maxHours;
+                        const remainingHours = summaryTask?.remainingHours;
+                        const hoursPerDay = summaryTask?.hoursPerDay;
+
+                        return (
+                          <div key={task.id} className="rounded-xl border border-border/60 bg-background/60 px-4 py-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="font-medium text-foreground">{task.name}</p>
+                                {task.description ? (
+                                  <p className="mt-1 text-sm text-muted-foreground">{task.description}</p>
+                                ) : null}
+                                {limitHours || task.durationDays ? (
+                                  <p className="mt-2 text-xs text-muted-foreground">
+                                    {limitHours ? (
+                                      <span className="font-medium text-foreground">{limitHours}h</span>
+                                    ) : null}
+                                    {task.durationDays ? (
+                                      <>
+                                        {limitHours ? " over " : ""}
+                                        <span className="font-medium text-foreground">{task.durationDays} day{task.durationDays === 1 ? "" : "s"}</span>
+                                      </>
+                                    ) : null}
+                                    {hoursPerDay ? ` (~${hoursPerDay}h/day)` : ""}
+                                  </p>
+                                ) : null}
+                                {typeof remainingHours === "number" ? (
+                                  <p className="mt-1 text-xs text-muted-foreground">
+                                    Used <span className="font-medium text-foreground">{summaryTask?.usedHours?.toFixed(1) ?? "0.0"}h</span>
+                                    {" · "}
+                                    Remaining <span className="font-medium text-foreground">{remainingHours.toFixed(1)}h</span>
+                                  </p>
+                                ) : null}
+                              </div>
+                              <Badge variant="outline" className="rounded-full border-border/60 bg-background/50 font-normal capitalize">
+                                {task.status}
+                              </Badge>
                             </div>
-                            <Badge variant="outline" className="rounded-full border-border/60 bg-background/50 font-normal capitalize">
-                              {task.status}
-                            </Badge>
                           </div>
-                        </div>
-                      ))
+                        );
+                      })
                     )}
                   </div>
                 </div>
@@ -466,7 +504,7 @@ export default function ProjectBudgetsPage() {
             <div className="space-y-3">
               {form.tasks.map((task, index) => (
                 <div key={task.id ?? `task-${index}`} className="rounded-xl border border-border/60 bg-secondary/10 p-4">
-                  <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_140px_160px_auto]">
+                  <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_140px_140px_160px_auto]">
                     <Input
                       value={task.name}
                       onChange={(event) => updateTask(index, "name", event.target.value)}
@@ -484,6 +522,14 @@ export default function ProjectBudgetsPage() {
                       value={task.maxHours}
                       onChange={(event) => updateTask(index, "maxHours", event.target.value)}
                       placeholder="Max hours"
+                    />
+                    <Input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={task.durationDays}
+                      onChange={(event) => updateTask(index, "durationDays", event.target.value)}
+                      placeholder="Days"
                     />
                     <Select value={task.status} onValueChange={(value) => updateTask(index, "status", value)}>
                       <SelectTrigger className="rounded-xl">

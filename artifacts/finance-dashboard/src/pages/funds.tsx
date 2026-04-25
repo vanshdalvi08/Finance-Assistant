@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ChangeEvent } from "react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { api, type AdminOverview, type ChartPoint, type Fund, type Transaction } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -14,8 +14,9 @@ import * as z from "zod";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowDownRight, ChevronDown, ChevronRight, Plus, Wallet } from "lucide-react";
+import { ArrowDownRight, ChevronDown, ChevronRight, Paperclip, Plus, Upload, Wallet, X } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { uploadFundReceipt, type UploadedAsset } from "@/lib/uploads";
 
 const fundSchema = z.object({
   source: z.string().min(2, "Source is required"),
@@ -85,6 +86,8 @@ export default function Funds() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [showPreviousInflows, setShowPreviousInflows] = useState(false);
   const [openHistoryMonth, setOpenHistoryMonth] = useState<string | null>(null);
+  const [receiptFile, setReceiptFile] = useState<UploadedAsset | null>(null);
+  const [isUploadingReceipt, setIsUploadingReceipt] = useState(false);
 
   const { data: funds = [] } = useQuery({
     queryKey: ["funds"],
@@ -149,7 +152,12 @@ export default function Funds() {
   });
 
   const addMutation = useMutation({
-    mutationFn: api.addFund,
+    mutationFn: async (data: z.infer<typeof fundSchema>) =>
+      api.addFund({
+        ...data,
+        receiptName: receiptFile?.fileName,
+        receiptPath: receiptFile?.path,
+      }),
     onSuccess: (createdFund) => {
       queryClient.setQueryData<Fund[]>(["funds"], (current = []) => [
         createdFund,
@@ -160,6 +168,7 @@ export default function Funds() {
       queryClient.setQueryData<Transaction[]>(["transactions"], (current) => updateTransactions(current, createdFund));
       toast({ title: "Funds added", description: "Inflow has been recorded successfully." });
       setIsDialogOpen(false);
+      setReceiptFile(null);
       form.reset({
         source: "",
         amount: 0,
@@ -168,6 +177,33 @@ export default function Funds() {
       });
     },
   });
+
+  async function handleReceiptChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    try {
+      setIsUploadingReceipt(true);
+      const uploaded = await uploadFundReceipt(file);
+      setReceiptFile(uploaded);
+      toast({
+        title: "Receipt uploaded",
+        description: "The receipt will be saved with this fund entry.",
+      });
+    } catch (error) {
+      setReceiptFile(null);
+      toast({
+        title: "Could not upload receipt",
+        description: error instanceof Error ? error.message : "Please try another file.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsUploadingReceipt(false);
+      event.target.value = "";
+    }
+  }
 
   return (
     <DashboardLayout>
@@ -178,7 +214,16 @@ export default function Funds() {
             <p className="text-muted-foreground text-sm mt-1">Track revenue, investments, and incoming capital without mixing in vendor purchase orders.</p>
           </div>
 
-          <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+          <Dialog
+            open={isDialogOpen}
+            onOpenChange={(open) => {
+              setIsDialogOpen(open);
+              if (!open) {
+                setReceiptFile(null);
+                setIsUploadingReceipt(false);
+              }
+            }}
+          >
             <DialogTrigger asChild>
               <Button>
                 <Plus className="w-4 h-4 mr-2" /> Add Fund
@@ -244,7 +289,59 @@ export default function Funds() {
                       </FormItem>
                     )}
                   />
-                  <Button type="submit" className="w-full mt-4" disabled={addMutation.isPending}>
+                  <div className="space-y-2">
+                    <FormLabel>Receipt (Optional)</FormLabel>
+                    <div className="flex flex-col gap-3 rounded-xl border border-dashed border-border/60 bg-secondary/10 p-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium">Attach a fund receipt</p>
+                        <p className="text-xs text-muted-foreground">
+                          Upload a PDF or image from Supabase storage for later reference.
+                        </p>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="gap-2"
+                        disabled={isUploadingReceipt}
+                        onClick={() => document.getElementById("fund-receipt-input")?.click()}
+                      >
+                        <Upload className="h-4 w-4" />
+                        {isUploadingReceipt ? "Uploading..." : receiptFile ? "Replace receipt" : "Upload receipt"}
+                      </Button>
+                    </div>
+                    <input
+                      id="fund-receipt-input"
+                      type="file"
+                      accept="image/*,application/pdf"
+                      className="hidden"
+                      onChange={handleReceiptChange}
+                    />
+                    {receiptFile ? (
+                      <div className="flex items-center justify-between rounded-lg border border-border/60 bg-background/60 px-3 py-2 text-sm">
+                        <div className="flex items-center gap-2 overflow-hidden">
+                          <Paperclip className="h-4 w-4 shrink-0 text-muted-foreground" />
+                          <a
+                            href={receiptFile.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="truncate text-primary underline-offset-4 hover:underline"
+                          >
+                            {receiptFile.fileName}
+                          </a>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={() => setReceiptFile(null)}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ) : null}
+                  </div>
+                  <Button type="submit" className="w-full mt-4" disabled={addMutation.isPending || isUploadingReceipt}>
                     Save Inflow
                   </Button>
                 </form>
@@ -334,6 +431,7 @@ export default function Funds() {
                     <TableRow className="border-border/50">
                       <TableHead>Source</TableHead>
                       <TableHead>Note</TableHead>
+                      <TableHead>Receipt</TableHead>
                       <TableHead>Date</TableHead>
                       <TableHead className="text-right">Amount</TableHead>
                     </TableRow>
@@ -348,6 +446,21 @@ export default function Funds() {
                           {fund.source}
                         </TableCell>
                         <TableCell className="text-muted-foreground">{fund.note || "-"}</TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {fund.receiptUrl ? (
+                            <a
+                              href={fund.receiptUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
+                            >
+                              <Paperclip className="h-3.5 w-3.5" />
+                              {fund.receiptName || "View"}
+                            </a>
+                          ) : (
+                            "-"
+                          )}
+                        </TableCell>
                         <TableCell className="text-muted-foreground">{format(new Date(fund.date), "MMM dd, yyyy")}</TableCell>
                         <TableCell className="text-right font-medium text-primary">
                           +{fund.amount.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
@@ -413,6 +526,7 @@ export default function Funds() {
                             <TableRow className="border-border/50">
                               <TableHead>Source</TableHead>
                               <TableHead>Note</TableHead>
+                              <TableHead>Receipt</TableHead>
                               <TableHead>Date</TableHead>
                               <TableHead className="text-right">Amount</TableHead>
                             </TableRow>
@@ -422,6 +536,21 @@ export default function Funds() {
                               <TableRow key={fund.id} className="border-border/50">
                                 <TableCell className="font-medium">{fund.source}</TableCell>
                                 <TableCell className="text-muted-foreground">{fund.note || "-"}</TableCell>
+                                <TableCell className="text-muted-foreground">
+                                  {fund.receiptUrl ? (
+                                    <a
+                                      href={fund.receiptUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
+                                    >
+                                      <Paperclip className="h-3.5 w-3.5" />
+                                      {fund.receiptName || "View"}
+                                    </a>
+                                  ) : (
+                                    "-"
+                                  )}
+                                </TableCell>
                                 <TableCell className="text-muted-foreground">{format(new Date(fund.date), "MMM dd, yyyy")}</TableCell>
                                 <TableCell className="text-right font-medium text-primary">
                                   +{fund.amount.toLocaleString("en-IN", { style: "currency", currency: "INR" })}

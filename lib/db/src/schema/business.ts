@@ -46,6 +46,7 @@ export interface ProjectBudgetTaskRecord {
   name: string;
   description?: string;
   maxHours?: number;
+  durationDays?: number;
   status: ProjectTaskStatus;
 }
 
@@ -181,6 +182,8 @@ export const fundsTable = pgTable(
     amount: integer("amount").notNull().default(0),
     date: timestamp("date", { withTimezone: true }).notNull(),
     note: text("note").notNull().default(""),
+    receiptName: text("receipt_name"),
+    receiptPath: text("receipt_path"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -524,6 +527,7 @@ export const projectTasksTable = pgTable(
     name: text("name").notNull(),
     description: text("description").notNull().default(""),
     maxHours: real("max_hours"),
+    durationDays: integer("duration_days"),
     status: projectTaskStatusEnum("status").notNull().default("active"),
     sortOrder: integer("sort_order").notNull().default(0),
     createdById: uuid("created_by_id").references(() => usersTable.id, { onDelete: "set null" }),
@@ -538,6 +542,7 @@ export const projectTasksTable = pgTable(
     sortOrderIndex: index("project_tasks_sort_order_index").on(table.sortOrder),
     createdByIndex: index("project_tasks_created_by_index").on(table.createdById),
     nonNegativeMaxHours: check("project_tasks_max_hours_nonnegative_check", sql`${table.maxHours} IS NULL OR ${table.maxHours} >= 0`),
+    nonNegativeDurationDays: check("project_tasks_duration_days_nonnegative_check", sql`${table.durationDays} IS NULL OR ${table.durationDays} >= 0`),
   }),
 );
 

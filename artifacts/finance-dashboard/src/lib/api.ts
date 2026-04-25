@@ -67,6 +67,9 @@ export interface Fund {
   amount: number;
   date: string;
   note: string;
+  receiptName?: string;
+  receiptPath?: string;
+  receiptUrl?: string;
 }
 
 export interface ExpenseCategory {
@@ -223,7 +226,12 @@ export interface ProjectBudgetTask {
   name: string;
   description?: string;
   maxHours?: number;
+  durationDays?: number;
   status: "active" | "archived";
+  usedHours?: number;
+  remainingHours?: number;
+  utilisation?: number;
+  hoursPerDay?: number;
 }
 
 export interface PurchaseOrderTask {
@@ -325,6 +333,8 @@ interface AddFundInput {
   amount: number;
   date: string;
   note?: string;
+  receiptName?: string;
+  receiptPath?: string;
 }
 
 interface AddSalaryInput {
@@ -386,6 +396,7 @@ interface SaveProjectBudgetInput {
     name: string;
     description?: string;
     maxHours?: number;
+    durationDays?: number;
     status?: "active" | "archived";
   }>;
   actorName?: string;
@@ -1650,6 +1661,7 @@ export const api = {
         spent: number;
         remainingBudget: number;
         utilisation: number;
+        tasks: ProjectBudgetTask[];
       }>;
     }>("/projects/summary")).projects,
 

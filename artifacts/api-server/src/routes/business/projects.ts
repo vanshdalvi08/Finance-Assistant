@@ -24,6 +24,7 @@ const projectTaskSchema = z.object({
   name: z.string().trim().min(2),
   description: z.string().trim().optional(),
   maxHours: z.coerce.number().min(0).optional(),
+  durationDays: z.coerce.number().int().min(0).optional(),
   status: z.enum(["active", "archived"]).optional(),
 });
 
@@ -73,6 +74,7 @@ function requestHashForProjectMutation(input: z.infer<typeof projectSchema> & { 
         name: task.name.trim(),
         description: task.description?.trim() ?? "",
         maxHours: Number(task.maxHours ?? 0),
+        durationDays: Number(task.durationDays ?? 0),
         status: task.status ?? "active",
       })),
     }),
@@ -92,6 +94,7 @@ function requestHashForProjectTask(input: { projectId: string; task: z.infer<typ
         name: input.task.name.trim(),
         description: input.task.description?.trim() ?? "",
         maxHours: Number(input.task.maxHours ?? 0),
+        durationDays: Number(input.task.durationDays ?? 0),
         status: input.task.status ?? "active",
       },
     }),
@@ -263,6 +266,7 @@ router.post("/projects", requireTenantRole("admin"), async (request, response) =
       name: task.name.trim(),
       description: task.description?.trim() || undefined,
       maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : undefined,
+      durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : undefined,
       status: task.status === "archived" ? "archived" : "active",
     })),
     createdAt: existing?.createdAt ?? nowIso(),
@@ -390,6 +394,7 @@ router.route("/projects/:id").get(async (request, response) => {
       name: task.name.trim(),
       description: task.description?.trim() || undefined,
       maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : undefined,
+      durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : undefined,
       status: task.status === "archived" ? "archived" : "active",
     })),
     updatedAt: nowIso(),
@@ -595,6 +600,7 @@ router.post("/projects/:id/tasks", requireTenantRole("admin"), async (request, r
     name: parsed.data.name.trim(),
     description: parsed.data.description?.trim() || undefined,
     maxHours: Number(parsed.data.maxHours ?? 0) > 0 ? Number(parsed.data.maxHours) : undefined,
+    durationDays: Number(parsed.data.durationDays ?? 0) > 0 ? Number(parsed.data.durationDays) : undefined,
     status: parsed.data.status === "archived" ? "archived" : "active",
   };
   const next = pushAuditEvent(

@@ -52,6 +52,9 @@ export interface FundRecord {
   amount: number;
   date: string;
   note: string;
+  receiptName?: string;
+  receiptPath?: string;
+  receiptUrl?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -135,6 +138,7 @@ export interface ProjectBudgetTask {
   name: string;
   description?: string;
   maxHours?: number;
+  durationDays?: number;
   status: "active" | "archived";
 }
 
@@ -425,6 +429,8 @@ function fundFromRow(row: DbFund): FundRecord {
     amount: Math.abs(Number(row.amount ?? 0)),
     date: toIso(row.date),
     note: row.note ?? "",
+    receiptName: "receiptName" in row && typeof (row as { receiptName?: unknown }).receiptName === "string" ? String((row as { receiptName?: string }).receiptName ?? "").trim() || undefined : undefined,
+    receiptPath: "receiptPath" in row && typeof (row as { receiptPath?: unknown }).receiptPath === "string" ? String((row as { receiptPath?: string }).receiptPath ?? "").trim() || undefined : undefined,
     createdAt: toIso(row.createdAt),
     updatedAt: toIso(row.updatedAt),
   };
@@ -438,6 +444,8 @@ function fundToRow(fund: FundRecord) {
     amount: Math.abs(Number(fund.amount ?? 0)),
     date: toDate(fund.date),
     note: fund.note ?? "",
+    receiptName: fund.receiptName?.trim() || null,
+    receiptPath: fund.receiptPath?.trim() || null,
     createdAt: toDate(fund.createdAt),
     updatedAt: toDate(fund.updatedAt),
   };
@@ -741,11 +749,13 @@ function projectBudgetFromRow(row: DbProjectBudget): ProjectBudget {
           .filter((task) => task && task.name?.trim())
           .map((task) => {
             const taskWithMaxHours = task as typeof task & { maxHours?: number | null };
+            const taskWithDurationDays = task as typeof task & { durationDays?: number | null };
             return {
               id: task.id ?? createId("pbt"),
               name: String(task.name ?? "").trim(),
               description: task.description?.trim() || undefined,
               maxHours: Number(taskWithMaxHours.maxHours ?? 0) > 0 ? Number(taskWithMaxHours.maxHours) : undefined,
+              durationDays: Number(taskWithDurationDays.durationDays ?? 0) > 0 ? Number(taskWithDurationDays.durationDays) : undefined,
               status: task.status === "archived" ? "archived" : "active",
             };
           })
@@ -780,11 +790,13 @@ function projectBudgetFromNormalizedRow(
       })
       .map((task) => {
         const taskWithMaxHours = task as DbProjectTask & { maxHours?: number | null };
+        const taskWithDurationDays = task as DbProjectTask & { durationDays?: number | null };
         return {
           id: task.id,
           name: task.name.trim(),
           description: task.description?.trim() || undefined,
           maxHours: Number(taskWithMaxHours.maxHours ?? 0) > 0 ? Number(taskWithMaxHours.maxHours) : undefined,
+          durationDays: Number(taskWithDurationDays.durationDays ?? 0) > 0 ? Number(taskWithDurationDays.durationDays) : undefined,
           status: task.status === "archived" ? "archived" : "active",
         };
       }),
@@ -890,6 +902,8 @@ function projectBudgetToRow(budget: ProjectBudget) {
       id: task.id ?? createId("pbt"),
       name: task.name.trim(),
       description: task.description?.trim() || undefined,
+      maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : undefined,
+      durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : undefined,
       status: task.status === "archived" ? ("archived" as const) : ("active" as const),
     })),
     createdAt: toDate(budget.createdAt),
@@ -944,6 +958,7 @@ function projectTasksToRows(budget: ProjectBudget, createdById: string | null) {
     name: task.name.trim(),
     description: task.description?.trim() || "",
     maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : null,
+    durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : null,
     status: task.status === "archived" ? ("archived" as const) : ("active" as const),
     sortOrder: index,
     createdById,
@@ -1109,6 +1124,8 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
       amount: Math.abs(Number(fund.amount ?? 0)),
       date: normalizeDate(String(fund.date ?? nowIso())),
       note: String(fund.note ?? ""),
+      receiptName: String((fund as FundRecord).receiptName ?? "").trim() || undefined,
+      receiptPath: String((fund as FundRecord).receiptPath ?? "").trim() || undefined,
       createdAt: normalizeDate(String(fund.createdAt ?? nowIso())),
       updatedAt: normalizeDate(String(fund.updatedAt ?? fund.createdAt ?? nowIso())),
     })) : [],
@@ -1195,6 +1212,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
         name: String(task.name ?? "").trim(),
         description: task.description?.trim() || undefined,
         maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : undefined,
+        durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : undefined,
         status: task.status === "archived" ? "archived" : "active",
       })) : [],
       createdAt: normalizeDate(String(budget.createdAt ?? nowIso())),
@@ -1824,7 +1842,39 @@ export async function updateStore(mutator: (current: BusinessStore) => BusinessS
   });
 }
 
-function assertTaskHourLimits(entry: TimesheetEntry, projects: ProjectBudget[]) {
+function taskHoursFromLine(line: TimesheetTaskLine): number {
+  return DAY_KEYS.reduce((sum, day) => sum + Number(line.hours[day] ?? 0), 0);
+}
+
+function buildTaskUsageMap(
+  timesheets: TimesheetEntry[],
+  options?: { excludeTimesheetId?: string; includedStatuses?: ApprovalStatus[] },
+): Map<string, number> {
+  const allowedStatuses = new Set(options?.includedStatuses ?? ["submitted", "approved"]);
+  const totals = new Map<string, number>();
+
+  for (const entry of timesheets) {
+    if (options?.excludeTimesheetId && entry.id === options.excludeTimesheetId) {
+      continue;
+    }
+
+    if (!allowedStatuses.has(entry.status)) {
+      continue;
+    }
+
+    for (const line of entry.lines) {
+      if (!line.projectTaskId) {
+        continue;
+      }
+
+      totals.set(line.projectTaskId, (totals.get(line.projectTaskId) ?? 0) + taskHoursFromLine(line));
+    }
+  }
+
+  return totals;
+}
+
+function assertTaskHourLimits(entry: TimesheetEntry, projects: ProjectBudget[], currentTimesheets: TimesheetEntry[]) {
   const taskCatalog = new Map(
     projects.flatMap((project) =>
       project.tasks.map((task) => [
@@ -1833,20 +1883,23 @@ function assertTaskHourLimits(entry: TimesheetEntry, projects: ProjectBudget[]) 
           taskName: task.name,
           projectName: project.project,
           maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : undefined,
+          durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : undefined,
         },
       ] as const),
     ),
   );
 
-  const totalsByTask = new Map<string, number>();
+  const totalsByTask = buildTaskUsageMap(currentTimesheets, {
+    excludeTimesheetId: entry.id,
+    includedStatuses: ["submitted", "approved"],
+  });
+
   for (const line of entry.lines) {
     if (!line.projectTaskId) {
       continue;
     }
 
-    const lineHours = Object.values(line.hours).reduce((sum, value) => sum + Number(value ?? 0), 0);
-    const next = (totalsByTask.get(line.projectTaskId) ?? 0) + lineHours;
-    totalsByTask.set(line.projectTaskId, next);
+    totalsByTask.set(line.projectTaskId, (totalsByTask.get(line.projectTaskId) ?? 0) + taskHoursFromLine(line));
   }
 
   for (const [taskId, totalHours] of totalsByTask.entries()) {
@@ -1856,8 +1909,9 @@ function assertTaskHourLimits(entry: TimesheetEntry, projects: ProjectBudget[]) 
     }
 
     if (Number(totalHours.toFixed(2)) > Number(task.maxHours.toFixed(2))) {
+      const durationLabel = task.durationDays ? ` over ${task.durationDays} day${task.durationDays === 1 ? "" : "s"}` : "";
       throw new Error(
-        `${task.taskName} in ${task.projectName} allows a maximum of ${task.maxHours} hours. Reduce the claimed hours before saving.`,
+        `${task.taskName} in ${task.projectName} allows a maximum of ${task.maxHours} hours${durationLabel}. Reduce the claimed hours before saving.`,
       );
     }
   }
@@ -1872,7 +1926,7 @@ export async function saveTimesheetFast(input: {
     storeReadPromise = null;
     const current = storeCache ?? await readStore({ fresh: true });
     const normalizedEntry = normalizeStore({ timesheets: [input.entry] }).timesheets[0];
-    assertTaskHourLimits(normalizedEntry, current.projectBudgets);
+    assertTaskHourLimits(normalizedEntry, current.projectBudgets, current.timesheets);
     const existing = current.timesheets.find((timesheet) => timesheet.id === normalizedEntry.id);
 
     if (normalizedEntry.status === "draft" && !hasPersistedTimesheetContent(normalizedEntry)) {
@@ -1980,7 +2034,7 @@ export async function submitTimesheetFast(input: {
         },
       ],
     }).timesheets[0];
-    assertTaskHourLimits(updatedEntry, current.projectBudgets);
+    assertTaskHourLimits(updatedEntry, current.projectBudgets, current.timesheets);
 
     const auditEntry = createAuditEntry({
       tenantId: input.tenantId,
@@ -2030,7 +2084,7 @@ export async function submitTimesheetEntryFast(input: {
     storeReadPromise = null;
     const current = storeCache ?? await readStore({ fresh: true });
     const normalizedEntry = normalizeStore({ timesheets: [input.entry] }).timesheets[0];
-    assertTaskHourLimits(normalizedEntry, current.projectBudgets);
+    assertTaskHourLimits(normalizedEntry, current.projectBudgets, current.timesheets);
     const existing = current.timesheets.find((timesheet) => timesheet.id === normalizedEntry.id);
     assertWorkflowTransition("timesheetSubmission", existing?.status ?? "draft", "submitted");
     const submittedEntry = normalizeStore({

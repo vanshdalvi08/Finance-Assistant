@@ -2127,6 +2127,30 @@ router.get("/projects/summary", async (_request, response) => {
       .filter(Boolean),
   );
   const activeProjectBudgets = tenantProjectBudgets.filter((budget) => budget.status !== "archived");
+  const activeTaskCatalog = new Map<string, ProjectBudget["tasks"][number]>();
+  for (const budget of activeProjectBudgets) {
+    for (const task of budget.tasks.filter((item) => item.status !== "archived")) {
+      activeTaskCatalog.set(task.id, task);
+    }
+  }
+  const taskUsageById = new Map<string, number>();
+  for (const entry of store.timesheets) {
+    if (!employeeMap.has(entry.employeeId)) {
+      continue;
+    }
+    if (entry.status !== "submitted" && entry.status !== "approved") {
+      continue;
+    }
+
+    for (const line of entry.lines) {
+      if (!line.projectTaskId || !activeTaskCatalog.has(line.projectTaskId)) {
+        continue;
+      }
+
+      const hours = DAY_KEYS.reduce((sum, day) => sum + Number(line.hours[day] ?? 0), 0);
+      taskUsageById.set(line.projectTaskId, (taskUsageById.get(line.projectTaskId) ?? 0) + hours);
+    }
+  }
   const grouped = new Map<string, {
     id: string;
     project: string;
@@ -2136,6 +2160,18 @@ router.get("/projects/summary", async (_request, response) => {
     totalBudget: number;
     client?: string;
     note?: string;
+    tasks: Array<{
+      id: string;
+      name: string;
+      description?: string;
+      maxHours?: number;
+      durationDays?: number;
+      status: "active" | "archived";
+      usedHours: number;
+      remainingHours?: number;
+      utilisation: number;
+      hoursPerDay?: number;
+    }>;
   }>();
 
   const ensureBucket = (project: string) => {
@@ -2150,6 +2186,7 @@ router.get("/projects/summary", async (_request, response) => {
         totalBudget: budget?.totalBudget ?? 0,
         client: budget?.client,
         note: budget?.note,
+        tasks: [],
       });
     }
 
@@ -2193,6 +2230,34 @@ router.get("/projects/summary", async (_request, response) => {
 
     const bucket = ensureBucket(project);
     bucket.expenseCost += Math.abs(expense.amount);
+  }
+
+  for (const budget of activeProjectBudgets) {
+    const bucket = ensureBucket(budget.project);
+    bucket.tasks = budget.tasks
+      .filter((task) => task.status !== "archived")
+      .map((task) => {
+      const usedHours = Number((taskUsageById.get(task.id) ?? 0).toFixed(2));
+      const maxHours = Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : 0;
+      const remainingHours = maxHours > 0 ? Math.max(0, Number((maxHours - usedHours).toFixed(2))) : undefined;
+      const utilisation = maxHours > 0 ? Math.min(100, Number(((usedHours / maxHours) * 100).toFixed(1))) : 0;
+      const hoursPerDay = maxHours > 0 && Number(task.durationDays ?? 0) > 0
+        ? Number((maxHours / Number(task.durationDays)).toFixed(1))
+        : undefined;
+
+      return {
+        id: task.id,
+        name: task.name,
+        description: task.description,
+        maxHours: task.maxHours,
+        durationDays: task.durationDays,
+        status: task.status,
+        usedHours,
+        remainingHours,
+        utilisation,
+        hoursPerDay,
+      };
+    });
   }
 
   const projectBudgetSummary = Array.from(grouped.values())

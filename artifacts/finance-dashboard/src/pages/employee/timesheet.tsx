@@ -82,7 +82,11 @@ function lineTotal(line: TimesheetTaskLine) {
   return DAYS.reduce((sum, day) => sum + (line.hours[day.key] ?? 0), 0);
 }
 
-function positiveTaskLimit(task?: { maxHours?: number }) {
+function positiveTaskLimit(task?: { maxHours?: number; remainingHours?: number }) {
+  if (typeof task?.remainingHours === "number") {
+    return task.remainingHours;
+  }
+
   return Number(task?.maxHours ?? 0) > 0 ? Number(task?.maxHours) : undefined;
 }
 
@@ -256,7 +260,7 @@ export default function EmployeeTimesheetPage() {
         notes: summary.note ?? "",
         totalBudget: summary.totalBudget ?? 0,
         createdAt: new Date().toISOString(),
-        tasks: [],
+        tasks: summary.tasks ?? [],
         updatedAt: new Date().toISOString(),
       });
     }
@@ -827,7 +831,11 @@ export default function EmployeeTimesheetPage() {
                                       {projectTaskOptions.map((task) => (
                                         <option key={task.id} value={task.name}>
                                           {task.name}
-                                          {positiveTaskLimit(task) ? ` (${positiveTaskLimit(task)}h max)` : ""}
+                                          {typeof task.remainingHours === "number"
+                                            ? ` (${formatHourValue(task.remainingHours)} remaining)`
+                                            : positiveTaskLimit(task)
+                                              ? ` (${positiveTaskLimit(task)}h max${task.durationDays ? ` / ${task.durationDays}d` : ""})`
+                                              : ""}
                                         </option>
                                       ))}
                                       <option value="__custom__">Custom task</option>
@@ -868,9 +876,10 @@ export default function EmployeeTimesheetPage() {
                                   Choose a project first
                                 </div>
                               )}
-                              {selectedTaskLimit ? (
+                              {selectedTaskLimit !== undefined ? (
                                 <p className="text-[11px] text-muted-foreground">
-                                  Max this week: <span className="font-medium text-foreground">{selectedTaskLimit}h</span>
+                                  Remaining task capacity:{" "}
+                                  <span className="font-medium text-foreground">{formatHourValue(selectedTaskLimit)}</span>
                                   {" · "}
                                   Claimed: <span className="font-medium text-foreground">{Number(selectedTaskClaimed.toFixed(1))}h</span>
                                 </p>
