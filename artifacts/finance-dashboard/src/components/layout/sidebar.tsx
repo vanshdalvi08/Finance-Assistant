@@ -30,7 +30,7 @@ import { useAuthStore } from "@/store/auth";
 import { useToast } from "@/hooks/use-toast";
 import { EmployeeAvatar } from "@/components/employee-avatar";
 import { api } from "@/lib/api";
-import sidebarLogo from "@/assets/sidebar-logo.png";
+import sidebarLogo from "@/assets/SideBar Logo.png";
 
 type NavItem = {
   href: string;
@@ -334,7 +334,7 @@ export function Sidebar() {
         {!sidebarCollapsed ? (
           <div className="flex min-w-0 items-center gap-3">
             <img src={sidebarLogo} alt="Reforix Payroll" className="h-11 w-11 shrink-0 object-contain" />
-            <span className="block truncate font-serif text-lg font-semibold tracking-tight text-sidebar-foreground">Reforix Payroll</span>
+            <span className="block truncate font-bold tracking-tight text-sidebar-foreground">Reforix Payroll</span>
           </div>
         ) : (
           <img src={sidebarLogo} alt="Reforix Payroll" className="h-11 w-11 object-contain" />

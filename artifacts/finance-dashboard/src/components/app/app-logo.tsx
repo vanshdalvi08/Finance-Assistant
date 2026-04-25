@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import sidebarLogo from "@/assets/sidebar-logo.png";
+import sidebarLogo from "@/assets/SideBar Logo.png";
 
 export function AppLogo({ compact = false }: { compact?: boolean }) {
   return (
