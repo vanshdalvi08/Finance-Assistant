@@ -333,13 +333,13 @@ export function Sidebar() {
         {!sidebarCollapsed ? (
           <div className="flex items-center gap-2">
             <div className="flex h-6 w-6 items-center justify-center rounded bg-primary">
-              <span className="text-xs font-bold text-primary-foreground">Y</span>
+              <span className="text-xs font-bold text-primary-foreground">R</span>
             </div>
-            <span className="font-bold tracking-tight text-sidebar-foreground">Yojak</span>
+            <span className="font-bold tracking-tight text-sidebar-foreground">Reforix Payroll</span>
           </div>
         ) : (
           <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl border border-sidebar-border/70 bg-primary/95 shadow-[0_10px_22px_rgba(0,0,0,0.25)]">
-            <span className="text-sm font-bold text-primary-foreground">Y</span>
+            <span className="text-sm font-bold text-primary-foreground">R</span>
           </div>
         )}
       </div>

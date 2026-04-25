@@ -470,7 +470,7 @@ export default function Employees() {
                       <FormItem>
                         <FormLabel>Email</FormLabel>
                         <FormControl>
-                          <Input type="email" placeholder="jane@yojak.in" {...field} />
+                          <Input type="email" placeholder="jane@reforixpayroll.com" {...field} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>

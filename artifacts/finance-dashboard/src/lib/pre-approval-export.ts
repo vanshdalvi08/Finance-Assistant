@@ -279,7 +279,7 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
               <div class="cell section-title">Company Information</div>
               <div class="cell section-title">Client Information</div>
               <div class="cell">
-                <p class="company-line"><strong>${escapeHtml(company.companyName || "Yojak")}</strong></p>
+                <p class="company-line"><strong>${escapeHtml(company.companyName || "Reforix Payroll")}</strong></p>
                 <p class="company-line">${escapeHtml(company.address || "Address")}</p>
                 <p class="company-line">Phone ${escapeHtml(company.phone || "-")}</p>
                 <p class="company-line">Email ${escapeHtml(company.email || "-")}</p>
@@ -297,7 +297,7 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
             <table class="project-table">
               <tr><td colspan="2" class="section-title">Project Summary</td></tr>
               <tr><td>Bill date</td><td>${formatShortDate(preApproval.date)}</td></tr>
-              <tr><td>From</td><td>${escapeHtml(company.companyName || "Yojak")}</td></tr>
+              <tr><td>From</td><td>${escapeHtml(company.companyName || "Reforix Payroll")}</td></tr>
               <tr><td>To</td><td>${escapeHtml(client.companyName || preApproval.clientNameSnapshot)}</td></tr>
               <tr><td>Project</td><td>${escapeHtml(preApproval.project)}</td></tr>
               <tr><td>Project start date</td><td>${formatDate(project.projectStartDate)}</td></tr>

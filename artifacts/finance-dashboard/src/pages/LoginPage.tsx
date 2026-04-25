@@ -168,8 +168,9 @@ const LoginPage = () => {
   }
 
   return (
-    <div className="flex min-h-screen w-full overflow-hidden bg-white font-sans">
-      <section className="relative hidden w-[60%] flex-col justify-between overflow-hidden bg-[#2c353f] pt-12 pl-12 lg:flex">
+    <div className="flex min-h-screen w-full overflow-hidden bg-[#edf4fb] font-sans">
+      <section className="relative hidden w-[60%] flex-col justify-between overflow-hidden bg-[#10233f] pt-12 pl-12 lg:flex">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(56,132,255,0.28),transparent_34%),radial-gradient(circle_at_bottom_right,rgba(46,204,196,0.18),transparent_30%)]" />
         <div className="relative z-10">
           <h2 className="text-[28px] font-bold leading-none tracking-wide text-white">
             REFORIX<span className="ml-0.5 align-text-top text-[12px] font-normal">TM</span>
@@ -198,18 +199,18 @@ const LoginPage = () => {
         </div>
       </section>
 
-      <section className="flex w-full flex-col items-center justify-center bg-[#f7f8fa] p-8 lg:w-[40%]">
+      <section className="flex w-full flex-col items-center justify-center bg-[#f3f7fc] p-8 lg:w-[40%]">
         <div className="w-full max-w-[372px]">
           <div className="mb-8">
-            <h2 className="mb-1 text-[28px] font-bold text-black">
+            <h2 className="mb-1 text-[28px] font-bold text-[#10233f]">
               {mfaChallenge ? "Verify Your Login" : "Enter Your Credentials"}
             </h2>
             <div className="flex justify-end">
-              <p className="text-[10px] text-gray-500">
+              <p className="text-[10px] text-slate-500">
                 Don&apos;t have an account?{" "}
                 <button
                   type="button"
-                  className="ml-0.5 border-b border-black font-bold leading-none text-black hover:underline"
+                  className="ml-0.5 border-b border-[#10233f] font-bold leading-none text-[#10233f] hover:text-[#2563eb]"
                 >
                   Create now
                 </button>
@@ -227,7 +228,7 @@ const LoginPage = () => {
             {!mfaChallenge ? (
               <>
                 <div>
-                  <label className="mb-2 block text-[13px] font-bold text-black" htmlFor="email">
+                  <label className="mb-2 block text-[13px] font-bold text-[#10233f]" htmlFor="email">
                     E-mail
                   </label>
                   <input
@@ -238,13 +239,13 @@ const LoginPage = () => {
                     onChange={(event) => setEmail(event.target.value)}
                     autoComplete="username"
                     required
-                    className="w-full rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm text-gray-900 caret-gray-900 placeholder:text-gray-400 transition-colors focus:border-[#2c353f] focus:outline-none"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-900 caret-slate-900 placeholder:text-slate-400 transition-colors focus:border-[#2563eb] focus:outline-none focus:ring-2 focus:ring-[#bfdbfe]"
                     style={{ WebkitTextFillColor: "rgb(17 24 39)" }}
                   />
                 </div>
 
                 <div>
-                  <label className="mb-2 block text-[13px] font-bold text-black" htmlFor="password">
+                  <label className="mb-2 block text-[13px] font-bold text-[#10233f]" htmlFor="password">
                     Password
                   </label>
                   <div className="relative">
@@ -256,13 +257,13 @@ const LoginPage = () => {
                       onChange={(event) => setPassword(event.target.value)}
                       autoComplete="current-password"
                       required
-                      className="w-full rounded-lg border border-gray-300 bg-white px-4 py-2.5 pr-12 text-sm tracking-widest text-gray-900 caret-gray-900 placeholder:text-gray-400 transition-colors focus:border-[#2c353f] focus:outline-none"
+                      className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 pr-12 text-sm tracking-widest text-slate-900 caret-slate-900 placeholder:text-slate-400 transition-colors focus:border-[#2563eb] focus:outline-none focus:ring-2 focus:ring-[#bfdbfe]"
                       style={{ WebkitTextFillColor: "rgb(17 24 39)" }}
                     />
                     <button
                       type="button"
                       onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 transition-colors hover:text-[#2563eb]"
                       aria-label={showPassword ? "Hide password" : "Show password"}
                     >
                       <svg
@@ -291,8 +292,8 @@ const LoginPage = () => {
             ) : (
               <>
                 {mfaChallenge.mfaSetupRequired ? (
-                  <div className="rounded-lg border border-gray-200 bg-white px-4 py-3 text-[12px] text-gray-600">
-                    <p className="font-semibold text-gray-900">Set up your authenticator app</p>
+                  <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-[12px] text-slate-600 shadow-[0_10px_30px_rgba(15,23,42,0.05)]">
+                    <p className="font-semibold text-slate-900">Set up your authenticator app</p>
                     <p className="mt-1">
                       Add a new account in your authenticator app using this key, then enter the 6-digit code below.
                     </p>
@@ -301,12 +302,12 @@ const LoginPage = () => {
                         <img
                           src={qrCodeDataUrl}
                           alt="Authenticator QR code"
-                          className="h-[180px] w-[180px] rounded-md border border-gray-200 bg-white p-2"
+                          className="h-[180px] w-[180px] rounded-md border border-slate-200 bg-white p-2"
                         />
                       </div>
                     ) : null}
                     {mfaChallenge.mfaSecret ? (
-                      <div className="mt-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-[12px] text-gray-900">
+                      <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-[12px] text-slate-900">
                         {mfaChallenge.mfaSecret}
                       </div>
                     ) : null}
@@ -314,7 +315,7 @@ const LoginPage = () => {
                 ) : null}
 
                 <div>
-                  <label className="mb-2 block text-[13px] font-bold text-black" htmlFor="mfa-code">
+                  <label className="mb-2 block text-[13px] font-bold text-[#10233f]" htmlFor="mfa-code">
                     Authenticator code
                   </label>
                   <input
@@ -325,24 +326,24 @@ const LoginPage = () => {
                     value={mfaCode}
                     onChange={(event) => setMfaCode(event.target.value)}
                     required
-                    className="w-full rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm text-gray-900 caret-gray-900 placeholder:text-gray-400 transition-colors focus:border-[#2c353f] focus:outline-none"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-900 caret-slate-900 placeholder:text-slate-400 transition-colors focus:border-[#2563eb] focus:outline-none focus:ring-2 focus:ring-[#bfdbfe]"
                     style={{ WebkitTextFillColor: "rgb(17 24 39)" }}
                   />
                 </div>
 
                 <div className="flex items-center justify-between pb-2 pt-1">
-                  <label className="flex cursor-pointer items-center text-[11px] text-gray-500">
+                  <label className="flex cursor-pointer items-center text-[11px] text-slate-500">
                     <input
                       type="checkbox"
                       checked={rememberDevice}
                       onChange={(event) => setRememberDevice(event.target.checked)}
-                      className="mr-2 h-3 w-3 rounded border-gray-300"
+                      className="mr-2 h-3 w-3 rounded border-slate-300 text-[#2563eb] focus:ring-[#2563eb]"
                     />
                     Remember this device for 7 days
                   </label>
                   <button
                     type="button"
-                    className="text-[11px] font-medium text-black hover:underline"
+                    className="text-[11px] font-medium text-[#10233f] hover:text-[#2563eb] hover:underline"
                     onClick={() => {
                       setMfaChallenge(null);
                       setMfaCode("");
@@ -356,11 +357,11 @@ const LoginPage = () => {
 
             {!mfaChallenge ? (
               <div className="flex items-center justify-between pb-2 pt-1">
-                <label className="flex cursor-pointer items-center text-[11px] text-gray-500">
-                  <input type="checkbox" className="mr-2 h-3 w-3 rounded border-gray-300" />
+                <label className="flex cursor-pointer items-center text-[11px] text-slate-500">
+                  <input type="checkbox" className="mr-2 h-3 w-3 rounded border-slate-300 text-[#2563eb] focus:ring-[#2563eb]" />
                   Remember me
                 </label>
-                <button type="button" className="text-[11px] font-medium text-black hover:underline">
+                <button type="button" className="text-[11px] font-medium text-[#10233f] hover:text-[#2563eb] hover:underline">
                   Forgot Password?
                 </button>
               </div>
@@ -369,7 +370,7 @@ const LoginPage = () => {
             <button
               type="submit"
               disabled={isSubmitting}
-              className="w-full rounded-lg bg-[#2c353f] py-3 text-[13px] font-bold text-white transition-colors hover:bg-[#1f262d] disabled:cursor-not-allowed disabled:opacity-70"
+              className="w-full rounded-lg bg-[#2563eb] py-3 text-[13px] font-bold text-white shadow-[0_14px_30px_rgba(37,99,235,0.24)] transition-colors hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:opacity-70"
             >
               {isSubmitting ? "Checking..." : mfaChallenge ? "Verify" : "Sign in"}
             </button>
@@ -377,34 +378,34 @@ const LoginPage = () => {
             {!mfaChallenge ? (
               <>
                 <div className="relative flex items-center py-3">
-                  <div className="flex-grow border-t border-gray-200" />
-                  <span className="mx-4 text-[9px] font-medium text-gray-400">OR</span>
-                  <div className="flex-grow border-t border-gray-200" />
+                  <div className="flex-grow border-t border-slate-200" />
+                  <span className="mx-4 text-[9px] font-medium text-slate-400">OR</span>
+                  <div className="flex-grow border-t border-slate-200" />
                 </div>
 
                 <div className="space-y-3">
                   <button
                     type="button"
-                    className="flex w-full items-center justify-center gap-2 rounded-full border border-gray-200 py-2.5 transition-colors hover:bg-gray-50"
+                    className="flex w-full items-center justify-center gap-2 rounded-full border border-slate-200 bg-white py-2.5 transition-colors hover:border-slate-300 hover:bg-slate-50"
                   >
                     <img
                       src="https://www.svgrepo.com/show/475656/google-color.svg"
                       className="h-4 w-4"
                       alt="Google"
                     />
-                    <span className="text-[12px] font-bold text-gray-600">Continue with Google</span>
+                    <span className="text-[12px] font-bold text-slate-600">Continue with Google</span>
                   </button>
 
                   <button
                     type="button"
-                    className="flex w-full items-center justify-center gap-2 rounded-full border border-gray-200 py-2.5 transition-colors hover:bg-gray-50"
+                    className="flex w-full items-center justify-center gap-2 rounded-full border border-slate-200 bg-white py-2.5 transition-colors hover:border-slate-300 hover:bg-slate-50"
                   >
                     <img
                       src="https://www.svgrepo.com/show/475647/facebook-color.svg"
                       className="h-4 w-4"
                       alt="Facebook"
                     />
-                    <span className="text-[12px] font-bold text-gray-600">Continue with Facebook</span>
+                    <span className="text-[12px] font-bold text-slate-600">Continue with Facebook</span>
                   </button>
                 </div>
               </>

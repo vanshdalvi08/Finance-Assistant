@@ -45,11 +45,11 @@ export function PlatformSidebar() {
                       className={cn(
                         "flex cursor-pointer items-center gap-3 rounded-2xl border px-3.5 py-3 text-sm transition",
                         active
-                          ? "border-[#d8b26a]/20 bg-[linear-gradient(135deg,rgba(216,178,106,0.14),rgba(72,83,138,0.12))] text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
+                          ? "border-primary/25 bg-[linear-gradient(135deg,rgba(38,110,255,0.18),rgba(34,197,208,0.14))] text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
                           : "border-transparent text-muted-foreground hover:border-white/6 hover:bg-white/[0.03] hover:text-foreground",
                       )}
                     >
-                      <item.icon className={cn("h-4 w-4", active ? "text-[#d8b26a]" : "text-muted-foreground")} />
+                      <item.icon className={cn("h-4 w-4", active ? "text-primary" : "text-muted-foreground")} />
                       <span>{item.label}</span>
                     </div>
                   </Link>

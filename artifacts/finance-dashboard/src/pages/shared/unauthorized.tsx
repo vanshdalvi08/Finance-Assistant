@@ -23,10 +23,10 @@ export default function UnauthorizedPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="max-w-xl rounded-[2rem] border border-white/8 bg-white/[0.03] p-10 text-center">
-        <p className="text-xs uppercase tracking-[0.24em] text-[#c6ac73]">Access control</p>
+        <p className="text-xs uppercase tracking-[0.24em] text-primary/75">Access control</p>
         <h1 className="mt-4 font-serif text-4xl font-semibold text-foreground">This route is outside your role scope</h1>
         <p className="mt-3 text-sm leading-6 text-muted-foreground">
-          YOJAK keeps admin and employee surfaces strictly separated. Move back to the correct workspace for your account.
+          Reforix Payroll keeps admin and employee surfaces strictly separated. Move back to the correct workspace for your account.
         </p>
         <div className="mt-6">
           <Link href={workspacePath(role)}>

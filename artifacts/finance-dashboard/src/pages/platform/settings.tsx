@@ -150,7 +150,7 @@ export default function PlatformSettingsPage() {
               <CardContent className="grid gap-3">
                 <SettingTile
                   label="Support contact"
-                  value={settings?.operationalDefaults.supportEmail ?? "platform@yojak.in"}
+                  value={settings?.operationalDefaults.supportEmail ?? "platform@reforixpayroll.com"}
                   detail="Primary support identity used for platform operations."
                 />
                 <SettingTile
