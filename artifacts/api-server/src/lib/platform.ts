@@ -1102,14 +1102,44 @@ export async function ensureInitialPlatformAdmin() {
     return null;
   }
 
+  const adminIdentity = {
+    name: optionalEnv("PLATFORM_ADMIN_NAME")?.trim() || "Platform Super Admin",
+    email,
+    phone: optionalEnv("PLATFORM_ADMIN_PHONE")?.trim() || "8888888888",
+    position: optionalEnv("PLATFORM_ADMIN_POSITION")?.trim() || "Platform Owner",
+    department: optionalEnv("PLATFORM_ADMIN_DEPARTMENT")?.trim() || "Platform",
+  };
+
   const existing = await db
     .select()
     .from(usersTable)
-    .where(and(eq(usersTable.email, email), eq(usersTable.tenantId, PLATFORM_TENANT_ID)))
+    .where(and(eq(usersTable.tenantId, PLATFORM_TENANT_ID), eq(usersTable.role, "platform_super_admin")))
     .limit(1);
 
   if (existing[0]) {
-    return existing[0];
+    const rows = await db
+      .update(usersTable)
+      .set({
+        name: adminIdentity.name,
+        email: adminIdentity.email,
+        phone: adminIdentity.phone,
+        role: "platform_super_admin",
+        employeeId: null,
+        position: adminIdentity.position,
+        department: adminIdentity.department,
+        salary: 0,
+        payType: "monthly",
+        hourlyRate: 0,
+        profilePhotoUrl: null,
+        clientInfo: {},
+        hashedPassword: await hashPassword(password),
+        status: "active",
+        updatedAt: new Date(),
+      })
+      .where(eq(usersTable.id, existing[0].id))
+      .returning();
+
+    return rows[0] ?? existing[0];
   }
 
   const hashedPassword = await hashPassword(password);
@@ -1119,13 +1149,13 @@ export async function ensureInitialPlatformAdmin() {
     .insert(usersTable)
     .values({
       tenantId: PLATFORM_TENANT_ID,
-      name: optionalEnv("PLATFORM_ADMIN_NAME")?.trim() || "Platform Super Admin",
-      email,
-      phone: optionalEnv("PLATFORM_ADMIN_PHONE")?.trim() || "8888888888",
+      name: adminIdentity.name,
+      email: adminIdentity.email,
+      phone: adminIdentity.phone,
       role: "platform_super_admin",
       employeeId: null,
-      position: optionalEnv("PLATFORM_ADMIN_POSITION")?.trim() || "Platform Owner",
-      department: optionalEnv("PLATFORM_ADMIN_DEPARTMENT")?.trim() || "Platform",
+      position: adminIdentity.position,
+      department: adminIdentity.department,
       salary: 0,
       payType: "monthly",
       hourlyRate: 0,
