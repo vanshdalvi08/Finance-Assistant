@@ -14,7 +14,7 @@ import { getAppUrl, getSmtpConfig, isProduction, optionalEnv } from "./env";
 import { generateRandomToken, generateTemporaryPassword, hashPassword, hashSha256, verifyPassword } from "./security";
 import { ACCESS_TOKEN_TTL, REFRESH_TOKEN_TTL, signAccessToken, signMfaToken, signRefreshToken, verifyMfaToken, verifyRefreshToken } from "./jwt";
 import { sendMail } from "./mailer";
-import { onboardingEmailTemplate, passwordResetEmailTemplate } from "./email-templates";
+import { clientPortalEmailTemplate, onboardingEmailTemplate, passwordResetEmailTemplate } from "./email-templates";
 import { createWelcomeNotification } from "./notifications";
 import { logger } from "./logger";
 import { uploadProfilePhotoDataUrl } from "./storage";
@@ -214,7 +214,7 @@ async function findUserByPhone(phone: string, tenantId: string): Promise<User | 
   return rows[0] ?? null;
 }
 
-async function findUserById(userId: string, tenantId?: string): Promise<User | null> {
+export async function findUserById(userId: string, tenantId?: string): Promise<User | null> {
   const rows = await db
     .select()
     .from(usersTable)
@@ -737,26 +737,21 @@ export async function createClientAccount(input: CreateClientInput): Promise<{ u
   }
 
   const portalUrl = getAppUrl();
-  const subject = "Your Yojak client portal is ready";
-  const text = [
-    `Hello ${user.name},`,
-    "",
-    "Your Yojak client portal account has been created.",
-    `Login email: ${user.email}`,
-    `Temporary password: ${temporaryPassword}`,
-    `Portal: ${portalUrl}`,
-    "",
-    "Please sign in and change your password when you first access the portal.",
-  ].join("\n");
+  const clientPortal = clientPortalEmailTemplate({
+    name: user.name,
+    loginEmail: user.email,
+    temporaryPassword,
+    portalUrl,
+  });
 
   const onboardingEmailSent = Boolean(getSmtpConfig());
   if (onboardingEmailSent) {
     runAuthSideEffect(
       sendMail({
         to: user.email,
-        subject,
-        text,
-        html: text.replace(/\n/g, "<br />"),
+        subject: clientPortal.subject,
+        text: clientPortal.text,
+        html: clientPortal.html,
       }),
       `send client onboarding email to ${user.email}`,
     );
@@ -1060,8 +1055,8 @@ export async function resetPassword(token: string, password: string): Promise<vo
 }
 
 export async function ensureInitialAdmin(): Promise<void> {
-  const email = optionalEnv("ADMIN_EMAIL")?.trim().toLowerCase() ?? (!isProduction() ? "admin@yojak.in" : undefined);
-  const password = optionalEnv("ADMIN_PASSWORD") ?? (!isProduction() ? "yojak123" : undefined);
+  const email = optionalEnv("ADMIN_EMAIL")?.trim().toLowerCase() ?? (!isProduction() ? "admin@reforix.com" : undefined);
+  const password = optionalEnv("ADMIN_PASSWORD") ?? (!isProduction() ? "reforix123" : undefined);
 
   if (!email || !password) {
     return;
@@ -1077,7 +1072,7 @@ export async function ensureInitialAdmin(): Promise<void> {
 
   await db.insert(usersTable).values({
     tenantId: DEFAULT_TENANT_ID,
-    name: optionalEnv("ADMIN_NAME")?.trim() || "Yojak Admin",
+    name: optionalEnv("ADMIN_NAME")?.trim() || "Reforix Admin",
     email,
     phone: optionalEnv("ADMIN_PHONE")?.trim() || "9999999999",
     role: "admin",
