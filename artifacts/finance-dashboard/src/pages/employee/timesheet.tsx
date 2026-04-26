@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addDays, format } from "date-fns";
 import {
@@ -344,34 +344,6 @@ export default function EmployeeTimesheetPage() {
     };
   }, [draft, timesheets, weekStatuses]);
 
-  const taskCapacityRows = useMemo(() => {
-    if (!draft) {
-      return [];
-    }
-
-    return draft.lines
-      .map((line) => {
-        const taskLimit = taskLimitForLine(line);
-        const claimedHours = line.projectTaskId ? claimedHoursForTask(line.projectTaskId, line.id) + lineTotal(line) : lineTotal(line);
-        const taskOptions = getProjectTaskOptions(line.project);
-        const task = line.projectTaskId ? taskOptions.find((option) => option.id === line.projectTaskId) : undefined;
-
-        return {
-          id: line.id,
-          project: line.project.trim() || "Custom project",
-          task: line.task.trim() || "Custom task",
-          total: lineTotal(line),
-          claimedHours,
-          remainingHours: taskLimit !== undefined ? Math.max(0, taskLimit - claimedHours) : undefined,
-          durationDays: task?.durationDays,
-          hoursPerDay: task?.hoursPerDay,
-          hasBudget: Boolean(taskLimit !== undefined),
-          hasContent: Boolean(line.project.trim() || line.task.trim() || lineTotal(line) > 0),
-        };
-      })
-      .filter((row) => row.hasContent);
-  }, [draft, projectLookup]);
-
   function getProjectTaskOptions(projectName: string) {
     const record = projectLookup.get(normalizeLookup(projectName));
     if (!record) {
@@ -664,83 +636,7 @@ export default function EmployeeTimesheetPage() {
             </div>
           </div>
 
-          {weekStatuses.some((day) => day.calendar?.holiday || day.calendar?.leave || day.calendar?.pendingLeave) ? (
-            <div className="mt-4 border-t border-border/50 pt-4">
-              <div className="rounded-2xl border border-border/60 bg-background/55 px-4 py-3">
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                  <div className="space-y-1">
-                    <p className="text-sm font-medium text-foreground">Time off this week</p>
-                    <p className="text-sm text-muted-foreground">
-                      Leave and holidays are managed from <span className="font-medium text-foreground">My Leaves</span> and reflected here automatically.
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {weekStatuses.map((day) => {
-                      const calendarDay = day.calendar;
-                      if (!calendarDay?.holiday && !calendarDay?.leave && !calendarDay?.pendingLeave) {
-                        return null;
-                      }
-
-                      return (
-                        <div
-                          key={day.key}
-                          className={cn(
-                            "rounded-full border px-3 py-1.5 text-xs font-medium",
-                            calendarDay.holiday
-                              ? "border-emerald-500/20 bg-emerald-500/8 text-emerald-300"
-                              : calendarDay.pendingLeave
-                                ? "border-sky-500/20 bg-sky-500/8 text-sky-300"
-                                : "border-amber-500/20 bg-amber-500/8 text-amber-300",
-                          )}
-                        >
-                          {day.label} {format(day.date, "dd MMM")} ·{" "}
-                          {calendarDay.holiday ? calendarDay.holidayName ?? "Holiday" : calendarDay.pendingLeave ? "Leave pending" : "Leave approved"}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            </div>
-          ) : null}
         </section>
-
-        {taskCapacityRows.length > 0 ? (
-          <section className="rounded-2xl border border-border/60 bg-card/80 px-5 py-4 shadow-sm">
-            <div className="space-y-1">
-              <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Task capacity</p>
-              <p className="text-sm text-muted-foreground">
-                The remaining hours on each task are deducted from the project budget as they are logged across weeks.
-              </p>
-            </div>
-            <div className="mt-4 space-y-2">
-              {taskCapacityRows.map((row) => (
-                <div key={row.id} className="rounded-xl border border-border/60 bg-background/60 px-4 py-3">
-                  <div className="flex flex-col gap-2">
-                    <div className="space-y-0.5">
-                      <p className="text-sm font-medium text-foreground">{row.project}</p>
-                      <p className="text-xs text-muted-foreground">{row.task}</p>
-                    </div>
-                    <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
-                      <span>
-                        Logged <span className="font-medium text-foreground">{row.total.toFixed(1)}h</span>
-                      </span>
-                      <span>
-                        Remaining <span className="font-medium text-foreground">{formatCapacityHours(row.remainingHours)}</span>
-                      </span>
-                      {row.hoursPerDay ? (
-                        <span>
-                          {row.hoursPerDay}h/day over {row.durationDays}d
-                        </span>
-                      ) : null}
-                      {!row.hasBudget ? <span>Custom task</span> : null}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-        ) : null}
 
         {isRejected && draft?.reviewNotes ? (
           <div className="flex items-start gap-3 rounded-2xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm shadow-sm">
@@ -839,10 +735,18 @@ export default function EmployeeTimesheetPage() {
                       const projectSelectionValue = getProjectSelectionValue(line);
                       const taskSelectionValue = getTaskSelectionValue(line);
                       const projectTaskOptions = getProjectTaskOptions(line.project);
-                      const selectedTaskLimit = taskLimitForLine(line);
+                      const selectedTask = projectTaskOptions.find((task) => normalizeLookup(task.name) === normalizeLookup(line.task));
+                      const selectedTaskBaseRemaining =
+                        typeof selectedTask?.remainingHours === "number"
+                          ? selectedTask.remainingHours
+                          : positiveTaskLimit(selectedTask);
                       const selectedTaskClaimed = line.projectTaskId
                         ? claimedHoursForTask(line.projectTaskId, line.id) + lineTotal(line)
                         : lineTotal(line);
+                      const selectedTaskRemaining =
+                        typeof selectedTaskBaseRemaining === "number"
+                          ? Math.max(0, selectedTaskBaseRemaining - selectedTaskClaimed)
+                          : undefined;
                       const showProjectInput = projectSelectionValue === "__custom__" || projectOptions.length === 0;
                       const hasProjectValue = Boolean(line.project.trim());
                       const showTaskInput = hasProjectValue && (taskSelectionValue === "__custom__" || projectTaskOptions.length === 0);
@@ -913,35 +817,6 @@ export default function EmployeeTimesheetPage() {
                                       ))}
                                       <option value="__custom__">Custom task</option>
                                     </select>
-                                    {(() => {
-                                      const selectedTask = projectTaskOptions.find(
-                                        (task) => normalizeLookup(task.name) === normalizeLookup(line.task),
-                                      );
-
-                                      if (!selectedTask) {
-                                        return null;
-                                      }
-
-                                      return (
-                                        <div className="space-y-1 rounded-xl border border-border/50 bg-background/55 px-3 py-2">
-                                          <p className="text-sm font-medium text-foreground">{selectedTask.name}</p>
-                                          {selectedTask.description ? (
-                                            <p className="text-xs leading-relaxed text-muted-foreground">{selectedTask.description}</p>
-                                          ) : null}
-                                          <p className="text-[11px] text-muted-foreground">
-                                            {typeof selectedTask.maxHours === "number" && selectedTask.maxHours > 0 ? (
-                                              <span className="font-medium text-foreground">{formatHourValue(selectedTask.maxHours)} max</span>
-                                            ) : null}
-                                            {typeof selectedTask.maxHours === "number" && selectedTask.maxHours > 0 && selectedTask.durationDays ? " · " : null}
-                                            {selectedTask.durationDays ? (
-                                              <span className="font-medium text-foreground">
-                                                {selectedTask.durationDays} day{selectedTask.durationDays === 1 ? "" : "s"}
-                                              </span>
-                                            ) : null}
-                                          </p>
-                                        </div>
-                                      );
-                                    })()}
                                     {showTaskInput ? (
                                       <Input
                                         value={line.task}
@@ -956,6 +831,14 @@ export default function EmployeeTimesheetPage() {
                                           }))
                                         }
                                       />
+                                    ) : null}
+                                    {selectedTaskRemaining !== undefined ? (
+                                      <p className="text-[11px] text-muted-foreground">
+                                        Remaining task capacity:{" "}
+                                        <span className="font-medium text-foreground">{formatHourValue(selectedTaskRemaining)}</span>
+                                        {" · "}
+                                        Claimed: <span className="font-medium text-foreground">{Number(selectedTaskClaimed.toFixed(1))}h</span>
+                                      </p>
                                     ) : null}
                                   </>
                               ) : (
@@ -978,14 +861,6 @@ export default function EmployeeTimesheetPage() {
                                   Choose a project first
                                 </div>
                               )}
-                              {selectedTaskLimit !== undefined ? (
-                                <p className="text-[11px] text-muted-foreground">
-                                  Remaining task capacity:{" "}
-                                  <span className="font-medium text-foreground">{formatHourValue(selectedTaskLimit)}</span>
-                                  {" · "}
-                                  Claimed: <span className="font-medium text-foreground">{Number(selectedTaskClaimed.toFixed(1))}h</span>
-                                </p>
-                              ) : null}
                             </div>
                           </td>
                           {weekDates.map((day) => (
@@ -1215,3 +1090,4 @@ export default function EmployeeTimesheetPage() {
     </DashboardLayout>
   );
 }
+
