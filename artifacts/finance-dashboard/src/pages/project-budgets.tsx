@@ -34,6 +34,7 @@ type TaskDraft = {
   description: string;
   maxHours: string;
   durationDays: string;
+  subTasks: string;
   status: "active" | "archived";
 };
 
@@ -50,6 +51,7 @@ const EMPTY_TASK: TaskDraft = {
   description: "",
   maxHours: "",
   durationDays: "",
+  subTasks: "",
   status: "active",
 };
 
@@ -72,13 +74,14 @@ function toForm(project?: ProjectRecord | null): ProjectForm {
     project: project.project,
     client: project.client ?? "",
     note: project.note ?? "",
-          tasks: project.tasks.length
-            ? project.tasks.map((task) => ({
+        tasks: project.tasks.length
+          ? project.tasks.map((task) => ({
           id: task.id,
           name: task.name,
           description: task.description ?? "",
           maxHours: task.maxHours ? String(task.maxHours) : "",
           durationDays: task.durationDays ? String(task.durationDays) : "",
+          subTasks: task.subTasks?.join("\n") ?? "",
           status: task.status === "archived" ? "archived" : "active",
         }))
       : [cloneEmptyTask()],
@@ -114,7 +117,9 @@ export default function ProjectBudgetsPage() {
     }
 
     return projects.filter((project) => {
-      const taskText = project.tasks.map((task) => `${task.name} ${task.description ?? ""}`).join(" ");
+      const taskText = project.tasks
+        .map((task) => `${task.name} ${task.description ?? ""} ${(task.subTasks ?? []).join(" ")}`)
+        .join(" ");
       return [project.project, project.client ?? "", project.note ?? "", taskText]
         .join(" ")
         .toLowerCase()
@@ -152,6 +157,11 @@ export default function ProjectBudgetsPage() {
           description: task.description.trim(),
           maxHours: Math.max(0, Number(task.maxHours || 0)) || undefined,
           durationDays: Math.max(0, Number(task.durationDays || 0)) || undefined,
+          subTasks: task.subTasks
+            .split(/[\n,]/)
+            .map((value) => value.trim())
+            .filter(Boolean)
+            .filter((value, index, array) => array.indexOf(value) === index),
           status: task.status,
         }))
         .filter((task) => task.name.length > 0);
@@ -431,6 +441,16 @@ export default function ProjectBudgetsPage() {
                                     Remaining <span className="font-medium text-foreground">{remainingHours.toFixed(1)}h</span>
                                   </p>
                                 ) : null}
+                                {task.subTasks?.length ? (
+                                  <p className="mt-1 text-xs text-muted-foreground">
+                                    Sub tasks <span className="font-medium text-foreground">{task.subTasks.length}</span>
+                                    {" · "}
+                                    <span className="font-medium text-foreground">
+                                      {task.subTasks.slice(0, 2).join(", ")}
+                                      {task.subTasks.length > 2 ? ` +${task.subTasks.length - 2} more` : ""}
+                                    </span>
+                                  </p>
+                                ) : null}
                               </div>
                               <Badge variant="outline" className="rounded-full border-border/60 bg-background/50 font-normal capitalize">
                                 {task.status}
@@ -574,6 +594,18 @@ export default function ProjectBudgetsPage() {
                           placeholder="0"
                         />
                       </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="text-xs font-medium text-muted-foreground">Sub tasks</Label>
+                      <Textarea
+                        value={task.subTasks}
+                        onChange={(event) => updateTask(index, "subTasks", event.target.value)}
+                        placeholder="Planning\nReview\nClient handoff"
+                        rows={3}
+                        className="min-h-20 rounded-xl"
+                      />
+                      <p className="text-[11px] text-muted-foreground">Add one sub task per line or separate them with commas.</p>
                     </div>
                   </div>
                 </div>

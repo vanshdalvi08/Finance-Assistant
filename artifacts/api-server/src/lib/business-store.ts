@@ -114,6 +114,7 @@ export interface TimesheetTaskLine {
   task: string;
   projectBudgetId?: string;
   projectTaskId?: string;
+  subTask?: string;
   notes?: string;
   hours: Record<DayKey, number>;
 }
@@ -139,6 +140,7 @@ export interface ProjectBudgetTask {
   description?: string;
   maxHours?: number;
   durationDays?: number;
+  subTasks?: string[];
   status: "active" | "archived";
 }
 
@@ -750,12 +752,16 @@ function projectBudgetFromRow(row: DbProjectBudget): ProjectBudget {
           .map((task) => {
             const taskWithMaxHours = task as typeof task & { maxHours?: number | null };
             const taskWithDurationDays = task as typeof task & { durationDays?: number | null };
+            const taskWithSubTasks = task as typeof task & { subTasks?: unknown };
             return {
               id: task.id ?? createId("pbt"),
               name: String(task.name ?? "").trim(),
               description: task.description?.trim() || undefined,
               maxHours: Number(taskWithMaxHours.maxHours ?? 0) > 0 ? Number(taskWithMaxHours.maxHours) : undefined,
               durationDays: Number(taskWithDurationDays.durationDays ?? 0) > 0 ? Number(taskWithDurationDays.durationDays) : undefined,
+              subTasks: Array.isArray(taskWithSubTasks.subTasks)
+                ? taskWithSubTasks.subTasks.map((subTask) => String(subTask ?? "").trim()).filter((subTask) => Boolean(subTask))
+                : [],
               status: task.status === "archived" ? "archived" : "active",
             };
           })
@@ -791,12 +797,16 @@ function projectBudgetFromNormalizedRow(
       .map((task) => {
         const taskWithMaxHours = task as DbProjectTask & { maxHours?: number | null };
         const taskWithDurationDays = task as DbProjectTask & { durationDays?: number | null };
+        const taskWithSubTasks = task as DbProjectTask & { subTasks?: unknown };
         return {
           id: task.id,
           name: task.name.trim(),
           description: task.description?.trim() || undefined,
           maxHours: Number(taskWithMaxHours.maxHours ?? 0) > 0 ? Number(taskWithMaxHours.maxHours) : undefined,
           durationDays: Number(taskWithDurationDays.durationDays ?? 0) > 0 ? Number(taskWithDurationDays.durationDays) : undefined,
+          subTasks: Array.isArray(taskWithSubTasks.subTasks)
+            ? taskWithSubTasks.subTasks.map((subTask) => String(subTask ?? "").trim()).filter((subTask) => Boolean(subTask))
+            : [],
           status: task.status === "archived" ? "archived" : "active",
         };
       }),
@@ -819,14 +829,15 @@ function timesheetFromRow(row: DbTimesheet): TimesheetEntry {
     lines: Array.isArray(row.lines) && row.lines.length > 0
       ? row.lines.map((line) => ({
           id: line.id ?? createId("line"),
-          project: String(line.project ?? "").trim(),
-          task: String(line.task ?? "").trim(),
-          projectBudgetId: line.projectBudgetId?.trim() || undefined,
-          projectTaskId: line.projectTaskId?.trim() || undefined,
-          notes: line.notes?.trim() || undefined,
-          hours: { ...blankHours(), ...(line.hours ?? {}) },
-        }))
-      : [{ id: createId("line"), project: "", task: "", notes: "", hours: blankHours() }],
+        project: String(line.project ?? "").trim(),
+        task: String(line.task ?? "").trim(),
+        projectBudgetId: line.projectBudgetId?.trim() || undefined,
+        projectTaskId: line.projectTaskId?.trim() || undefined,
+        subTask: line.subTask?.trim() || undefined,
+        notes: line.notes?.trim() || undefined,
+        hours: { ...blankHours(), ...(line.hours ?? {}) },
+      }))
+      : [{ id: createId("line"), project: "", task: "", subTask: "", notes: "", hours: blankHours() }],
     createdAt: toIso(row.createdAt),
     updatedAt: toIso(row.updatedAt),
   };
@@ -873,6 +884,7 @@ function timesheetFromNormalizedRow(
           task: task?.name ?? "",
           projectBudgetId: line.projectId ?? line.projectBudgetId ?? undefined,
           projectTaskId: line.projectTaskId ?? undefined,
+          subTask: line.subTask?.trim() || undefined,
           notes: line.notes?.trim() || undefined,
           hours: {
             mon: Number(line.mon ?? 0),
@@ -904,6 +916,9 @@ function projectBudgetToRow(budget: ProjectBudget) {
       description: task.description?.trim() || undefined,
       maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : undefined,
       durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : undefined,
+      subTasks: Array.isArray(task.subTasks)
+        ? task.subTasks.map((subTask) => String(subTask ?? "").trim()).filter((subTask) => Boolean(subTask))
+        : [],
       status: task.status === "archived" ? ("archived" as const) : ("active" as const),
     })),
     createdAt: toDate(budget.createdAt),
@@ -928,6 +943,7 @@ function timesheetToRow(entry: TimesheetEntry) {
       task: line.task?.trim() || "",
       projectBudgetId: line.projectBudgetId?.trim() || undefined,
       projectTaskId: line.projectTaskId?.trim() || undefined,
+      subTask: line.subTask?.trim() || undefined,
       notes: line.notes?.trim() || undefined,
       hours: { ...blankHours(), ...(line.hours ?? {}) },
     })),
@@ -959,6 +975,9 @@ function projectTasksToRows(budget: ProjectBudget, createdById: string | null) {
     description: task.description?.trim() || "",
     maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : null,
     durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : null,
+    subTasks: Array.isArray(task.subTasks)
+      ? task.subTasks.map((subTask) => String(subTask ?? "").trim()).filter((subTask) => Boolean(subTask))
+      : [],
     status: task.status === "archived" ? ("archived" as const) : ("active" as const),
     sortOrder: index,
     createdById,
@@ -988,6 +1007,7 @@ function timesheetLinesToRows(
         taskId && (!validTaskIds || validTaskIds.has(taskId))
           ? taskId
           : null,
+      subTask: line.subTask?.trim() || null,
       sortOrder: index,
       notes: line.notes?.trim() || "",
       mon: Number(line.hours.mon ?? 0),

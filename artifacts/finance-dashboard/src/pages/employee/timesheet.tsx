@@ -58,6 +58,7 @@ function createLine(): TimesheetTaskLine {
     id: `line_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     project: "",
     task: "",
+    subTask: "",
     notes: "",
     hours: { mon: 0, tue: 0, wed: 0, thu: 0, fri: 0, sat: 0, sun: 0 },
   };
@@ -368,11 +369,16 @@ export default function EmployeeTimesheetPage() {
       return taskSelections[line.id];
     }
 
-    return taskOptions.some((task) => normalizeLookup(task.name) === normalizeLookup(line.task))
-      ? line.task
-      : line.task.trim()
-        ? "__custom__"
-        : "";
+    if (line.projectTaskId && taskOptions.some((task) => task.id === line.projectTaskId)) {
+      return line.projectTaskId;
+    }
+
+    const matchedTasks = taskOptions.filter((task) => normalizeLookup(task.name) === normalizeLookup(line.task));
+    if (matchedTasks.length === 1) {
+      return matchedTasks[0].id;
+    }
+
+    return line.task.trim() ? "__custom__" : "";
   }
 
   function setProjectChoice(lineId: string, value: string) {
@@ -386,6 +392,7 @@ export default function EmployeeTimesheetPage() {
         projectBudgetId: undefined,
         task: "",
         projectTaskId: undefined,
+        subTask: "",
       }));
       return;
     }
@@ -397,17 +404,13 @@ export default function EmployeeTimesheetPage() {
     });
 
     updateLine(lineId, (line) => {
-      const selectedProject = projectLookup.get(normalizeLookup(value));
-      const taskOptions = getProjectTaskOptions(value);
-      const keepTask = taskOptions.some((task) => normalizeLookup(task.name) === normalizeLookup(line.task));
       return {
         ...line,
         project: value,
-        projectBudgetId: selectedProject?.id,
-        task: keepTask ? line.task : "",
-        projectTaskId: keepTask
-          ? selectedProject?.tasks.find((task) => normalizeLookup(task.name) === normalizeLookup(line.task))?.id
-          : undefined,
+        projectBudgetId: projectLookup.get(normalizeLookup(value))?.id,
+        task: "",
+        projectTaskId: undefined,
+        subTask: "",
       };
     });
   }
@@ -416,19 +419,26 @@ export default function EmployeeTimesheetPage() {
     setTaskSelections((currentSelection) => ({ ...currentSelection, [lineId]: value }));
 
     if (value === "__custom__") {
-      updateLine(lineId, (line) => ({ ...line, task: "", projectTaskId: undefined }));
+      updateLine(lineId, (line) => ({ ...line, task: "", projectTaskId: undefined, subTask: "" }));
       return;
     }
 
     updateLine(lineId, (line) => {
       const taskOptions = getProjectTaskOptions(line.project);
-      const selectedTask = taskOptions.find((task) => normalizeLookup(task.name) === normalizeLookup(value));
+      const selectedTask = taskOptions.find((task) => task.id === value);
       return {
         ...line,
-        task: value,
+        task: selectedTask?.name ?? "",
         projectTaskId: selectedTask?.id,
+        subTask: selectedTask?.subTasks?.some((subTask) => normalizeLookup(subTask) === normalizeLookup(line.subTask))
+          ? line.subTask
+          : "",
       };
     });
+  }
+
+  function setSubTaskChoice(lineId: string, value: string) {
+    updateLine(lineId, (line) => ({ ...line, subTask: value }));
   }
 
   function taskLimitForLine(line: TimesheetTaskLine) {
@@ -735,7 +745,10 @@ export default function EmployeeTimesheetPage() {
                       const projectSelectionValue = getProjectSelectionValue(line);
                       const taskSelectionValue = getTaskSelectionValue(line);
                       const projectTaskOptions = getProjectTaskOptions(line.project);
-                      const selectedTask = projectTaskOptions.find((task) => normalizeLookup(task.name) === normalizeLookup(line.task));
+                      const selectedTask = line.projectTaskId
+                        ? projectTaskOptions.find((task) => task.id === line.projectTaskId)
+                        : projectTaskOptions.find((task) => normalizeLookup(task.name) === normalizeLookup(line.task));
+                      const selectedTaskSubTasks = selectedTask?.subTasks ?? [];
                       const selectedTaskBaseRemaining =
                         typeof selectedTask?.remainingHours === "number"
                           ? selectedTask.remainingHours
@@ -806,8 +819,10 @@ export default function EmployeeTimesheetPage() {
                                     >
                                       <option value="">Select task</option>
                                       {projectTaskOptions.map((task) => (
-                                        <option key={task.id} value={task.name}>
+                                        <option key={task.id} value={task.id}>
                                           {task.name}
+                                          {task.description ? ` — ${task.description}` : ""}
+                                          {task.subTasks?.length ? ` · ${task.subTasks.length} sub task${task.subTasks.length === 1 ? "" : "s"}` : ""}
                                           {typeof task.remainingHours === "number"
                                             ? ` (${formatHourValue(task.remainingHours)} remaining)`
                                             : positiveTaskLimit(task)
@@ -831,6 +846,24 @@ export default function EmployeeTimesheetPage() {
                                           }))
                                         }
                                       />
+                                    ) : null}
+                                    {selectedTaskSubTasks.length > 0 ? (
+                                      <div className="space-y-1.5">
+                                        <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Sub task</p>
+                                        <select
+                                          value={line.subTask ?? ""}
+                                          disabled={readOnly}
+                                          className={fieldControlClass}
+                                          onChange={(event) => setSubTaskChoice(line.id, event.target.value)}
+                                        >
+                                          <option value="">Select sub task</option>
+                                          {selectedTaskSubTasks.map((subTask) => (
+                                            <option key={subTask} value={subTask}>
+                                              {subTask}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      </div>
                                     ) : null}
                                     {selectedTaskRemaining !== undefined ? (
                                       <p className="text-[11px] text-muted-foreground">

@@ -114,6 +114,7 @@ export interface TimesheetTaskLine {
   task: string;
   projectBudgetId?: string;
   projectTaskId?: string;
+  subTask?: string;
   notes?: string;
   hours: Record<DayKey, number>;
 }
@@ -227,6 +228,7 @@ export interface ProjectBudgetTask {
   description?: string;
   maxHours?: number;
   durationDays?: number;
+  subTasks?: string[];
   status: "active" | "archived";
   usedHours?: number;
   remainingHours?: number;
@@ -397,6 +399,7 @@ interface SaveProjectBudgetInput {
     description?: string;
     maxHours?: number;
     durationDays?: number;
+    subTasks?: string[];
     status?: "active" | "archived";
   }>;
   actorName?: string;
@@ -834,10 +837,11 @@ function normalizeTimesheet(entry: TimesheetEntry): TimesheetEntry {
   return {
     ...entry,
     weekStart: normalizeWeekStart(entry.weekStart),
-    lines: (entry.lines.length ? entry.lines : [{ id: createId("line"), project: "", task: "", notes: "", hours: blankHours() }]).map((line) => ({
+    lines: (entry.lines.length ? entry.lines : [{ id: createId("line"), project: "", task: "", subTask: "", notes: "", hours: blankHours() }]).map((line) => ({
       ...line,
       id: line.id || createId("line"),
       notes: line.notes ?? "",
+      subTask: line.subTask ?? "",
       hours: { ...blankHours(), ...line.hours },
     })),
   };

@@ -47,6 +47,7 @@ export interface ProjectBudgetTaskRecord {
   description?: string;
   maxHours?: number;
   durationDays?: number;
+  subTasks?: string[];
   status: ProjectTaskStatus;
 }
 
@@ -56,6 +57,7 @@ export interface TimesheetLineRecord {
   task: string;
   projectBudgetId?: string;
   projectTaskId?: string;
+  subTask?: string;
   notes?: string;
   hours: TimesheetHours;
 }
@@ -528,6 +530,7 @@ export const projectTasksTable = pgTable(
     description: text("description").notNull().default(""),
     maxHours: real("max_hours"),
     durationDays: integer("duration_days"),
+    subTasks: jsonb("sub_tasks").$type<string[]>().notNull().default([]),
     status: projectTaskStatusEnum("status").notNull().default("active"),
     sortOrder: integer("sort_order").notNull().default(0),
     createdById: uuid("created_by_id").references(() => usersTable.id, { onDelete: "set null" }),
@@ -560,6 +563,7 @@ export const timesheetLinesTable = pgTable(
     projectBudgetId: text("project_budget_id").references(() => projectBudgetsTable.id, { onDelete: "set null" }),
     projectId: text("project_id").references(() => projectsTable.id, { onDelete: "set null" }),
     projectTaskId: text("project_task_id").references(() => projectTasksTable.id, { onDelete: "set null" }),
+    subTask: text("sub_task"),
     sortOrder: integer("sort_order").notNull().default(0),
     notes: text("notes").notNull().default(""),
     mon: real("mon").notNull().default(0),

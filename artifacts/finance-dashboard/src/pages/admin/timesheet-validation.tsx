@@ -181,13 +181,14 @@ export default function AdminTimesheetValidationPage() {
           id: line.id,
           project: line.project || taskData?.project || "Custom project",
           task: line.task || taskData?.task.name || "Custom task",
+          subTask: line.subTask?.trim() || undefined,
           total,
           maxHours,
           remainingHours,
           hoursPerDay,
           durationDays: taskData?.task.durationDays,
           hasBudget: Boolean(taskData),
-          hasContent: Boolean(line.project.trim() || line.task.trim() || total > 0),
+          hasContent: Boolean(line.project.trim() || line.task.trim() || line.subTask?.trim() || total > 0),
         };
       })
       .filter((row) => row.hasContent);
@@ -323,7 +324,15 @@ export default function AdminTimesheetValidationPage() {
                             <div className="flex flex-col gap-2">
                               <div className="space-y-0.5">
                                 <p className="text-sm font-medium text-foreground">{row.project}</p>
-                                <p className="text-xs text-muted-foreground">{row.task}</p>
+                                <p className="text-xs text-muted-foreground">
+                                  {row.task}
+                                  {row.subTask ? (
+                                    <span className="font-medium text-foreground">
+                                      {" "}
+                                      · {row.subTask}
+                                    </span>
+                                  ) : null}
+                                </p>
                               </div>
                               <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
                                 <span>
@@ -370,7 +379,10 @@ export default function AdminTimesheetValidationPage() {
                             <p className="truncate text-sm font-medium text-foreground">{line.project || "Custom project"}</p>
                           </div>
                           <div className="min-w-0">
-                            <p className="truncate text-sm text-foreground">{line.task || "Custom task"}</p>
+                            <p className="truncate text-sm text-foreground">
+                              {line.task || "Custom task"}
+                              {line.subTask ? <span className="font-medium text-muted-foreground"> · {line.subTask}</span> : null}
+                            </p>
                           </div>
                           <div className="text-right text-sm font-semibold text-foreground">{total.toFixed(1)}h</div>
                         </div>

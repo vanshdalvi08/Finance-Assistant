@@ -56,6 +56,7 @@ const timesheetLineSchema = z.object({
   task: z.string().trim().optional(),
   projectBudgetId: businessIdSchema.optional(),
   projectTaskId: businessIdSchema.optional(),
+  subTask: z.string().trim().optional(),
   notes: z.string().trim().optional(),
   hours: z.object({
     mon: z.coerce.number().min(0).optional(),

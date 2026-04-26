@@ -25,6 +25,7 @@ const projectTaskSchema = z.object({
   description: z.string().trim().optional(),
   maxHours: z.coerce.number().min(0).optional(),
   durationDays: z.coerce.number().int().min(0).optional(),
+  subTasks: z.array(z.string().trim().min(1)).optional(),
   status: z.enum(["active", "archived"]).optional(),
 });
 
@@ -75,6 +76,7 @@ function requestHashForProjectMutation(input: z.infer<typeof projectSchema> & { 
         description: task.description?.trim() ?? "",
         maxHours: Number(task.maxHours ?? 0),
         durationDays: Number(task.durationDays ?? 0),
+        subTasks: (task.subTasks ?? []).map((subTask) => subTask.trim()),
         status: task.status ?? "active",
       })),
     }),
@@ -95,9 +97,20 @@ function requestHashForProjectTask(input: { projectId: string; task: z.infer<typ
         description: input.task.description?.trim() ?? "",
         maxHours: Number(input.task.maxHours ?? 0),
         durationDays: Number(input.task.durationDays ?? 0),
+        subTasks: (input.task.subTasks ?? []).map((subTask) => subTask.trim()),
         status: input.task.status ?? "active",
       },
     }),
+  );
+}
+
+function normalizeSubTasks(subTasks?: Array<string | null | undefined>) {
+  return Array.from(
+    new Set(
+      (subTasks ?? [])
+        .map((item) => String(item ?? "").trim())
+        .filter((item) => Boolean(item)),
+    ),
   );
 }
 
@@ -267,6 +280,7 @@ router.post("/projects", requireTenantRole("admin"), async (request, response) =
       description: task.description?.trim() || undefined,
       maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : undefined,
       durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : undefined,
+      subTasks: normalizeSubTasks(task.subTasks),
       status: task.status === "archived" ? "archived" : "active",
     })),
     createdAt: existing?.createdAt ?? nowIso(),
@@ -395,6 +409,7 @@ router.route("/projects/:id").get(async (request, response) => {
       description: task.description?.trim() || undefined,
       maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : undefined,
       durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : undefined,
+      subTasks: normalizeSubTasks(task.subTasks),
       status: task.status === "archived" ? "archived" : "active",
     })),
     updatedAt: nowIso(),
@@ -601,6 +616,7 @@ router.post("/projects/:id/tasks", requireTenantRole("admin"), async (request, r
     description: parsed.data.description?.trim() || undefined,
     maxHours: Number(parsed.data.maxHours ?? 0) > 0 ? Number(parsed.data.maxHours) : undefined,
     durationDays: Number(parsed.data.durationDays ?? 0) > 0 ? Number(parsed.data.durationDays) : undefined,
+    subTasks: normalizeSubTasks(parsed.data.subTasks),
     status: parsed.data.status === "archived" ? "archived" : "active",
   };
   const next = pushAuditEvent(
