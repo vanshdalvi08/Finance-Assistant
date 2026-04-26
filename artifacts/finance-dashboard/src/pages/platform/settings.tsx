@@ -88,7 +88,7 @@ export default function PlatformSettingsPage() {
             <CardHeader className="space-y-3">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <CardTitle className="font-serif text-2xl">Bootstrap identity</CardTitle>
+                  <CardTitle className="text-2xl font-semibold tracking-tight">Bootstrap identity</CardTitle>
                   <p className="mt-1 text-sm text-muted-foreground">This console lives in its own platform tenant and is separated from client workspaces.</p>
                 </div>
                 <Badge variant="outline" className="border-border/50 bg-muted/30 text-muted-foreground">
@@ -127,7 +127,7 @@ export default function PlatformSettingsPage() {
 
               <div className="rounded-3xl border border-border/50 bg-card p-4">
                 <div className="flex items-start gap-3">
-                  <div className="rounded-2xl border border-border/50 bg-muted/30 p-2 text-[#d8b26a]">
+                    <div className="rounded-2xl border border-border/60 bg-muted/30 p-2 text-primary">
                     <Shield className="h-4 w-4" />
                   </div>
                   <div className="space-y-1">
@@ -144,7 +144,7 @@ export default function PlatformSettingsPage() {
           <div className="space-y-6">
             <Card className="border-border/50 bg-card">
               <CardHeader>
-                <CardTitle className="font-serif text-2xl">Operational defaults</CardTitle>
+                <CardTitle className="text-2xl font-semibold tracking-tight">Operational defaults</CardTitle>
                 <p className="text-sm text-muted-foreground">Read-only platform defaults that shape monitoring and operator response expectations.</p>
               </CardHeader>
               <CardContent className="grid gap-3">
@@ -187,7 +187,7 @@ export default function PlatformSettingsPage() {
 
             <Card className="border-border/50 bg-card">
               <CardHeader>
-                <CardTitle className="font-serif text-2xl">Backup & recovery</CardTitle>
+                <CardTitle className="text-2xl font-semibold tracking-tight">Backup & recovery</CardTitle>
                 <p className="text-sm text-muted-foreground">Runbook-facing settings for restore readiness and operational recovery drills.</p>
               </CardHeader>
               <CardContent className="grid gap-3">
@@ -210,7 +210,7 @@ export default function PlatformSettingsPage() {
                   href={backupRecovery?.runbookUrl ?? "/docs/operations/backup-recovery-runbook.md"}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex items-center justify-between rounded-2xl border border-border/50 bg-card px-4 py-3 text-sm text-muted-foreground transition hover:border-[#d8b26a]/25 hover:text-foreground"
+                    className="inline-flex items-center justify-between rounded-2xl border border-border/60 bg-card px-4 py-3 text-sm text-muted-foreground transition hover:border-primary/20 hover:text-foreground"
                 >
                   Open backup runbook
                   <ExternalLink className="h-3.5 w-3.5" />
@@ -222,7 +222,7 @@ export default function PlatformSettingsPage() {
               <CardHeader className="space-y-3">
                 <div className="flex items-start justify-between gap-4">
                   <div>
-                    <CardTitle className="font-serif text-2xl">Retention & pruning</CardTitle>
+                    <CardTitle className="text-2xl font-semibold tracking-tight">Retention & pruning</CardTitle>
                     <p className="mt-1 text-sm text-muted-foreground">
                       Runtime telemetry can be pruned conservatively. Audit and finance history stay protected by default.
                     </p>
@@ -238,7 +238,7 @@ export default function PlatformSettingsPage() {
                     <div className="flex items-start justify-between gap-3">
                       <div className="space-y-1">
                         <div className="flex items-center gap-2 text-foreground">
-                          <Archive className="h-4 w-4 text-[#d8b26a]" />
+                          <Archive className="h-4 w-4 text-primary" />
                           <p className="text-sm font-medium">Platform telemetry</p>
                         </div>
                         <p className="text-sm text-muted-foreground">
@@ -326,7 +326,7 @@ export default function PlatformSettingsPage() {
                     <div className="flex items-start justify-between gap-3">
                       <div className="space-y-1">
                         <div className="flex items-center gap-2 text-foreground">
-                          <Shield className="h-4 w-4 text-[#d8b26a]" />
+                          <Shield className="h-4 w-4 text-primary" />
                           <p className="text-sm font-medium">Audit & finance history</p>
                         </div>
                         <p className="text-sm text-muted-foreground">{retention?.auditTrail.note ?? "Protected by default."}</p>
@@ -364,7 +364,7 @@ export default function PlatformSettingsPage() {
 
             <Card className="border-border/50 bg-card">
               <CardHeader>
-                <CardTitle className="font-serif text-2xl">Security posture</CardTitle>
+                <CardTitle className="text-2xl font-semibold tracking-tight">Security posture</CardTitle>
                 <p className="text-sm text-muted-foreground">A compact view of how the console stays quiet, isolated, and support-ready.</p>
               </CardHeader>
               <CardContent className="grid gap-3">
@@ -375,7 +375,7 @@ export default function PlatformSettingsPage() {
                   "Recovery actions stay inside the platform console.",
                 ].map((item, index) => (
                   <div key={item} className="flex items-start gap-3 rounded-2xl border border-border/50 bg-card p-4">
-                    <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full border border-border/50 bg-muted/30 text-xs font-semibold text-[#d8b26a]">
+                    <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full border border-border/60 bg-muted/30 text-xs font-semibold text-primary">
                       {index + 1}
                     </div>
                     <p className="text-sm text-muted-foreground">{item}</p>
@@ -386,7 +386,7 @@ export default function PlatformSettingsPage() {
 
             <Card className="border-border/50 bg-card">
               <CardHeader>
-                <CardTitle className="font-serif text-2xl">Platform admins</CardTitle>
+                <CardTitle className="text-2xl font-semibold tracking-tight">Platform admins</CardTitle>
                 <p className="text-sm text-muted-foreground">Current super admin accounts in the platform tenant.</p>
               </CardHeader>
               <CardContent className="p-0">
@@ -458,7 +458,7 @@ function SettingTile({
         {onCopy ? (
           <button
             type="button"
-            className="rounded-lg border border-border/50 bg-card p-2 text-muted-foreground transition hover:border-[#d8b26a]/25 hover:text-foreground"
+            className="rounded-lg border border-border/60 bg-card p-2 text-muted-foreground transition hover:border-primary/20 hover:text-foreground"
             onClick={onCopy}
           >
             <Copy className="h-3.5 w-3.5" />

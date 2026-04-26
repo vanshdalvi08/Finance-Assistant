@@ -236,7 +236,7 @@ export default function PlatformRecoveryPage() {
             <CardHeader className="space-y-3">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <CardTitle className="font-serif text-2xl">Inactive tenants</CardTitle>
+                  <CardTitle className="text-2xl font-semibold tracking-tight">Inactive tenants</CardTitle>
                   <p className="mt-1 text-sm text-muted-foreground">Restore paused workspaces from here without entering any tenant dashboard.</p>
                 </div>
                 <Badge variant="outline" className="border-border/50 bg-muted/20 text-muted-foreground">
@@ -304,7 +304,7 @@ export default function PlatformRecoveryPage() {
           <div className="space-y-6">
             <Card className="border-border/50 bg-card">
               <CardHeader>
-                <CardTitle className="font-serif text-2xl">Recovery posture</CardTitle>
+                <CardTitle className="text-2xl font-semibold tracking-tight">Recovery posture</CardTitle>
                 <p className="text-sm text-muted-foreground">A quiet snapshot of current platform conditions and support readiness.</p>
               </CardHeader>
               <CardContent className="grid gap-3">
@@ -328,7 +328,7 @@ export default function PlatformRecoveryPage() {
               <CardHeader className="space-y-2">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <CardTitle className="font-serif text-2xl">Recovery drills</CardTitle>
+                    <CardTitle className="text-2xl font-semibold tracking-tight">Recovery drills</CardTitle>
                     <p className="mt-1 text-sm text-muted-foreground">
                       Keep restore simulations and tabletop runs documented in one place with timeline evidence.
                     </p>
@@ -500,7 +500,7 @@ export default function PlatformRecoveryPage() {
             <Card className="border-border/50 bg-card">
               <CardHeader className="flex flex-row items-center justify-between space-y-0">
                 <div>
-                  <CardTitle className="font-serif text-2xl">Incident feed</CardTitle>
+                  <CardTitle className="text-2xl font-semibold tracking-tight">Incident feed</CardTitle>
                   <p className="mt-1 text-sm text-muted-foreground">The latest runtime events that matter for support and recovery.</p>
                 </div>
                 <LifeBuoy className="h-5 w-5 text-muted-foreground" />
@@ -575,7 +575,7 @@ export default function PlatformRecoveryPage() {
 
             <Card className="border-border/50 bg-card">
               <CardHeader>
-                <CardTitle className="font-serif text-2xl">Quick support actions</CardTitle>
+                <CardTitle className="text-2xl font-semibold tracking-tight">Quick support actions</CardTitle>
                 <p className="text-sm text-muted-foreground">Use these when you need to jump between recovery, monitoring, and tenant controls.</p>
               </CardHeader>
               <CardContent className="grid gap-3 sm:grid-cols-2">

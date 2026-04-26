@@ -39,7 +39,7 @@ export default function PlatformDashboardPage() {
           <Card className="border-border/50 bg-card">
             <CardHeader className="flex flex-row items-center justify-between space-y-0">
               <div>
-                <CardTitle className="text-lg font-semibold">Tenant registry</CardTitle>
+                <CardTitle className="text-lg font-semibold tracking-tight">Tenant registry</CardTitle>
                 <p className="mt-1 text-sm text-muted-foreground">Recent tenants and ownership split.</p>
               </div>
             </CardHeader>
@@ -89,7 +89,7 @@ export default function PlatformDashboardPage() {
 
           <Card className="border-border/50 bg-card">
             <CardHeader>
-              <CardTitle className="text-lg font-semibold">System pulse</CardTitle>
+              <CardTitle className="text-lg font-semibold tracking-tight">System pulse</CardTitle>
               <p className="text-sm text-muted-foreground">Events recorded by the runtime monitor.</p>
             </CardHeader>
             <CardContent className="space-y-3">

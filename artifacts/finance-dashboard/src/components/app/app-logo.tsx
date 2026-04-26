@@ -11,8 +11,8 @@ export function AppLogo({ compact = false }: { compact?: boolean }) {
       />
       {!compact && (
         <div className="min-w-0 space-y-0.5">
-          <p className="font-serif text-lg font-semibold tracking-tight text-foreground">Reforix Payroll</p>
-          <p className="text-xs uppercase tracking-[0.24em] text-muted-foreground">Payroll & Operations</p>
+          <p className="text-base font-semibold tracking-tight text-foreground">Reforix Payroll</p>
+          <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Payroll & Operations</p>
         </div>
       )}
     </div>

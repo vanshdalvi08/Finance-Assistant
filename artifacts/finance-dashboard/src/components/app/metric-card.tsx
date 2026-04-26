@@ -21,13 +21,13 @@ export function MetricCard({
   const negative = (trend ?? 0) < 0;
 
   return (
-    <Card className={cn("overflow-hidden border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.015))] shadow-[0_18px_55px_rgba(0,0,0,0.28)]", className)}>
+    <Card className={cn("overflow-hidden border-border/60 bg-card shadow-sm", className)}>
       <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-3">
         <div className="space-y-2">
-          <CardTitle className="text-xs font-medium uppercase tracking-[0.22em] text-muted-foreground">{label}</CardTitle>
-          <div className="font-serif text-3xl font-semibold tracking-tight text-foreground">{value}</div>
+          <CardTitle className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">{label}</CardTitle>
+          <div className="text-3xl font-semibold tracking-tight text-foreground">{value}</div>
         </div>
-        {icon && <div className="rounded-2xl border border-white/8 bg-white/5 p-3 text-[#e3c27c]">{icon}</div>}
+        {icon && <div className="rounded-2xl border border-border/60 bg-muted/30 p-3 text-primary">{icon}</div>}
       </CardHeader>
       {(trend !== undefined || trendLabel) && (
         <CardContent className="pt-0">
@@ -35,10 +35,10 @@ export function MetricCard({
             {trend !== undefined && (
               <span
                 className={cn(
-                  "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 font-medium",
-                  positive && "border-emerald-400/20 bg-emerald-400/10 text-emerald-200",
-                  negative && "border-rose-400/20 bg-rose-400/10 text-rose-200",
-                  !positive && !negative && "border-white/10 bg-white/5 text-muted-foreground",
+                  "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium",
+                  positive && "border-emerald-500/15 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300",
+                  negative && "border-rose-500/15 bg-rose-500/10 text-rose-600 dark:text-rose-300",
+                  !positive && !negative && "border-border/60 bg-muted/30 text-muted-foreground",
                 )}
               >
                 {positive ? <TrendingUp className="h-3.5 w-3.5" /> : negative ? <TrendingDown className="h-3.5 w-3.5" /> : null}

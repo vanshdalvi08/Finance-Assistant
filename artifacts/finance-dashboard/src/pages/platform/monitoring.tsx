@@ -429,7 +429,7 @@ export default function PlatformMonitoringPage() {
 
         <Card className="border-border/50 bg-card">
           <CardHeader className="space-y-2">
-            <CardTitle className="font-serif text-2xl">External alert delivery posture</CardTitle>
+            <CardTitle className="text-2xl font-semibold tracking-tight">External alert delivery posture</CardTitle>
             <p className="text-sm text-muted-foreground">
               Delivery state inferred from per-event metadata and direct delivery fields. Unknown means delivery details were not attached.
             </p>
@@ -448,7 +448,7 @@ export default function PlatformMonitoringPage() {
           <CardHeader className="space-y-4">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
-                <CardTitle className="font-serif text-2xl">Incident workspace</CardTitle>
+                <CardTitle className="text-2xl font-semibold tracking-tight">Incident workspace</CardTitle>
                 <p className="mt-1 text-sm text-muted-foreground">
                   Filter by severity, category, or incident state, then open a record for the full payload.
                 </p>
@@ -550,11 +550,11 @@ export default function PlatformMonitoringPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             {monitoringQuery.isLoading ? (
-                <div className="rounded-3xl border border-border/50 bg-card px-4 py-8 text-sm text-muted-foreground">
+                <div className="rounded-2xl border border-border/60 bg-card px-4 py-8 text-sm text-muted-foreground">
                 Loading monitoring data...
               </div>
             ) : monitoringQuery.isError ? (
-              <div className="rounded-3xl border border-rose-400/15 bg-rose-400/5 px-4 py-8 text-sm text-rose-100">
+              <div className="rounded-2xl border border-rose-400/15 bg-rose-400/5 px-4 py-8 text-sm text-rose-100">
                 Could not load monitoring data right now.
               </div>
             ) : (
@@ -562,7 +562,7 @@ export default function PlatformMonitoringPage() {
                 const rows = groupedEvents[severity];
                 const open = openGroups[severity];
                 return (
-                  <div key={severity} className={cn("rounded-3xl border p-4", incidentTone(severity))}>
+                  <div key={severity} className={cn("rounded-2xl border p-4", incidentTone(severity))}>
                     <button
                       type="button"
                       className="flex w-full items-start justify-between gap-4 text-left"
@@ -607,7 +607,7 @@ export default function PlatformMonitoringPage() {
                                       <button
                                         key={event.id}
                                         type="button"
-                                        className="block w-full rounded-2xl border border-border/50 bg-card p-4 text-left transition hover:border-[#d8b26a]/25 hover:bg-muted/50"
+                                        className="block w-full rounded-2xl border border-border/60 bg-card p-4 text-left transition hover:border-primary/20 hover:bg-muted/50"
                                         onClick={() => setSelectedEvent(event)}
                                       >
                                         {(() => {
@@ -671,7 +671,7 @@ export default function PlatformMonitoringPage() {
         <Card className="border-border/50 bg-card">
           <CardHeader className="flex flex-row items-center justify-between space-y-0">
             <div>
-              <CardTitle className="font-serif text-2xl">Recent incidents ledger</CardTitle>
+              <CardTitle className="text-2xl font-semibold tracking-tight">Recent incidents ledger</CardTitle>
               <p className="mt-1 text-sm text-muted-foreground">A denser ledger for operators who want the latest runtime picture quickly.</p>
             </div>
           </CardHeader>

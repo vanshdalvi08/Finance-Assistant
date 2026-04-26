@@ -186,7 +186,7 @@ export default function PlatformTenantsPage() {
             <CardHeader className="space-y-3">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <CardTitle className="font-serif text-2xl">Create tenant</CardTitle>
+                  <CardTitle className="text-2xl font-semibold tracking-tight">Create tenant</CardTitle>
                   <p className="mt-1 text-sm text-muted-foreground">Create the company, bootstrap the owner, and hand over a ready workspace.</p>
                 </div>
                 <div className="rounded-2xl border border-border/50 bg-muted/30 px-3 py-2 text-right">
@@ -306,7 +306,7 @@ export default function PlatformTenantsPage() {
           <div className="space-y-6">
             <Card className="border-border/50 bg-card">
               <CardHeader>
-                <CardTitle className="font-serif text-2xl">Launch checklist</CardTitle>
+                <CardTitle className="text-2xl font-semibold tracking-tight">Launch checklist</CardTitle>
                 <p className="text-sm text-muted-foreground">A quiet reminder of the fields that matter before the tenant goes live.</p>
               </CardHeader>
               <CardContent className="grid gap-3">
@@ -330,7 +330,7 @@ export default function PlatformTenantsPage() {
               <CardHeader className="space-y-3">
                 <div className="flex items-start justify-between gap-4">
                   <div>
-                    <CardTitle className="font-serif text-2xl">Registry filters</CardTitle>
+                    <CardTitle className="text-2xl font-semibold tracking-tight">Registry filters</CardTitle>
                     <p className="mt-1 text-sm text-muted-foreground">Search by tenant name or slug, then switch between active and inactive workspaces.</p>
                   </div>
                   <div className="rounded-2xl border border-border/50 bg-muted/30 px-3 py-2 text-right">
@@ -429,7 +429,7 @@ function TenantGroup({
       <CardHeader className="space-y-4">
         <button type="button" onClick={onToggle} className="flex w-full items-start justify-between gap-4 text-left">
           <div>
-            <CardTitle className="font-serif text-2xl">{title}</CardTitle>
+            <CardTitle className="text-2xl font-semibold tracking-tight">{title}</CardTitle>
             <p className="mt-1 text-sm text-muted-foreground">{description}</p>
           </div>
           <div className="flex items-center gap-3">
