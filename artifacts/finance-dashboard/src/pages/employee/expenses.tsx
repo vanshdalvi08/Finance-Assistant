@@ -10,10 +10,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { uploadExpenseAttachment } from "@/lib/uploads";
+import { Building2 } from "lucide-react";
 
 function formatCurrency(value: number) {
   return value.toLocaleString("en-IN", { style: "currency", currency: "INR" });
@@ -33,7 +33,6 @@ function statusVariant(status: string) {
 export default function EmployeeExpensesPage() {
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
-  const [group, setGroup] = useState<"office" | "personal">("office");
   const [form, setForm] = useState({
     category: "",
     project: "",
@@ -88,13 +87,14 @@ export default function EmployeeExpensesPage() {
     queryFn: api.getCategories,
   });
 
-  const visibleCategories = categories.filter((category) => category.group === group);
-  const visibleExpenses = expenses.filter((expense) => expense.group === group);
+  const visibleCategories = categories.filter((category) => category.group === "office");
+  const visibleExpenses = expenses.filter((expense) => expense.group === "office");
 
   const totals = useMemo(() => {
-    const pending = expenses.filter((expense) => expense.status === "submitted").reduce((sum, expense) => sum + expense.amount, 0);
-    const approved = expenses.filter((expense) => expense.status === "approved").reduce((sum, expense) => sum + expense.amount, 0);
-    const reimbursable = expenses.filter((expense) => expense.reimbursable).reduce((sum, expense) => sum + expense.amount, 0);
+    const officeExpenses = expenses.filter((expense) => expense.group === "office");
+    const pending = officeExpenses.filter((expense) => expense.status === "submitted").reduce((sum, expense) => sum + expense.amount, 0);
+    const approved = officeExpenses.filter((expense) => expense.status === "approved").reduce((sum, expense) => sum + expense.amount, 0);
+    const reimbursable = officeExpenses.filter((expense) => expense.reimbursable).reduce((sum, expense) => sum + expense.amount, 0);
     return { pending, approved, reimbursable };
   }, [expenses]);
 
@@ -105,14 +105,14 @@ export default function EmployeeExpensesPage() {
         employeeNameSnapshot: employee?.name ?? user?.name ?? user?.email ?? "Employee",
         category: form.category,
         project: form.project.trim() || undefined,
-        group,
+        group: "office",
         amount: Number(form.amount),
         date: form.date,
         description: form.description.trim(),
         note: form.note.trim(),
         attachmentName: form.attachmentName.trim() || undefined,
         attachmentPath: attachmentPath.trim() || undefined,
-        reimbursable: group === "office",
+        reimbursable: true,
         status: "submitted",
       }),
     onSuccess: () => {
@@ -166,7 +166,7 @@ export default function EmployeeExpensesPage() {
       <div className="space-y-6">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">My Expenses</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Submit office or personal expenses with only the fields you actually need.</p>
+          <p className="mt-1 text-sm text-muted-foreground">Submit office expenses with only the fields you actually need.</p>
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
@@ -181,12 +181,10 @@ export default function EmployeeExpensesPage() {
             <CardTitle className="text-base">New Expense</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <Tabs value={group} onValueChange={(value) => setGroup(value as "office" | "personal")}>
-              <TabsList>
-                <TabsTrigger value="office">Office</TabsTrigger>
-                <TabsTrigger value="personal">Personal</TabsTrigger>
-              </TabsList>
-            </Tabs>
+            <div className="flex items-center gap-2 rounded-xl border border-border/60 bg-secondary/10 px-4 py-3 text-sm text-muted-foreground">
+              <Building2 className="h-4 w-4 text-primary" />
+              <span>Employees can submit office expenses only. Personal expenses stay on the admin side.</span>
+            </div>
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <Label>Category</Label>
@@ -254,18 +252,7 @@ export default function EmployeeExpensesPage() {
           </CardContent>
         </Card>
 
-        <Tabs value={group} onValueChange={(value) => setGroup(value as "office" | "personal")}>
-          <TabsList>
-            <TabsTrigger value="office">Office</TabsTrigger>
-            <TabsTrigger value="personal">Personal</TabsTrigger>
-          </TabsList>
-          <TabsContent value="office" className="mt-4">
-            <ExpenseLedger expenses={visibleExpenses} />
-          </TabsContent>
-          <TabsContent value="personal" className="mt-4">
-            <ExpenseLedger expenses={visibleExpenses} />
-          </TabsContent>
-        </Tabs>
+        <ExpenseLedger expenses={visibleExpenses} />
       </div>
     </DashboardLayout>
   );

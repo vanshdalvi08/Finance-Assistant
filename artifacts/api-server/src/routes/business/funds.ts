@@ -25,6 +25,8 @@ const fundSchema = z.object({
   amount: z.coerce.number().min(1),
   date: dateSchema,
   note: z.string().trim().optional(),
+  receiptName: z.string().trim().optional(),
+  receiptPath: z.string().trim().optional(),
 });
 
 function respondNotFound(response: Response, message: string) {

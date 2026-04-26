@@ -224,7 +224,7 @@ export default function Dashboard() {
             icon={<Wallet className="w-5 h-5" />}
           />
           <DashboardCard
-            label={selectedMonth ? "Miscellaneous Expenditure" : "Total Miscellaneous Expenditure"}
+            label={selectedMonth ? "Miscellaneous Expenditure" : "Miscellaneous Expenditure"}
             value={totalExpenses.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
             trend={expensesTrend}
             trendLabel="vs last month"

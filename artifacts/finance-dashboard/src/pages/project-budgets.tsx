@@ -449,7 +449,7 @@ export default function ProjectBudgetsPage() {
       </div>
 
       <Dialog open={editorOpen} onOpenChange={setEditorOpen}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-5xl">
           <DialogHeader>
             <DialogTitle>{form.id ? "Edit Project" : "Create Project"}</DialogTitle>
             <DialogDescription>
@@ -501,54 +501,80 @@ export default function ProjectBudgetsPage() {
               </Button>
             </div>
 
-            <div className="space-y-3">
+            <div className="space-y-4">
               {form.tasks.map((task, index) => (
-                <div key={task.id ?? `task-${index}`} className="rounded-xl border border-border/60 bg-secondary/10 p-4">
-                  <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_140px_140px_160px_auto]">
-                    <Input
-                      value={task.name}
-                      onChange={(event) => updateTask(index, "name", event.target.value)}
-                      placeholder="Task name"
-                    />
-                    <Input
-                      value={task.description}
-                      onChange={(event) => updateTask(index, "description", event.target.value)}
-                      placeholder="Short task description"
-                    />
-                    <Input
-                      type="number"
-                      min={0}
-                      step={0.5}
-                      value={task.maxHours}
-                      onChange={(event) => updateTask(index, "maxHours", event.target.value)}
-                      placeholder="Max hours"
-                    />
-                    <Input
-                      type="number"
-                      min={0}
-                      step={1}
-                      value={task.durationDays}
-                      onChange={(event) => updateTask(index, "durationDays", event.target.value)}
-                      placeholder="Days"
-                    />
-                    <Select value={task.status} onValueChange={(value) => updateTask(index, "status", value)}>
-                      <SelectTrigger className="rounded-xl">
-                        <SelectValue placeholder="Status" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="active">Active</SelectItem>
-                        <SelectItem value="archived">Archived</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="rounded-xl text-muted-foreground hover:text-destructive"
-                      onClick={() => removeTaskRow(index)}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                <div key={task.id ?? `task-${index}`} className="rounded-2xl border border-border/60 bg-secondary/10 p-5">
+                  <div className="space-y-4">
+                    <div className="grid gap-4 md:grid-cols-[minmax(0,1.4fr)_160px_auto] md:items-end">
+                      <div className="space-y-2">
+                        <Label className="text-xs font-medium text-muted-foreground">Task name</Label>
+                        <Input
+                          value={task.name}
+                          onChange={(event) => updateTask(index, "name", event.target.value)}
+                          placeholder="Website QA review"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-xs font-medium text-muted-foreground">Status</Label>
+                        <Select value={task.status} onValueChange={(value) => updateTask(index, "status", value)}>
+                          <SelectTrigger className="rounded-xl">
+                            <SelectValue placeholder="Status" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="active">Active</SelectItem>
+                            <SelectItem value="archived">Archived</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="flex justify-end">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="rounded-xl text-muted-foreground hover:text-destructive"
+                          onClick={() => removeTaskRow(index)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="grid gap-4 md:grid-cols-[minmax(0,1.6fr)_140px_140px]">
+                      <div className="space-y-2">
+                        <Label className="text-xs font-medium text-muted-foreground">Short description</Label>
+                        <Input
+                          value={task.description}
+                          onChange={(event) => updateTask(index, "description", event.target.value)}
+                          placeholder="Short task description"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-xs font-medium text-muted-foreground">Max hours</Label>
+                        <Input
+                          type="number"
+                          min={0}
+                          step={0.5}
+                          value={task.maxHours}
+                          onChange={(event) => updateTask(index, "maxHours", event.target.value)}
+                          placeholder="0"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-xs font-medium text-muted-foreground">Days</Label>
+                        <Input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={task.durationDays}
+                          onChange={(event) => updateTask(index, "durationDays", event.target.value)}
+                          placeholder="0"
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
               ))}

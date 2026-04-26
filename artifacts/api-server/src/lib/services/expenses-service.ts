@@ -213,6 +213,9 @@ export async function saveExpense(input: ExpenseInput, actor: ExpenseActor, requ
   const employee = input.employeeId ? await loadEmployeeProfile(input.employeeId, actor.tenantId) : null;
 
   assertEmployeeSelfAccess(input.employeeId, requesterRole, requesterUserId, () => new ExpensesServiceError("forbidden", "Forbidden"));
+  if (requesterRole === "employee" && input.group !== "office") {
+    throw new ExpensesServiceError("forbidden", "Employees can only submit office expenses.");
+  }
 
   let expense: ExpenseRecord | null = null;
   let created = false;

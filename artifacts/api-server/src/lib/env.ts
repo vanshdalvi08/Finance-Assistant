@@ -158,5 +158,7 @@ export function getSupabaseStorageConfig() {
     avatarsBucket: optionalEnv("SUPABASE_STORAGE_AVATARS_BUCKET") ?? "yojak-avatars",
     expenseAttachmentsBucket:
       optionalEnv("SUPABASE_STORAGE_EXPENSE_ATTACHMENTS_BUCKET") ?? "yojak-expense-attachments",
+    fundReceiptsBucket:
+      optionalEnv("SUPABASE_STORAGE_FUND_RECEIPTS_BUCKET") ?? "yojak-fund-receipts",
   };
 }

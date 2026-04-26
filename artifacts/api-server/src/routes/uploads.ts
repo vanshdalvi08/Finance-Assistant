@@ -2,7 +2,7 @@ import path from "node:path";
 import express, { Router, type IRouter, type Request } from "express";
 import { requireAuth } from "../middlewares/auth";
 import { rateLimit, rateLimitKeyByRemoteAddress } from "../middlewares/rate-limit";
-import { uploadExpenseAttachment, uploadProfilePhoto } from "../lib/storage";
+import { uploadExpenseAttachment, uploadFundReceipt, uploadProfilePhoto } from "../lib/storage";
 import { recordPlatformEventSafe } from "../lib/platform";
 
 const router: IRouter = Router();
@@ -13,6 +13,11 @@ const profileUpload = express.raw({
 });
 
 const expenseUpload = express.raw({
+  type: "*/*",
+  limit: "8mb",
+});
+
+const fundReceiptUpload = express.raw({
   type: "*/*",
   limit: "8mb",
 });
@@ -215,6 +220,80 @@ router.post("/expense-attachment", uploadLimiter, expenseUpload, async (request,
           : error instanceof Error
             ? error.message
             : "Expense attachment upload failed.",
+    });
+  }
+});
+
+router.post("/fund-receipt", uploadLimiter, fundReceiptUpload, async (request, response) => {
+  try {
+    const { fileName, contentType, body } = readUploadRequestMeta(request);
+
+    const allowed =
+      contentType === "application/pdf" ||
+      contentType === "image/jpeg" ||
+      contentType === "image/png" ||
+      contentType === "image/gif" ||
+      contentType === "image/webp";
+
+    if ((contentType === "application/pdf" && !isAllowedPdfSignature(body)) || (contentType !== "application/pdf" && !isAllowedImageSignature(body))) {
+      await recordPlatformEventSafe({
+        severity: "warning",
+        category: "upload",
+        title: "Fund receipt rejected",
+        message: `Rejected fund receipt upload with invalid file signature for ${contentType}.`,
+        path: "/api/uploads/fund-receipt",
+        method: "POST",
+        statusCode: 400,
+        tenantId: request.auth?.user.tenantId ?? null,
+        actorUserId: request.auth?.user.id ?? null,
+      });
+      response.status(400).json({ message: "Fund receipts must be a valid image or PDF file." });
+      return;
+    }
+
+    if (!allowed) {
+      await recordPlatformEventSafe({
+        severity: "warning",
+        category: "upload",
+        title: "Fund receipt rejected",
+        message: `Rejected fund receipt upload with unsupported content type ${contentType}.`,
+        path: "/api/uploads/fund-receipt",
+        method: "POST",
+        statusCode: 400,
+        tenantId: request.auth?.user.tenantId ?? null,
+        actorUserId: request.auth?.user.id ?? null,
+      });
+      response.status(400).json({ message: "Fund receipts must be an image or PDF file." });
+      return;
+    }
+
+    const uploaded = await uploadFundReceipt({
+      fileName,
+      contentType,
+      body,
+      actorId: request.auth?.user.id ?? "unknown",
+    });
+
+    response.status(201).json(uploaded);
+  } catch (error) {
+    await recordPlatformEventSafe({
+      severity: error instanceof UploadRequestError ? "warning" : "error",
+      category: "upload",
+      title: "Fund receipt upload failed",
+      message: error instanceof Error ? error.message : "Fund receipt upload failed.",
+      path: "/api/uploads/fund-receipt",
+      method: "POST",
+      statusCode: error instanceof UploadRequestError ? 400 : 503,
+      tenantId: request.auth?.user.tenantId ?? null,
+      actorUserId: request.auth?.user.id ?? null,
+    });
+    response.status(error instanceof UploadRequestError ? 400 : 503).json({
+      message:
+        error instanceof UploadRequestError
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : "Fund receipt upload failed.",
     });
   }
 });

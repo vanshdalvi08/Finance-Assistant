@@ -220,7 +220,7 @@ function handleSalaryCrudIdempotencyError(error: unknown, response: Response) {
   return true;
 }
 
-router.get("/salaries", async (request, response) => {
+router.get("/salaries", requireTenantRole("admin", "employee"), async (request, response) => {
   try {
     const salaries = await listSalariesForActor(
       request.auth?.user.tenantId ?? DEFAULT_TENANT_ID,
@@ -312,7 +312,7 @@ router.post("/salaries", requireTenantRole("admin"), async (request, response) =
   response.status(created ? 201 : 200).json({ salary, duplicate: false });
 });
 
-router.route("/salaries/:id").get(async (request, response) => {
+router.route("/salaries/:id").get(requireTenantRole("admin", "employee"), async (request, response) => {
   try {
     const salary = await getSalaryForActor(
       routeParam(request.params.id),

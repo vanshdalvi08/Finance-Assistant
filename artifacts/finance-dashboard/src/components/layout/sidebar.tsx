@@ -28,9 +28,9 @@ import { cn } from "@/lib/utils";
 import { useUIStore } from "@/store/ui";
 import { useAuthStore } from "@/store/auth";
 import { useToast } from "@/hooks/use-toast";
+import { AppLogo } from "@/components/app/app-logo";
 import { EmployeeAvatar } from "@/components/employee-avatar";
 import { api } from "@/lib/api";
-import sidebarLogo from "@/assets/reforix-rx.png";
 
 type NavItem = {
   href: string;
@@ -331,7 +331,7 @@ export function Sidebar() {
       )}
     >
       <div className={cn("flex h-16 items-center border-b border-sidebar-border", sidebarCollapsed ? "justify-center px-2" : "justify-between px-4")}>
-        <img src={sidebarLogo} alt="Reforix Payroll" className="h-10 w-10 object-contain" />
+        <AppLogo compact={sidebarCollapsed} />
       </div>
 
       <div className={cn("flex-1 px-2 py-4", sidebarCollapsed ? "overflow-y-auto no-scrollbar" : "overflow-y-auto")}>

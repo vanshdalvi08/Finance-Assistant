@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
   Activity,
   AlertTriangle,
@@ -29,6 +30,25 @@ type SeverityFilter = "all" | "info" | "warning" | "error";
 type CategoryFilter = "all" | "request" | "auth" | "database" | "upload" | "tenant" | "system";
 type StateFilter = "all" | "open" | "acknowledged" | "resolved";
 type DeliveryPosture = "delivered" | "failed" | "suppressed" | "pending" | "unknown";
+type TrendPoint = {
+  day: string;
+  label: string;
+  info: number;
+  warning: number;
+  error: number;
+  total: number;
+};
+
+type TenantImpact = {
+  key: string;
+  label: string;
+  issues: number;
+  total: number;
+  error: number;
+  warning: number;
+  info: number;
+  latestAt: string;
+};
 
 type EventDeliveryInsight = {
   posture: DeliveryPosture;
@@ -120,18 +140,18 @@ function normalizePosture(value: string | null): DeliveryPosture | null {
 
 function deliveryClass(posture: DeliveryPosture) {
   if (posture === "delivered") {
-    return "border-emerald-400/20 bg-emerald-500/10 text-emerald-100";
+    return "border-border/60 bg-emerald-500/8 text-emerald-300";
   }
   if (posture === "failed") {
-    return "border-rose-400/20 bg-rose-500/10 text-rose-100";
+    return "border-border/60 bg-rose-500/8 text-rose-300";
   }
   if (posture === "suppressed") {
-    return "border-amber-400/20 bg-amber-500/10 text-amber-100";
+    return "border-border/60 bg-amber-500/8 text-amber-300";
   }
   if (posture === "pending") {
-    return "border-cyan-400/20 bg-cyan-500/10 text-cyan-100";
+    return "border-border/60 bg-sky-500/8 text-sky-300";
   }
-  return "border-white/10 bg-white/5 text-muted-foreground";
+  return "border-border/60 bg-muted/30 text-muted-foreground";
 }
 
 function deliveryLabel(posture: DeliveryPosture) {
@@ -192,18 +212,14 @@ function getEventDeliveryInsight(event: PlatformEvent): EventDeliveryInsight {
 
 function severityClass(severity: "info" | "warning" | "error") {
   return severity === "error"
-    ? "border-rose-400/20 bg-rose-400/10 text-rose-200"
+    ? "border-border/60 bg-rose-500/8 text-rose-300"
     : severity === "warning"
-      ? "border-amber-400/20 bg-amber-400/10 text-amber-200"
-      : "border-cyan-400/20 bg-cyan-400/10 text-cyan-200";
+      ? "border-border/60 bg-amber-500/8 text-amber-300"
+      : "border-border/60 bg-sky-500/8 text-sky-300";
 }
 
 function incidentTone(severity: "info" | "warning" | "error") {
-  return severity === "error"
-    ? "border-rose-400/15 bg-rose-400/5"
-    : severity === "warning"
-      ? "border-amber-400/15 bg-amber-400/5"
-      : "border-cyan-400/15 bg-cyan-400/5";
+  return "border-border/60 bg-card";
 }
 
 function eventState(event: PlatformEvent): StateFilter {
@@ -239,7 +255,46 @@ function groupEventsByMonth(events: PlatformEvent[]) {
     .map(([month, rows]) => ({
       month,
       rows: [...rows].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()),
-    }));
+    })); 
+}
+
+function buildTrendData(events: PlatformEvent[], days = 7): TrendPoint[] {
+  const buckets = new Map<string, TrendPoint>();
+  const now = new Date();
+
+  for (let offset = days - 1; offset >= 0; offset -= 1) {
+    const date = new Date(now);
+    date.setDate(now.getDate() - offset);
+    const key = format(date, "yyyy-MM-dd");
+    buckets.set(key, {
+      day: key,
+      label: format(date, "dd MMM"),
+      info: 0,
+      warning: 0,
+      error: 0,
+      total: 0,
+    });
+  }
+
+  for (const event of events) {
+    const key = event.createdAt.slice(0, 10);
+    const bucket = buckets.get(key);
+    if (!bucket) {
+      continue;
+    }
+
+    bucket[event.severity] += 1;
+    bucket.total += 1;
+  }
+
+  return [...buckets.values()];
+}
+
+function resolveTenantLabel(tenantId: string | undefined, tenantMap: Map<string, string>) {
+  if (!tenantId) {
+    return "Platform";
+  }
+  return tenantMap.get(tenantId) ?? tenantId;
 }
 
 export default function PlatformMonitoringPage() {
@@ -266,6 +321,9 @@ export default function PlatformMonitoringPage() {
         state: stateFilter,
         search: search.trim() || undefined,
       }),
+    refetchInterval: 5000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
   });
 
   const tenantsQuery = useQuery({
@@ -410,6 +468,67 @@ export default function PlatformMonitoringPage() {
     [groupedEvents],
   );
   const ledgerByMonth = useMemo(() => groupEventsByMonth(filteredEvents).slice(0, 6), [filteredEvents]);
+  const trendData = useMemo(() => buildTrendData(filteredEvents, 7), [filteredEvents]);
+  const tenantImpact = useMemo(() => {
+    const buckets = new Map<string, TenantImpact>();
+
+    for (const event of filteredEvents) {
+      const key = event.tenantId ?? "__platform__";
+      const label = resolveTenantLabel(event.tenantId, tenantMap);
+      const current = buckets.get(key) ?? {
+        key,
+        label,
+        issues: 0,
+        total: 0,
+        error: 0,
+        warning: 0,
+        info: 0,
+        latestAt: event.createdAt,
+      };
+
+      current.total += 1;
+      current[event.severity] += 1;
+      if (event.severity !== "info") {
+        current.issues += 1;
+      }
+      if (new Date(event.createdAt).getTime() > new Date(current.latestAt).getTime()) {
+        current.latestAt = event.createdAt;
+      }
+      current.label = label;
+      buckets.set(key, current);
+    }
+
+    return [...buckets.values()]
+      .sort((left, right) => right.issues - left.issues || right.total - left.total || right.latestAt.localeCompare(left.latestAt))
+      .slice(0, 5);
+  }, [filteredEvents, tenantMap]);
+
+  const severitySegments = [
+    {
+      key: "error",
+      label: "Action must be taken",
+      count: monitoring?.summary.error ?? 0,
+      detail: "Unresolved failures and incidents that need operator attention first.",
+      className: "border-rose-500/15 bg-rose-500/8 text-rose-200",
+      barClassName: "bg-rose-500/70",
+    },
+    {
+      key: "warning",
+      label: "Needs attention",
+      count: monitoring?.summary.warning ?? 0,
+      detail: "Review soon and keep an eye on drift, latency, or retry pressure.",
+      className: "border-amber-500/15 bg-amber-500/8 text-amber-200",
+      barClassName: "bg-amber-500/70",
+    },
+    {
+      key: "info",
+      label: "Looks fine",
+      count: monitoring?.summary.info ?? 0,
+      detail: "Healthy operational events and lower-risk telemetry.",
+      className: "border-cyan-500/15 bg-cyan-500/8 text-cyan-200",
+      barClassName: "bg-cyan-500/70",
+    },
+  ] as const;
 
   return (
     <PlatformShell>
@@ -427,7 +546,75 @@ export default function PlatformMonitoringPage() {
           <MetricCard label="Visible Events" value={`${filteredEvents.length}`} icon={<Radar className="h-5 w-5" />} />
         </div>
 
-        <Card className="border-border/50 bg-card">
+        <div className="grid gap-6 xl:grid-cols-[1.25fr_0.75fr]">
+          <Card className="border-border/60 bg-card shadow-sm">
+            <CardHeader className="space-y-2">
+              <CardTitle className="text-2xl font-semibold tracking-tight">Live event trend</CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Auto-refreshes every 5 seconds. The chart shows the last 7 days of platform activity.
+              </p>
+            </CardHeader>
+            <CardContent>
+              <div className="h-[260px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={trendData} margin={{ top: 10, right: 8, left: -12, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="trendInfo" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#38bdf8" stopOpacity={0.35} />
+                        <stop offset="95%" stopColor="#38bdf8" stopOpacity={0.02} />
+                      </linearGradient>
+                      <linearGradient id="trendWarning" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.28} />
+                        <stop offset="95%" stopColor="#f59e0b" stopOpacity={0.02} />
+                      </linearGradient>
+                      <linearGradient id="trendError" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#ef4444" stopOpacity={0.28} />
+                        <stop offset="95%" stopColor="#ef4444" stopOpacity={0.02} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.55} />
+                    <XAxis dataKey="label" tickLine={false} axisLine={false} fontSize={12} stroke="hsl(var(--muted-foreground))" />
+                    <YAxis allowDecimals={false} tickLine={false} axisLine={false} fontSize={12} stroke="hsl(var(--muted-foreground))" />
+                    <Tooltip
+                      contentStyle={{
+                        background: "hsl(var(--card))",
+                        border: "1px solid hsl(var(--border))",
+                        borderRadius: "12px",
+                        color: "hsl(var(--foreground))",
+                      }}
+                      labelStyle={{ color: "hsl(var(--foreground))" }}
+                    />
+                    <Area type="monotone" dataKey="error" stackId="1" stroke="#ef4444" fill="url(#trendError)" strokeWidth={2} />
+                    <Area type="monotone" dataKey="warning" stackId="1" stroke="#f59e0b" fill="url(#trendWarning)" strokeWidth={2} />
+                    <Area type="monotone" dataKey="info" stackId="1" stroke="#38bdf8" fill="url(#trendInfo)" strokeWidth={2} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-border/60 bg-card shadow-sm">
+            <CardHeader className="space-y-2">
+              <CardTitle className="text-2xl font-semibold tracking-tight">Severity guide</CardTitle>
+              <p className="text-sm text-muted-foreground">Plain-language status cues for fast scanning.</p>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {severitySegments.map((segment) => (
+                <div key={segment.key} className={cn("rounded-xl border p-4", segment.className)}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium">{segment.label}</p>
+                      <p className="text-xs leading-5 text-muted-foreground">{segment.detail}</p>
+                    </div>
+                    <p className="text-2xl font-semibold tracking-tight">{segment.count}</p>
+                  </div>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        </div>
+
+        <Card className="border-border/60 bg-card shadow-sm">
           <CardHeader className="space-y-2">
             <CardTitle className="text-2xl font-semibold tracking-tight">External alert delivery posture</CardTitle>
             <p className="text-sm text-muted-foreground">
@@ -436,7 +623,7 @@ export default function PlatformMonitoringPage() {
           </CardHeader>
           <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
             {(["delivered", "failed", "suppressed", "pending", "unknown"] as DeliveryPosture[]).map((posture) => (
-              <div key={posture} className={cn("rounded-2xl border px-4 py-3", deliveryClass(posture))}>
+              <div key={posture} className={cn("rounded-xl border px-4 py-3", deliveryClass(posture))}>
                 <p className="text-[11px] uppercase tracking-[0.22em]">{deliveryLabel(posture)}</p>
                 <p className="mt-2 text-2xl font-semibold">{deliverySummary[posture]}</p>
               </div>
@@ -444,7 +631,49 @@ export default function PlatformMonitoringPage() {
           </CardContent>
         </Card>
 
-        <Card className="border-border/50 bg-card">
+        <Card className="border-border/60 bg-card shadow-sm">
+          <CardHeader className="space-y-2">
+            <CardTitle className="text-2xl font-semibold tracking-tight">Top affected tenants</CardTitle>
+            <p className="text-sm text-muted-foreground">Shows which tenant is generating the most warning and error activity right now.</p>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {tenantImpact.length ? (
+              tenantImpact.map((tenant) => (
+                <div key={tenant.key} className="rounded-xl border border-border/60 bg-muted/20 p-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="outline" className="border-border/60 bg-background/60 text-foreground">
+                          {tenant.label}
+                        </Badge>
+                        <span className="text-sm text-muted-foreground">
+                          {tenant.issues} issue{tenant.issues === 1 ? "" : "s"} · {tenant.total} event{tenant.total === 1 ? "" : "s"}
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Error {tenant.error} · warning {tenant.warning} · info {tenant.info} · latest {format(new Date(tenant.latestAt), "dd MMM, HH:mm")}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Badge variant="outline" className="border-rose-500/15 bg-rose-500/8 text-rose-300">
+                        {tenant.error} red
+                      </Badge>
+                      <Badge variant="outline" className="border-amber-500/15 bg-amber-500/8 text-amber-300">
+                        {tenant.warning} orange
+                      </Badge>
+                    </div>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="rounded-xl border border-dashed border-border/60 bg-muted/20 px-4 py-6 text-sm text-muted-foreground">
+                No tenant-specific activity yet.
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="border-border/60 bg-card shadow-sm">
           <CardHeader className="space-y-4">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
@@ -469,7 +698,7 @@ export default function PlatformMonitoringPage() {
                       key={value}
                       size="sm"
                       variant={severityFilter === value ? "default" : "outline"}
-                      className={severityFilter === value ? "" : "border-border/50 bg-card"}
+                      className={severityFilter === value ? "" : "border-border/60 bg-card"}
                       onClick={() => setSeverityFilter(value)}
                     >
                       {value}
@@ -482,7 +711,7 @@ export default function PlatformMonitoringPage() {
                       key={value}
                       size="sm"
                       variant={categoryFilter === value ? "default" : "outline"}
-                      className={categoryFilter === value ? "" : "border-border/50 bg-card"}
+                      className={categoryFilter === value ? "" : "border-border/60 bg-card"}
                       onClick={() => setCategoryFilter(value)}
                     >
                       {value}
@@ -496,7 +725,7 @@ export default function PlatformMonitoringPage() {
                       size="sm"
                       variant={stateFilter === value ? "default" : "outline"}
                       disabled={!workflowSupported && value !== "all" && value !== "open"}
-                      className={stateFilter === value ? "" : "border-border/50 bg-card"}
+                      className={stateFilter === value ? "" : "border-border/60 bg-card"}
                       onClick={() => setStateFilter(value)}
                     >
                       {value}
@@ -505,14 +734,14 @@ export default function PlatformMonitoringPage() {
                 </div>
               </div>
               {!workflowSupported ? (
-                <div className="rounded-2xl border border-amber-400/15 bg-amber-400/8 px-4 py-3 text-sm text-amber-100">
+                <div className="rounded-xl border border-border/60 bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
                   Incident workflow is temporarily read-only because the active database has not finished the monitoring workflow upgrade yet.
                 </div>
               ) : null}
               <div className="flex justify-end gap-2">
                 <Button
                   variant="outline"
-                  className="border-cyan-400/25 bg-cyan-500/10 text-cyan-100 hover:bg-cyan-500/20"
+                  className="border-border/60 bg-card"
                   onClick={() => retryFailedDeliveryMutation.mutate({ dryRun: false, limit: 25 })}
                   disabled={retryFailedDeliveryMutation.isPending}
                 >
@@ -521,7 +750,7 @@ export default function PlatformMonitoringPage() {
                 </Button>
                 <Button
                   variant="outline"
-                    className="border-border/50 bg-card"
+                    className="border-border/60 bg-card"
                   onClick={() =>
                     triggerTestAlertMutation.mutate({
                       severity: "warning",
@@ -534,7 +763,7 @@ export default function PlatformMonitoringPage() {
                 </Button>
                 <Button
                   variant="outline"
-                  className="border-rose-400/25 bg-rose-500/10 text-rose-100 hover:bg-rose-500/20"
+                  className="border-border/60 bg-card"
                   onClick={() =>
                     triggerTestAlertMutation.mutate({
                       severity: "error",
@@ -550,11 +779,11 @@ export default function PlatformMonitoringPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             {monitoringQuery.isLoading ? (
-                <div className="rounded-2xl border border-border/60 bg-card px-4 py-8 text-sm text-muted-foreground">
+              <div className="rounded-xl border border-border/60 bg-card px-4 py-8 text-sm text-muted-foreground">
                 Loading monitoring data...
               </div>
             ) : monitoringQuery.isError ? (
-              <div className="rounded-2xl border border-rose-400/15 bg-rose-400/5 px-4 py-8 text-sm text-rose-100">
+              <div className="rounded-xl border border-border/60 bg-card px-4 py-8 text-sm text-muted-foreground">
                 Could not load monitoring data right now.
               </div>
             ) : (
@@ -562,7 +791,7 @@ export default function PlatformMonitoringPage() {
                 const rows = groupedEvents[severity];
                 const open = openGroups[severity];
                 return (
-                  <div key={severity} className={cn("rounded-2xl border p-4", incidentTone(severity))}>
+                  <div key={severity} className={cn("rounded-xl border p-4", incidentTone(severity))}>
                     <button
                       type="button"
                       className="flex w-full items-start justify-between gap-4 text-left"
@@ -591,9 +820,9 @@ export default function PlatformMonitoringPage() {
                         {rows.length ? (
                           groupedEventsByMonth[severity].map((monthGroup) => (
                             <Collapsible key={`${severity}-${monthGroup.month}`} defaultOpen={monthGroup.month === currentMonth}>
-                              <div className="overflow-hidden rounded-2xl border border-border/50 bg-card">
+                              <div className="overflow-hidden rounded-xl border border-border/60 bg-card">
                                 <CollapsibleTrigger asChild>
-                                  <button type="button" className="flex w-full items-center justify-between gap-4 border-b border-border/50 px-4 py-3 text-left">
+                                  <button type="button" className="flex w-full items-center justify-between gap-4 border-b border-border/60 px-4 py-3 text-left">
                                     <div>
                                       <p className="text-sm font-medium text-foreground">{monthLabel(monthGroup.month)}</p>
                                       <p className="mt-1 text-xs text-muted-foreground">{monthGroup.rows.length} events</p>
@@ -607,46 +836,28 @@ export default function PlatformMonitoringPage() {
                                       <button
                                         key={event.id}
                                         type="button"
-                                        className="block w-full rounded-2xl border border-border/60 bg-card p-4 text-left transition hover:border-primary/20 hover:bg-muted/50"
+                                        className="block w-full rounded-xl border border-border/60 bg-card p-4 text-left transition hover:border-border/80 hover:bg-muted/30"
                                         onClick={() => setSelectedEvent(event)}
                                       >
-                                        {(() => {
-                                          const delivery = getEventDeliveryInsight(event);
-                                          return (
-                                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                                          <div className="min-w-0 space-y-1">
-                                            <div className="flex flex-wrap items-center gap-2">
-                                              <p className="font-medium text-foreground">{event.title}</p>
-                                              <span className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{event.category}</span>
-                                              <Badge variant="outline" className="border-border/50 bg-muted/30 text-muted-foreground">
-                                                {eventState(event)}
-                                              </Badge>
-                                              <Badge variant="outline" className={deliveryClass(delivery.posture)}>
-                                                ext {deliveryLabel(delivery.posture)}
-                                              </Badge>
-                                            </div>
-                                            <p className="line-clamp-2 text-sm text-muted-foreground">{event.message}</p>
-                                            <p className="text-xs text-muted-foreground">
-                                              {(event.method ?? "GET")} {event.path ?? "system"} {event.statusCode ? `| ${event.statusCode}` : ""}
-                                            </p>
+                                        <div className="space-y-2">
+                                          <div className="flex flex-wrap items-center gap-2">
+                                            <p className="font-medium text-foreground">{event.title}</p>
+                                            <Badge variant="outline" className="border-border/60 bg-muted/30 text-muted-foreground">
+                                              {event.category}
+                                            </Badge>
+                                            <Badge variant="outline" className="border-border/60 bg-muted/30 text-muted-foreground">
+                                              {eventState(event)}
+                                            </Badge>
                                           </div>
-                                          <div className="flex items-center gap-3 text-right">
-                                            <div className="rounded-2xl border border-border/50 bg-card px-3 py-2">
-                                              <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Tenant</p>
-                                              <p className="mt-1 text-sm text-foreground">
-                                                {event.tenantId ? tenantMap.get(event.tenantId) ?? "Scoped" : "Platform"}
-                                              </p>
-                                            </div>
-                                            <div className="rounded-2xl border border-border/50 bg-card px-3 py-2">
-                                              <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Duration</p>
-                                              <p className="mt-1 text-sm text-foreground">
-                                                {typeof event.durationMs === "number" ? `${event.durationMs} ms` : "n/a"}
-                                              </p>
-                                            </div>
-                                          </div>
+                                          <p className="line-clamp-2 text-sm text-muted-foreground">{event.message}</p>
+                                          <p className="text-xs text-muted-foreground">
+                                            {(event.method ?? "GET")} {event.path ?? "system"}
+                                            {" · "}
+                                            {event.tenantId ? tenantMap.get(event.tenantId) ?? "Scoped" : "Platform"}
+                                            {" · "}
+                                            {typeof event.durationMs === "number" ? `${event.durationMs} ms` : "n/a"}
+                                          </p>
                                         </div>
-                                          );
-                                        })()}
                                       </button>
                                     ))}
                                   </div>
@@ -655,7 +866,7 @@ export default function PlatformMonitoringPage() {
                             </Collapsible>
                           ))
                         ) : (
-                          <div className="rounded-2xl border border-dashed border-border/50 bg-card px-4 py-6 text-sm text-muted-foreground">
+                          <div className="rounded-xl border border-dashed border-border/60 bg-card px-4 py-6 text-sm text-muted-foreground">
                             No {severity} events match the current filters.
                           </div>
                         )}
@@ -668,7 +879,7 @@ export default function PlatformMonitoringPage() {
           </CardContent>
         </Card>
 
-        <Card className="border-border/50 bg-card">
+        <Card className="border-border/60 bg-card shadow-sm">
           <CardHeader className="flex flex-row items-center justify-between space-y-0">
             <div>
               <CardTitle className="text-2xl font-semibold tracking-tight">Recent incidents ledger</CardTitle>
@@ -679,9 +890,9 @@ export default function PlatformMonitoringPage() {
             {ledgerByMonth.length ? (
               ledgerByMonth.map((monthGroup) => (
                 <Collapsible key={`ledger-${monthGroup.month}`} defaultOpen={monthGroup.month === currentMonth}>
-                  <div className="overflow-hidden rounded-2xl border border-border/50 bg-card">
+                  <div className="overflow-hidden rounded-xl border border-border/60 bg-card">
                     <CollapsibleTrigger asChild>
-                      <button type="button" className="flex w-full items-center justify-between gap-3 border-b border-border/50 px-4 py-3 text-left">
+                      <button type="button" className="flex w-full items-center justify-between gap-3 border-b border-border/60 px-4 py-3 text-left">
                         <div>
                           <p className="text-sm font-medium text-foreground">{monthLabel(monthGroup.month)}</p>
                           <p className="text-xs text-muted-foreground">{monthGroup.rows.length} ledger rows</p>
@@ -692,7 +903,7 @@ export default function PlatformMonitoringPage() {
                     <CollapsibleContent>
                       <Table>
                 <TableHeader>
-                  <TableRow className="border-border/50">
+                          <TableRow className="border-border/60">
                             <TableHead>Severity</TableHead>
                             <TableHead>Title</TableHead>
                             <TableHead>Target</TableHead>
@@ -704,7 +915,7 @@ export default function PlatformMonitoringPage() {
                         </TableHeader>
                         <TableBody>
                           {monthGroup.rows.slice(0, 20).map((event) => (
-                    <TableRow key={event.id} className="cursor-pointer border-border/50" onClick={() => setSelectedEvent(event)}>
+                    <TableRow key={event.id} className="cursor-pointer border-border/60" onClick={() => setSelectedEvent(event)}>
                               <TableCell>
                                 <Badge variant="outline" className={severityClass(event.severity)}>
                                   {event.severity}

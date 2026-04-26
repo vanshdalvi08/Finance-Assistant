@@ -15,6 +15,18 @@ import { useToast } from "@/hooks/use-toast";
 
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 
+function formatCapacityHours(value: number | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "—";
+  }
+
+  return `${Number(value.toFixed(1)).toString()}h`;
+}
+
+function lineTotal(line: { hours: Partial<Record<(typeof DAYS)[number], number>> }) {
+  return DAYS.reduce((sum, day) => sum + Number(line.hours[day] ?? 0), 0);
+}
+
 function weekLabel(weekStart: string) {
   const start = new Date(weekStart);
   return `${format(start, "dd MMM")} - ${format(addDays(start, 6), "dd MMM yyyy")}`;
@@ -45,6 +57,7 @@ export default function AdminTimesheetValidationPage() {
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
   const { data: timesheets = [] } = useQuery({ queryKey: ["timesheets"], queryFn: () => api.getTimesheets() });
+  const { data: projectBudgetSummary = [] } = useQuery({ queryKey: ["project-budget-summary"], queryFn: api.getProjectBudgetSummary });
 
   useEffect(() => {
     if (!selectedEmployeeId && employees.length > 0) {
@@ -74,6 +87,21 @@ export default function AdminTimesheetValidationPage() {
   }, [pendingTimesheets, selectedTimesheetId]);
 
   const selectedTimesheet = pendingTimesheets.find((entry) => entry.id === selectedTimesheetId) ?? pendingTimesheets[0] ?? null;
+  const taskLookup = useMemo(
+    () =>
+      new Map(
+        projectBudgetSummary.flatMap((project) =>
+          project.tasks.map((task) => [
+            task.id,
+            {
+              project: project.project,
+              task,
+            },
+          ]),
+        ),
+      ),
+    [projectBudgetSummary],
+  );
 
   const { data: monthCalendar } = useQuery({
     queryKey: ["employee-month-calendar", selectedEmployeeId, selectedMonth],
@@ -135,6 +163,35 @@ export default function AdminTimesheetValidationPage() {
       total: selectedTimesheet.lines.reduce((sum, line) => sum + Number(line.hours[day] ?? 0), 0),
     }));
   }, [selectedTimesheet]);
+
+  const taskCapacityRows = useMemo(() => {
+    if (!selectedTimesheet) {
+      return [];
+    }
+
+    return selectedTimesheet.lines
+      .map((line) => {
+        const total = lineTotal(line);
+        const taskData = line.projectTaskId ? taskLookup.get(line.projectTaskId) : undefined;
+        const maxHours = taskData?.task.maxHours;
+        const remainingHours = taskData?.task.remainingHours;
+        const hoursPerDay = taskData?.task.hoursPerDay;
+
+        return {
+          id: line.id,
+          project: line.project || taskData?.project || "Custom project",
+          task: line.task || taskData?.task.name || "Custom task",
+          total,
+          maxHours,
+          remainingHours,
+          hoursPerDay,
+          durationDays: taskData?.task.durationDays,
+          hasBudget: Boolean(taskData),
+          hasContent: Boolean(line.project.trim() || line.task.trim() || total > 0),
+        };
+      })
+      .filter((row) => row.hasContent);
+  }, [selectedTimesheet, taskLookup]);
 
   return (
     <DashboardLayout>
@@ -250,6 +307,47 @@ export default function AdminTimesheetValidationPage() {
                         <p className="mt-1 text-sm font-medium text-foreground">{day.total.toFixed(1)}h</p>
                       </div>
                     ))}
+                  </div>
+
+                  <div className="rounded-xl border border-border/60 bg-background/60 px-4 py-4">
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium text-foreground">Task capacity</p>
+                      <p className="text-sm text-muted-foreground">
+                        Remaining task hours for this employee are tracked against the active project budget and duration window.
+                      </p>
+                    </div>
+                    {taskCapacityRows.length > 0 ? (
+                      <div className="mt-4 space-y-2">
+                        {taskCapacityRows.map((row) => (
+                          <div key={row.id} className="rounded-lg border border-border/60 bg-card/70 px-3 py-3">
+                            <div className="flex flex-col gap-2">
+                              <div className="space-y-0.5">
+                                <p className="text-sm font-medium text-foreground">{row.project}</p>
+                                <p className="text-xs text-muted-foreground">{row.task}</p>
+                              </div>
+                              <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+                                <span>
+                                  Used <span className="font-medium text-foreground">{row.total.toFixed(1)}h</span>
+                                </span>
+                                <span>
+                                  Remaining <span className="font-medium text-foreground">{formatCapacityHours(row.remainingHours ?? row.maxHours)}</span>
+                                </span>
+                                {row.hoursPerDay ? (
+                                  <span>
+                                    {row.hoursPerDay}h/day over {row.durationDays}d
+                                  </span>
+                                ) : null}
+                                {!row.hasBudget ? <span>Custom task</span> : null}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="mt-4 rounded-lg border border-dashed border-border/60 px-3 py-6 text-center text-sm text-muted-foreground">
+                        Add a project task to see the remaining capacity here.
+                      </div>
+                    )}
                   </div>
 
                   <div className="overflow-hidden rounded-xl border border-border/60">

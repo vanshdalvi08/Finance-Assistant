@@ -56,8 +56,8 @@ export default function AdminLeaveManagementPage() {
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
   const { data: leaveRequests = [] } = useQuery({
-    queryKey: ["leave-requests", selectedMonth],
-    queryFn: () => api.getLeaveRequests({ month: selectedMonth, status: "all" }),
+    queryKey: ["leave-requests"],
+    queryFn: () => api.getLeaveRequests({ status: "all" }),
   });
   const { data: holidays = [] } = useQuery({
     queryKey: ["holidays", selectedMonth],
@@ -243,7 +243,7 @@ export default function AdminLeaveManagementPage() {
           <Card className="border-border/60 bg-card/80 shadow-sm">
             <CardHeader>
               <CardTitle className="text-base font-medium">Leave Approval Desk</CardTitle>
-              <CardDescription>Approve or reject leave requests with a short note for the employee.</CardDescription>
+              <CardDescription>Approve or reject leave requests with a short note for the employee. Pending requests from every month appear here.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               {leaveRequests.length === 0 ? (

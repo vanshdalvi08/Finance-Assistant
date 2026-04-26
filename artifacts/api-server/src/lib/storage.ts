@@ -191,6 +191,23 @@ export async function uploadExpenseAttachment(input: {
   };
 }
 
+export async function uploadFundReceipt(input: {
+  fileName: string;
+  contentType: string;
+  body: Uint8Array;
+  actorId: string;
+}) : Promise<UploadedFileRef> {
+  const config = requireStorageConfig();
+  const objectPath = buildObjectPath(`funds/${input.actorId}`, input.fileName);
+  await uploadObject(config.fundReceiptsBucket, objectPath, input.body, input.contentType);
+
+  return {
+    fileName: sanitizeFileName(input.fileName),
+    path: objectPath,
+    url: await signedObjectUrl(config.fundReceiptsBucket, objectPath),
+  };
+}
+
 export async function resolveExpenseAttachmentUrl(objectPath?: string | null) {
   if (!objectPath) {
     return undefined;
@@ -203,6 +220,23 @@ export async function resolveExpenseAttachmentUrl(objectPath?: string | null) {
 
   try {
     return await signedObjectUrl(config.expenseAttachmentsBucket, objectPath);
+  } catch {
+    return undefined;
+  }
+}
+
+export async function resolveFundReceiptUrl(objectPath?: string | null) {
+  if (!objectPath) {
+    return undefined;
+  }
+
+  const config = getSupabaseStorageConfig();
+  if (!config) {
+    return undefined;
+  }
+
+  try {
+    return await signedObjectUrl(config.fundReceiptsBucket, objectPath);
   } catch {
     return undefined;
   }

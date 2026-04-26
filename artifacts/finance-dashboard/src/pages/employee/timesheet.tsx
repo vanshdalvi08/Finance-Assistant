@@ -106,6 +106,14 @@ function formatHourValue(value: number) {
   return `${Number(value.toFixed(1)).toString()}h`;
 }
 
+function formatCapacityHours(value: number | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "—";
+  }
+
+  return `${Number(value.toFixed(1)).toString()}h`;
+}
+
 function toDateInputValue(weekStart: string) {
   return format(new Date(weekStart), "yyyy-MM-dd");
 }
@@ -335,6 +343,34 @@ export default function EmployeeTimesheetPage() {
       leaveDays: weekStatuses.filter((day) => day.calendar?.leave).length,
     };
   }, [draft, timesheets, weekStatuses]);
+
+  const taskCapacityRows = useMemo(() => {
+    if (!draft) {
+      return [];
+    }
+
+    return draft.lines
+      .map((line) => {
+        const taskLimit = taskLimitForLine(line);
+        const claimedHours = line.projectTaskId ? claimedHoursForTask(line.projectTaskId, line.id) + lineTotal(line) : lineTotal(line);
+        const taskOptions = getProjectTaskOptions(line.project);
+        const task = line.projectTaskId ? taskOptions.find((option) => option.id === line.projectTaskId) : undefined;
+
+        return {
+          id: line.id,
+          project: line.project.trim() || "Custom project",
+          task: line.task.trim() || "Custom task",
+          total: lineTotal(line),
+          claimedHours,
+          remainingHours: taskLimit !== undefined ? Math.max(0, taskLimit - claimedHours) : undefined,
+          durationDays: task?.durationDays,
+          hoursPerDay: task?.hoursPerDay,
+          hasBudget: Boolean(taskLimit !== undefined),
+          hasContent: Boolean(line.project.trim() || line.task.trim() || lineTotal(line) > 0),
+        };
+      })
+      .filter((row) => row.hasContent);
+  }, [draft, projectLookup]);
 
   function getProjectTaskOptions(projectName: string) {
     const record = projectLookup.get(normalizeLookup(projectName));
@@ -669,6 +705,43 @@ export default function EmployeeTimesheetPage() {
           ) : null}
         </section>
 
+        {taskCapacityRows.length > 0 ? (
+          <section className="rounded-2xl border border-border/60 bg-card/80 px-5 py-4 shadow-sm">
+            <div className="space-y-1">
+              <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Task capacity</p>
+              <p className="text-sm text-muted-foreground">
+                The remaining hours on each task are deducted from the project budget as they are logged across weeks.
+              </p>
+            </div>
+            <div className="mt-4 space-y-2">
+              {taskCapacityRows.map((row) => (
+                <div key={row.id} className="rounded-xl border border-border/60 bg-background/60 px-4 py-3">
+                  <div className="flex flex-col gap-2">
+                    <div className="space-y-0.5">
+                      <p className="text-sm font-medium text-foreground">{row.project}</p>
+                      <p className="text-xs text-muted-foreground">{row.task}</p>
+                    </div>
+                    <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+                      <span>
+                        Logged <span className="font-medium text-foreground">{row.total.toFixed(1)}h</span>
+                      </span>
+                      <span>
+                        Remaining <span className="font-medium text-foreground">{formatCapacityHours(row.remainingHours)}</span>
+                      </span>
+                      {row.hoursPerDay ? (
+                        <span>
+                          {row.hoursPerDay}h/day over {row.durationDays}d
+                        </span>
+                      ) : null}
+                      {!row.hasBudget ? <span>Custom task</span> : null}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
         {isRejected && draft?.reviewNotes ? (
           <div className="flex items-start gap-3 rounded-2xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm shadow-sm">
             <AlertTriangle className="mt-0.5 h-4 w-4 text-amber-300" />
@@ -710,13 +783,13 @@ export default function EmployeeTimesheetPage() {
               <div className="py-16 text-center text-sm text-muted-foreground">Preparing your timesheet workspace...</div>
             ) : (
               <div className="timesheet-scroll overflow-x-auto">
-                <table className="w-full min-w-[1060px] table-fixed border-separate border-spacing-0">
+                <table className="w-full min-w-[1200px] table-fixed border-separate border-spacing-0">
                   <thead>
                     <tr className="bg-secondary/10 text-left text-sm text-muted-foreground">
-                      <th className="sticky left-0 z-30 w-[160px] min-w-[160px] border-b border-r border-border/50 bg-card px-4 py-3 font-medium text-foreground">
+                      <th className="sticky left-0 z-30 w-[180px] min-w-[180px] border-b border-r border-border/50 bg-card px-4 py-3 font-medium text-foreground">
                         Project
                       </th>
-                      <th className="sticky left-[160px] z-30 w-[220px] min-w-[220px] border-b border-r border-border/50 bg-card px-4 py-3 font-medium text-foreground">
+                      <th className="sticky left-[180px] z-30 w-[300px] min-w-[300px] border-b border-r border-border/50 bg-card px-4 py-3 font-medium text-foreground">
                         Task
                       </th>
                       {weekDates.map((day) => {
@@ -816,7 +889,7 @@ export default function EmployeeTimesheetPage() {
                               ) : null}
                             </div>
                           </td>
-                          <td className="sticky left-[160px] z-20 border-b border-r border-border/50 bg-card px-4 py-3 align-top">
+                          <td className="sticky left-[180px] z-20 border-b border-r border-border/50 bg-card px-4 py-3 align-top">
                             <div className="space-y-2">
                               {hasProjectValue ? (
                                 projectTaskOptions.length > 0 ? (
@@ -840,10 +913,39 @@ export default function EmployeeTimesheetPage() {
                                       ))}
                                       <option value="__custom__">Custom task</option>
                                     </select>
+                                    {(() => {
+                                      const selectedTask = projectTaskOptions.find(
+                                        (task) => normalizeLookup(task.name) === normalizeLookup(line.task),
+                                      );
+
+                                      if (!selectedTask) {
+                                        return null;
+                                      }
+
+                                      return (
+                                        <div className="space-y-1 rounded-xl border border-border/50 bg-background/55 px-3 py-2">
+                                          <p className="text-sm font-medium text-foreground">{selectedTask.name}</p>
+                                          {selectedTask.description ? (
+                                            <p className="text-xs leading-relaxed text-muted-foreground">{selectedTask.description}</p>
+                                          ) : null}
+                                          <p className="text-[11px] text-muted-foreground">
+                                            {typeof selectedTask.maxHours === "number" && selectedTask.maxHours > 0 ? (
+                                              <span className="font-medium text-foreground">{formatHourValue(selectedTask.maxHours)} max</span>
+                                            ) : null}
+                                            {typeof selectedTask.maxHours === "number" && selectedTask.maxHours > 0 && selectedTask.durationDays ? " · " : null}
+                                            {selectedTask.durationDays ? (
+                                              <span className="font-medium text-foreground">
+                                                {selectedTask.durationDays} day{selectedTask.durationDays === 1 ? "" : "s"}
+                                              </span>
+                                            ) : null}
+                                          </p>
+                                        </div>
+                                      );
+                                    })()}
                                     {showTaskInput ? (
                                       <Input
                                         value={line.task}
-                                        placeholder="Custom task"
+                                        placeholder="Custom task name"
                                         disabled={readOnly}
                                         className="h-9 rounded-xl border-border/55 bg-background/80 text-sm shadow-none"
                                         onChange={(event) =>
@@ -856,14 +958,14 @@ export default function EmployeeTimesheetPage() {
                                       />
                                     ) : null}
                                   </>
-                                ) : (
-                                  <Input
-                                    value={line.task}
-                                    placeholder="Custom task"
-                                    disabled={readOnly}
-                                    className="h-9 rounded-xl border-border/55 bg-background/80 text-sm shadow-none"
-                                    onChange={(event) =>
-                                      updateLine(line.id, (currentLine) => ({
+                              ) : (
+                                <Input
+                                  value={line.task}
+                                  placeholder="Custom task name"
+                                  disabled={readOnly}
+                                  className="h-9 rounded-xl border-border/55 bg-background/80 text-sm shadow-none"
+                                  onChange={(event) =>
+                                    updateLine(line.id, (currentLine) => ({
                                         ...currentLine,
                                         task: event.target.value,
                                         projectTaskId: undefined,

@@ -13,6 +13,7 @@ import {
 import { hashSha256 } from "../security";
 import { assertTenantAccess } from "../policies";
 import { DEFAULT_TENANT_ID } from "../tenants";
+import { resolveFundReceiptUrl } from "../storage";
 
 export type FundActor = {
   userId?: string;
@@ -28,6 +29,8 @@ export type FundInput = {
   amount: number;
   date: string;
   note?: string;
+  receiptName?: string;
+  receiptPath?: string;
 };
 
 export class FundsServiceError extends Error {
@@ -49,6 +52,8 @@ function normalizedFundPayload(input: FundInput) {
     amount: Math.abs(input.amount),
     date: normalizeDate(input.date),
     note: input.note?.trim() ?? "",
+    receiptName: input.receiptName?.trim() ?? "",
+    receiptPath: input.receiptPath?.trim() ?? "",
   };
 }
 
@@ -56,7 +61,7 @@ function requestHashForFund(input: FundInput) {
   return hashSha256(JSON.stringify(normalizedFundPayload(input)));
 }
 
-function summarizeFund(fund: Pick<FundRecord, "source" | "amount" | "date" | "note"> | null | undefined) {
+function summarizeFund(fund: Pick<FundRecord, "source" | "amount" | "date" | "note" | "receiptName"> | null | undefined) {
   if (!fund) {
     return null;
   }
@@ -66,12 +71,13 @@ function summarizeFund(fund: Pick<FundRecord, "source" | "amount" | "date" | "no
     amount: fund.amount,
     date: fund.date,
     note: fund.note || "",
+    receiptName: fund.receiptName || "",
   };
 }
 
 function changedFundFields(previous: FundRecord | null | undefined, next: FundRecord) {
   if (!previous) {
-    return ["source", "amount", "date", "note"];
+    return ["source", "amount", "date", "note", "receiptName", "receiptPath"];
   }
 
   const fields: string[] = [];
@@ -79,7 +85,21 @@ function changedFundFields(previous: FundRecord | null | undefined, next: FundRe
   if (previous.amount !== next.amount) fields.push("amount");
   if (previous.date !== next.date) fields.push("date");
   if ((previous.note || "") !== (next.note || "")) fields.push("note");
+  if ((previous.receiptName || "") !== (next.receiptName || "")) fields.push("receiptName");
+  if ((previous.receiptPath || "") !== (next.receiptPath || "")) fields.push("receiptPath");
   return fields;
+}
+
+async function attachFundReceiptUrl(fund: FundRecord) {
+  if (!fund.receiptPath) {
+    return fund;
+  }
+
+  const receiptUrl = await resolveFundReceiptUrl(fund.receiptPath);
+  return {
+    ...fund,
+    receiptUrl,
+  };
 }
 
 async function claimFundCreateIdempotency(actor: FundActor, key: string, requestHash: string) {
@@ -133,9 +153,11 @@ async function claimFundIdempotency(
 
 export async function listFundsForTenant(tenantId: string) {
   const store = await readStore();
-  return store.funds
+  const funds = store.funds
     .filter((fund) => tenantFundFilter(fund, tenantId))
     .sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime());
+
+  return Promise.all(funds.map((fund) => attachFundReceiptUrl(fund)));
 }
 
 export async function getFundForTenant(id: string, tenantId: string) {
@@ -147,7 +169,7 @@ export async function getFundForTenant(id: string, tenantId: string) {
 
   assertTenantAccess(fund.tenantId, tenantId, () => new FundsServiceError("forbidden", "Forbidden"));
 
-  return fund;
+  return attachFundReceiptUrl(fund);
 }
 
 export async function saveFund(
@@ -190,6 +212,8 @@ export async function saveFund(
         amount: payload.amount,
         date: payload.date,
         note: payload.note,
+        receiptName: payload.receiptName || existing?.receiptName,
+        receiptPath: payload.receiptPath || existing?.receiptPath,
         createdAt: existing?.createdAt ?? nowIso(),
         updatedAt: nowIso(),
       };
@@ -237,7 +261,7 @@ export async function saveFund(
     throw error;
   }
 
-  return { fund: fund!, created, duplicate: false };
+  return { fund: await attachFundReceiptUrl(fund!), created, duplicate: false };
 }
 
 export async function deleteFundWithIdempotency(
