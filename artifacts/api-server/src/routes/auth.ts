@@ -138,6 +138,16 @@ router.get("/csrf", (_request, response) => {
   response.json({ csrfToken });
 });
 
+router.get("/oauth-debug", (_request, response) => {
+  response.json({
+    GOOGLE_OAUTH_CLIENT_ID: Boolean(process.env.GOOGLE_OAUTH_CLIENT_ID),
+    GOOGLE_OAUTH_CLIENT_SECRET: Boolean(process.env.GOOGLE_OAUTH_CLIENT_SECRET),
+    GOOGLE_OAUTH_REDIRECT_URI: Boolean(process.env.GOOGLE_OAUTH_REDIRECT_URI),
+    AUTH_OAUTH_STATE_SECRET: Boolean(process.env.AUTH_OAUTH_STATE_SECRET),
+    GOOGLE_OAUTH_REDIRECT_URI_VALUE: process.env.GOOGLE_OAUTH_REDIRECT_URI,
+  });
+});
+
 router.get("/oauth/:provider/start", async (request, response) => {
   const providerResult = oauthProviderSchema.safeParse(request.params.provider);
   if (!providerResult.success) {
