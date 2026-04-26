@@ -121,11 +121,13 @@ function ExpenseTable({
   categories,
   group,
   onReview,
+  isReviewing = false,
 }: {
   expenses: Expense[];
   categories: ExpenseCategory[];
   group: "personal" | "office";
   onReview?: (id: string, status: "approved" | "rejected") => void;
+  isReviewing?: boolean;
 }) {
   const [filterCategory, setFilterCategory] = useState("all");
   const [filterDateFrom, setFilterDateFrom] = useState("");
@@ -359,17 +361,21 @@ function ExpenseTable({
                         {e.status === "submitted" && onReview ? (
                           <div className="flex justify-end gap-1">
                             <Button
+                              type="button"
                               variant="ghost"
                               size="icon"
                               className="h-8 w-8 text-emerald-400 hover:text-emerald-300"
+                              disabled={isReviewing}
                               onClick={() => onReview(e.id, "approved")}
                             >
                               <Check className="w-4 h-4" />
                             </Button>
                             <Button
+                              type="button"
                               variant="ghost"
                               size="icon"
                               className="h-8 w-8 text-rose-400 hover:text-rose-300"
+                              disabled={isReviewing}
                               onClick={() => onReview(e.id, "rejected")}
                             >
                               <Ban className="w-4 h-4" />
@@ -840,21 +846,23 @@ export default function Expenses() {
           </TabsList>
 
           <TabsContent value="office" className="mt-0">
-            <ExpenseTable
-              expenses={expenses}
-              categories={categories}
-              group="office"
-              onReview={(id, status) => reviewMutation.mutate({ id, status })}
-            />
-          </TabsContent>
-          <TabsContent value="personal" className="mt-0">
-            <ExpenseTable
-              expenses={expenses}
-              categories={categories}
-              group="personal"
-              onReview={(id, status) => reviewMutation.mutate({ id, status })}
-            />
-          </TabsContent>
+          <ExpenseTable
+            expenses={expenses}
+            categories={categories}
+            group="office"
+            onReview={(id, status) => reviewMutation.mutate({ id, status })}
+            isReviewing={reviewMutation.isPending}
+          />
+        </TabsContent>
+        <TabsContent value="personal" className="mt-0">
+          <ExpenseTable
+            expenses={expenses}
+            categories={categories}
+            group="personal"
+            onReview={(id, status) => reviewMutation.mutate({ id, status })}
+            isReviewing={reviewMutation.isPending}
+          />
+        </TabsContent>
         </Tabs>
       </div>
     </DashboardLayout>

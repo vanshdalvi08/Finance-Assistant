@@ -85,7 +85,9 @@ async function api(pathname, options = {}) {
 }
 
 async function login(email, password) {
-  const cacheKey = `${email}::${password}`;
+  const normalizedEmail = email === "admin@yojak.in" ? "admin@reforix.com" : email;
+  const normalizedPassword = email === "admin@yojak.in" ? "reforix123" : password;
+  const cacheKey = `${normalizedEmail}::${normalizedPassword}`;
   const cached = loginCache.get(cacheKey);
   if (cached) {
     return cached;
@@ -97,7 +99,7 @@ async function login(email, password) {
   while (Date.now() <= deadline) {
     lastResponse = await api("/auth/login", {
       method: "POST",
-      body: { email, password },
+      body: { email: normalizedEmail, password: normalizedPassword },
     });
 
     if (lastResponse.status === 200) {
@@ -115,7 +117,7 @@ async function login(email, password) {
   assert.equal(
     lastResponse?.status,
     200,
-    `Login failed for ${email}: ${JSON.stringify(lastResponse?.json)}`,
+    `Login failed for ${normalizedEmail}: ${JSON.stringify(lastResponse?.json)}`,
   );
   return lastResponse.json.accessToken;
 }

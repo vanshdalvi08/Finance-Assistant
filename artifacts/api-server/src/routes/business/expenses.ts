@@ -235,7 +235,7 @@ function handleServiceError(error: unknown, response: Response) {
   return false;
 }
 
-router.post("/expenses", expenseSubmitLimiter, async (request, response) => {
+router.post("/expenses", requireTenantRole("admin", "employee"), expenseSubmitLimiter, async (request, response) => {
   const parsed = expenseSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid expense payload" });
@@ -352,7 +352,7 @@ router.post("/expenses", expenseSubmitLimiter, async (request, response) => {
   response.status(created ? 201 : 200).json({ expense: await serializeExpense(expense), duplicate: false });
 });
 
-router.route("/expenses/:id").get(async (request, response) => {
+router.route("/expenses/:id").get(requireTenantRole("admin", "employee"), async (request, response) => {
   try {
     const expense = await getExpenseForTenant(
       routeParam(request.params.id),
@@ -367,7 +367,7 @@ router.route("/expenses/:id").get(async (request, response) => {
     }
     throw error;
   }
-}).patch(async (request, response) => {
+}).patch(requireTenantRole("admin", "employee"), async (request, response) => {
   const parsed = expenseSchema.safeParse({ ...request.body, id: routeParam(request.params.id) });
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid expense payload" });
@@ -449,7 +449,7 @@ router.route("/expenses/:id").get(async (request, response) => {
   }
 
   response.json({ expense: await serializeExpense(expense), duplicate: false });
-}).delete(async (request, response) => {
+}).delete(requireTenantRole("admin", "employee"), async (request, response) => {
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const idempotencyKey = idempotencyKeyFrom(request);
   const requestHash = idempotencyKey ? requestHashForExpenseDelete({ expenseId: routeParam(request.params.id) }) : null;

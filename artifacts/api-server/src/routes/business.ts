@@ -2089,16 +2089,16 @@ router.route("/categories/:id").get(requireTenantRole("admin"), async (request, 
   response.status(204).send();
 });
 
-router.get("/expenses", async (request, response) => {
+router.get("/expenses", requireTenantRole("admin", "employee"), async (request, response) => {
   const store = await readStore();
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
-  const employeeId = scopedEmployeeId(request, (request.query as { employeeId?: string }).employeeId);
+  const requesterRole = request.auth?.user.role;
+  const employeeIdQuery = (request.query as { employeeId?: string }).employeeId?.trim() || null;
+  const employeeId = requesterRole === "employee" ? request.auth?.user.id ?? null : employeeIdQuery;
   let expenses = store.expenses.filter((expense) => expense.tenantId === tenantId || (expense.tenantId == null && tenantId === DEFAULT_TENANT_ID));
 
   if (employeeId) {
     expenses = expenses.filter((expense) => expense.employeeId === employeeId);
-  } else if (request.auth?.user.role !== "admin") {
-    expenses = expenses.filter((expense) => expense.employeeId === request.auth?.user.id);
   }
 
   const status = approvalStatusSchema.safeParse(request.query.status);
@@ -2113,7 +2113,7 @@ router.get("/expenses", async (request, response) => {
   });
 });
 
-router.get("/projects/summary", async (_request, response) => {
+router.get("/projects/summary", requireTenantRole("admin", "employee"), async (_request, response) => {
   const store = await readStore();
   const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const employees = await loadEmployees(tenantId);
@@ -2275,7 +2275,7 @@ router.get("/projects/summary", async (_request, response) => {
   response.json({ projectBudgetSummary, projects: projectBudgetSummary });
 });
 
-router.get("/projects/names", async (_request, response) => {
+router.get("/projects/names", requireTenantRole("admin", "employee"), async (_request, response) => {
   const store = await readStore();
   const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const employees = await loadEmployees(tenantId);

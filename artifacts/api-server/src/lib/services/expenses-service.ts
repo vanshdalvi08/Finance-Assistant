@@ -19,6 +19,7 @@ import { assertEmployeeSelfAccess, assertTenantAccess } from "../policies";
 import { hashSha256 } from "../security";
 import { assertWorkflowTransition } from "../workflow-state";
 import { DEFAULT_TENANT_ID } from "../tenants";
+import { assertActorRoleAccess } from "../policies";
 
 export type ExpenseActor = {
   userId?: string;
@@ -200,6 +201,7 @@ export async function getExpenseForTenant(id: string, tenantId: string, requeste
     throw new ExpensesServiceError("not_found", "Expense not found");
   }
 
+  assertActorRoleAccess(requesterRole, ["admin", "employee"], () => new ExpensesServiceError("forbidden", "Forbidden"));
   assertTenantAccess(expense.tenantId, tenantId, () => new ExpensesServiceError("forbidden", "Forbidden"));
   assertEmployeeSelfAccess(expense.employeeId, requesterRole, requesterUserId, () => new ExpensesServiceError("forbidden", "Forbidden"));
 
@@ -207,6 +209,7 @@ export async function getExpenseForTenant(id: string, tenantId: string, requeste
 }
 
 export async function saveExpense(input: ExpenseInput, actor: ExpenseActor, requesterUserId?: string, requesterRole?: string) {
+  assertActorRoleAccess(requesterRole, ["admin", "employee"], () => new ExpensesServiceError("forbidden", "Forbidden"));
   const employee = input.employeeId ? await loadEmployeeProfile(input.employeeId, actor.tenantId) : null;
 
   assertEmployeeSelfAccess(input.employeeId, requesterRole, requesterUserId, () => new ExpensesServiceError("forbidden", "Forbidden"));
@@ -304,6 +307,7 @@ export async function saveExpense(input: ExpenseInput, actor: ExpenseActor, requ
 }
 
 export async function deleteExpense(id: string, actor: ExpenseActor, requesterUserId?: string, requesterRole?: string) {
+  assertActorRoleAccess(requesterRole, ["admin", "employee"], () => new ExpensesServiceError("forbidden", "Forbidden"));
   let existing: ExpenseRecord | null = null;
   await updateStore((current) => {
     existing = current.expenses.find((expense) => expense.id === id) ?? null;

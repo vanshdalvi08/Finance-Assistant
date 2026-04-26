@@ -1076,35 +1076,57 @@ export async function resetPassword(token: string, password: string): Promise<vo
 export async function ensureInitialAdmin(): Promise<void> {
   const email = optionalEnv("ADMIN_EMAIL")?.trim().toLowerCase() ?? (!isProduction() ? "admin@reforix.com" : undefined);
   const password = optionalEnv("ADMIN_PASSWORD") ?? (!isProduction() ? "reforix123" : undefined);
+  const phone = optionalEnv("ADMIN_PHONE")?.trim() || "9999999999";
+  const name = optionalEnv("ADMIN_NAME")?.trim() || "Reforix Admin";
+  const position = optionalEnv("ADMIN_POSITION")?.trim() || "Administrator";
+  const department = optionalEnv("ADMIN_DEPARTMENT")?.trim() || "Operations";
 
   if (!email || !password) {
     return;
   }
 
-  const existing = await findUserByEmail(email);
-  if (existing) {
-    return;
-  }
-
   const hashedPassword = await hashPassword(password);
   const now = new Date();
-
-  await db.insert(usersTable).values({
+  const adminFields = {
     tenantId: DEFAULT_TENANT_ID,
-    name: optionalEnv("ADMIN_NAME")?.trim() || "Reforix Admin",
+    name,
     email,
-    phone: optionalEnv("ADMIN_PHONE")?.trim() || "9999999999",
-    role: "admin",
+    phone,
+    role: "admin" as const,
     employeeId: null,
-    position: optionalEnv("ADMIN_POSITION")?.trim() || "Administrator",
-    department: optionalEnv("ADMIN_DEPARTMENT")?.trim() || "Operations",
+    position,
+    department,
     salary: 0,
     profilePhotoUrl: null,
     hashedPassword,
-    status: "active",
-    createdAt: now,
+    status: "active" as const,
     updatedAt: now,
-  });
+  };
+
+  const existingByIdentity = (await findUserByEmail(email)) ?? (await findUserByPhone(phone, DEFAULT_TENANT_ID));
+  if (existingByIdentity) {
+    await db.update(usersTable).set(adminFields).where(eq(usersTable.id, existingByIdentity.id));
+    return;
+  }
+
+  try {
+    await db.insert(usersTable).values({
+      ...adminFields,
+      createdAt: now,
+    });
+  } catch (error) {
+    if (!isUniqueViolation(error)) {
+      throw error;
+    }
+
+    const fallbackExisting = (await findUserByEmail(email)) ?? (await findUserByPhone(phone, DEFAULT_TENANT_ID));
+    if (fallbackExisting) {
+      await db.update(usersTable).set(adminFields).where(eq(usersTable.id, fallbackExisting.id));
+      return;
+    }
+
+    throw error;
+  }
 }
 
 export function getAccessTokenTtl() {
