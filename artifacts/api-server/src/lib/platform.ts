@@ -11,7 +11,9 @@ import {
 } from "@workspace/db/schema";
 import { hashPassword, generateTemporaryPassword } from "./security";
 import { PLATFORM_TENANT_ID, ensurePlatformTenant } from "./tenants";
-import { isProduction, optionalEnv } from "./env";
+import { getAppUrl, getSmtpConfig, isProduction, optionalEnv } from "./env";
+import { sendMail } from "./mailer";
+import { tenantOwnerEmailTemplate } from "./email-templates";
 import { logger } from "./logger";
 
 export type PlatformEventInput = {
@@ -2415,6 +2417,26 @@ export async function createTenantWithOwner(input: {
     }
 
     throw error;
+  }
+
+  const onboardingEmailSent = Boolean(getSmtpConfig());
+  if (onboardingEmailSent) {
+    const portalUrl = getAppUrl();
+    const onboarding = tenantOwnerEmailTemplate({
+      name: ownerRows[0]!.name,
+      loginEmail: ownerRows[0]!.email,
+      temporaryPassword,
+      portalUrl,
+    });
+
+    void sendMail({
+      to: ownerRows[0]!.email,
+      subject: onboarding.subject,
+      text: onboarding.text,
+      html: onboarding.html,
+    }).catch((error) => {
+      logger.warn({ err: error, tenantId, ownerEmail: ownerRows[0]!.email }, "Failed to send tenant onboarding email");
+    });
   }
 
   return {

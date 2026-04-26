@@ -3,16 +3,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import {
   Ban,
-  Building2,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   ClipboardCopy,
-  Copy,
   Plus,
   Search,
   Shield,
-  Sparkles,
   Users,
 } from "lucide-react";
 import { PlatformShell } from "@/layouts/platform-shell";
@@ -21,6 +18,7 @@ import { MetricCard } from "@/components/app/metric-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api";
@@ -69,9 +67,9 @@ function getTenantCreateErrorMessage(error: unknown) {
 
 function TenantStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-border/50 bg-card px-3 py-2">
+    <div className="flex items-center justify-between rounded-2xl border border-border/50 bg-card px-3 py-2">
       <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">{label}</p>
-      <p className="mt-1 text-sm font-medium text-foreground">{value}</p>
+      <p className="text-sm font-medium text-foreground">{value}</p>
     </div>
   );
 }
@@ -86,6 +84,9 @@ export default function PlatformTenantsPage() {
     temporaryPassword: string | null;
     passwordWasGenerated: boolean;
   } | null>(null);
+  const [disableTarget, setDisableTarget] = useState<{ id: string; name: string; slug: string } | null>(null);
+  const [disablePassword, setDisablePassword] = useState("");
+  const [disablePasswordError, setDisablePasswordError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<TenantStatusFilter>("all");
   const [activeOpen, setActiveOpen] = useState(true);
@@ -150,13 +151,25 @@ export default function PlatformTenantsPage() {
   });
 
   const toggleMutation = useMutation({
-    mutationFn: ({ id, status }: { id: string; status: "active" | "inactive" }) => api.updatePlatformTenantStatus(id, status),
+    mutationFn: ({
+      id,
+      status,
+      confirmationPassword,
+    }: {
+      id: string;
+      status: "active" | "inactive";
+      confirmationPassword?: string;
+    }) => api.updatePlatformTenantStatus({ tenantId: id, status, confirmationPassword }),
     onSuccess: async () => {
+      setDisableTarget(null);
+      setDisablePassword("");
+      setDisablePasswordError(null);
       toast({ title: "Tenant updated" });
       await queryClient.invalidateQueries({ queryKey: ["platform-tenants"] });
       await queryClient.invalidateQueries({ queryKey: ["platform-overview"] });
     },
     onError: (error) => {
+      setDisablePasswordError(error instanceof Error ? error.message : "Please try again.");
       toast({
         title: "Could not update tenant",
         description: error instanceof Error ? error.message : "Please try again.",
@@ -181,22 +194,22 @@ export default function PlatformTenantsPage() {
           <MetricCard label="Owner Accounts" value={`${ownerAccounts}`} icon={<Users className="h-5 w-5" />} />
         </div>
 
-        <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
+        <div className="space-y-6">
           <Card className="border-border/50 bg-card">
             <CardHeader className="space-y-3">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <CardTitle className="text-2xl font-semibold tracking-tight">Create tenant</CardTitle>
-                  <p className="mt-1 text-sm text-muted-foreground">Create the company, bootstrap the owner, and hand over a ready workspace.</p>
-                </div>
-                <div className="rounded-2xl border border-border/50 bg-muted/30 px-3 py-2 text-right">
-                  <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Platform</p>
-                  <p className="mt-1 text-sm font-medium text-foreground">Multi-tenant ready</p>
+              <div className="space-y-2">
+                <CardTitle className="text-2xl font-semibold tracking-tight">Create tenant</CardTitle>
+                <p className="text-sm text-muted-foreground">Create the company, bootstrap the owner, and hand over a ready workspace.</p>
+                <div className="inline-flex w-fit rounded-2xl border border-border/50 bg-muted/30 px-3 py-2 text-left">
+                  <div>
+                    <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Platform</p>
+                    <p className="mt-1 text-sm font-medium text-foreground">Multi-tenant ready</p>
+                  </div>
                 </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-4">
                 <div className="space-y-2">
                   <Label htmlFor="tenant-name">Tenant name</Label>
                   <Input id="tenant-name" value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder="Acme Studio" />
@@ -206,9 +219,6 @@ export default function PlatformTenantsPage() {
                   <Input id="tenant-slug" value={form.slug} onChange={(event) => setForm((current) => ({ ...current, slug: slugify(event.target.value) }))} placeholder="acme-studio" />
                   <p className="text-xs text-muted-foreground">Preview: {slugPreview || "tenant-slug"}</p>
                 </div>
-              </div>
-
-              <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="owner-name">Owner name</Label>
                   <Input id="owner-name" value={form.ownerName} onChange={(event) => setForm((current) => ({ ...current, ownerName: event.target.value }))} placeholder="Owner name" />
@@ -217,9 +227,6 @@ export default function PlatformTenantsPage() {
                   <Label htmlFor="owner-email">Owner email</Label>
                   <Input id="owner-email" type="email" value={form.ownerEmail} onChange={(event) => setForm((current) => ({ ...current, ownerEmail: event.target.value }))} placeholder="owner@company.com" />
                 </div>
-              </div>
-
-              <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="owner-phone">Owner phone</Label>
                   <Input id="owner-phone" value={form.ownerPhone} onChange={(event) => setForm((current) => ({ ...current, ownerPhone: event.target.value }))} placeholder="9999999999" />
@@ -234,9 +241,6 @@ export default function PlatformTenantsPage() {
                     placeholder="Optional, auto-generate if empty"
                   />
                 </div>
-              </div>
-
-              <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="owner-position">Owner position</Label>
                   <Input id="owner-position" value={form.ownerPosition} onChange={(event) => setForm((current) => ({ ...current, ownerPosition: event.target.value }))} placeholder="Administrator" />
@@ -247,9 +251,9 @@ export default function PlatformTenantsPage() {
                 </div>
               </div>
 
-              <div className="flex flex-col gap-3 sm:flex-row">
+              <div className="space-y-3">
                 <Button
-                  className="min-w-40"
+                  className="w-full sm:w-auto"
                   disabled={createMutation.isPending || !canCreateTenant}
                   onClick={() =>
                     createMutation.mutate({
@@ -274,7 +278,7 @@ export default function PlatformTenantsPage() {
 
               {handoff ? (
                 <div className="rounded-3xl border border-border/50 bg-muted/20 p-4 text-sm text-foreground">
-                  <div className="flex items-start justify-between gap-3">
+                  <div className="space-y-3">
                     <div>
                       <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Handoff summary</p>
                       <p className="mt-2 text-sm text-foreground">{handoff.tenantName} is ready for {handoff.ownerEmail}.</p>
@@ -290,7 +294,7 @@ export default function PlatformTenantsPage() {
                     </div>
                     {handoff.temporaryPassword ? (
                       <button
-                        className="inline-flex items-center gap-2 rounded-xl border border-border/50 bg-background/60 px-3 py-2 text-xs font-medium text-foreground transition hover:bg-muted/40"
+                        className="inline-flex w-fit items-center gap-2 rounded-xl border border-border/50 bg-background/60 px-3 py-2 text-xs font-medium text-foreground transition hover:bg-muted/40"
                         onClick={async () => await navigator.clipboard.writeText(handoff.temporaryPassword ?? "")}
                       >
                         <ClipboardCopy className="h-3.5 w-3.5" />
@@ -303,67 +307,38 @@ export default function PlatformTenantsPage() {
             </CardContent>
           </Card>
 
-          <div className="space-y-6">
-            <Card className="border-border/50 bg-card">
-              <CardHeader>
-                <CardTitle className="text-2xl font-semibold tracking-tight">Launch checklist</CardTitle>
-                <p className="text-sm text-muted-foreground">A quiet reminder of the fields that matter before the tenant goes live.</p>
-              </CardHeader>
-              <CardContent className="grid gap-3">
-                {[
-                  "Confirm company name and slug.",
-                  "Create the owner/admin account.",
-                  "Hand over the temporary password.",
-                  "Suspend or restore the tenant only from this console.",
-                ].map((item, index) => (
-                  <div key={item} className="flex items-start gap-3 rounded-2xl border border-border/50 bg-muted/20 p-4">
-                    <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full border border-border/50 bg-background/60 text-xs font-semibold text-foreground">
-                      {index + 1}
-                    </div>
-                    <p className="text-sm text-muted-foreground">{item}</p>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
+          <Card className="border-border/50 bg-card">
+            <CardHeader className="space-y-3">
+              <div className="space-y-2">
+                <CardTitle className="text-2xl font-semibold tracking-tight">Registry filters</CardTitle>
+                <p className="text-sm text-muted-foreground">Search by tenant name or slug, then switch between active and inactive workspaces.</p>
+                <p className="text-sm text-foreground">
+                  Visible tenants <span className="font-medium">{filteredTenants.length}</span>
+                </p>
+              </div>
 
-            <Card className="border-border/50 bg-card">
-              <CardHeader className="space-y-3">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <CardTitle className="text-2xl font-semibold tracking-tight">Registry filters</CardTitle>
-                    <p className="mt-1 text-sm text-muted-foreground">Search by tenant name or slug, then switch between active and inactive workspaces.</p>
-                  </div>
-                  <div className="rounded-2xl border border-border/50 bg-muted/30 px-3 py-2 text-right">
-                    <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Visible tenants</p>
-                    <p className="mt-1 text-lg font-medium text-foreground">{filteredTenants.length}</p>
-                  </div>
+              <div className="space-y-3">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tenants" className="pl-9" />
                 </div>
-
-                <div className="grid gap-3 md:grid-cols-[1fr_auto]">
-                  <div className="relative">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                    <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tenants" className="pl-9" />
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {(["all", "active", "inactive"] as TenantStatusFilter[]).map((value) => (
-                      <Button
-                        key={value}
-                        size="sm"
-                        variant={statusFilter === value ? "default" : "outline"}
-                        className={statusFilter === value ? "" : "border-border/50 bg-card"}
-                        onClick={() => setStatusFilter(value)}
-                      >
-                        {value === "all" ? "All" : value === "active" ? "Active" : "Inactive"}
-                      </Button>
-                    ))}
-                  </div>
+                <div className="flex flex-wrap gap-2">
+                  {(["all", "active", "inactive"] as TenantStatusFilter[]).map((value) => (
+                    <Button
+                      key={value}
+                      size="sm"
+                      variant={statusFilter === value ? "default" : "outline"}
+                      className={statusFilter === value ? "" : "border-border/50 bg-card"}
+                      onClick={() => setStatusFilter(value)}
+                    >
+                      {value === "all" ? "All" : value === "active" ? "Active" : "Inactive"}
+                    </Button>
+                  ))}
                 </div>
-              </CardHeader>
-            </Card>
-          </div>
-        </div>
+              </div>
+            </CardHeader>
+          </Card>
 
-        <div className="grid gap-6 xl:grid-cols-2">
           <TenantGroup
             title="Active tenants"
             description="Workspaces that are live and ready for daily operations."
@@ -371,7 +346,12 @@ export default function PlatformTenantsPage() {
             open={activeOpen}
             onToggle={() => setActiveOpen((current) => !current)}
             tenants={activeTenants}
-            onToggleStatus={(id, status) => toggleMutation.mutate({ id, status })}
+            onRequestDisable={(tenant) => {
+              setDisableTarget(tenant);
+              setDisablePassword("");
+              setDisablePasswordError(null);
+            }}
+            onToggleStatus={(id, status, confirmationPassword) => toggleMutation.mutate({ id, status, confirmationPassword })}
             processing={toggleMutation.isPending}
           />
 
@@ -382,10 +362,82 @@ export default function PlatformTenantsPage() {
             open={inactiveOpen}
             onToggle={() => setInactiveOpen((current) => !current)}
             tenants={inactiveTenants}
-            onToggleStatus={(id, status) => toggleMutation.mutate({ id, status })}
+            onRequestDisable={(tenant) => {
+              setDisableTarget(tenant);
+              setDisablePassword("");
+              setDisablePasswordError(null);
+            }}
+            onToggleStatus={(id, status, confirmationPassword) => toggleMutation.mutate({ id, status, confirmationPassword })}
             processing={toggleMutation.isPending}
           />
         </div>
+
+        <Dialog
+          open={Boolean(disableTarget)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setDisableTarget(null);
+              setDisablePassword("");
+              setDisablePasswordError(null);
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Confirm tenant disable</DialogTitle>
+              <DialogDescription>
+                Enter the platform super admin password to disable {disableTarget?.name ?? "this tenant"}. This protects against accidental suspension.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-2">
+              <Label htmlFor="disable-password">Super admin password</Label>
+              <Input
+                id="disable-password"
+                type="password"
+                value={disablePassword}
+                onChange={(event) => {
+                  setDisablePassword(event.target.value);
+                  if (disablePasswordError) {
+                    setDisablePasswordError(null);
+                  }
+                }}
+                placeholder="Enter password to continue"
+                autoComplete="current-password"
+              />
+              {disablePasswordError ? <p className="text-sm text-destructive">{disablePasswordError}</p> : null}
+            </div>
+
+            <DialogFooter className="gap-2 sm:gap-0">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setDisableTarget(null);
+                  setDisablePassword("");
+                  setDisablePasswordError(null);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={toggleMutation.isPending || !disablePassword.trim()}
+                onClick={() => {
+                  if (!disableTarget) {
+                    return;
+                  }
+                  toggleMutation.mutate({
+                    id: disableTarget.id,
+                    status: "inactive",
+                    confirmationPassword: disablePassword,
+                  });
+                }}
+              >
+                {toggleMutation.isPending ? "Disabling..." : "Disable tenant"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </PlatformShell>
   );
@@ -398,6 +450,7 @@ function TenantGroup({
   open,
   onToggle,
   tenants,
+  onRequestDisable,
   onToggleStatus,
   processing,
 }: {
@@ -421,23 +474,22 @@ function TenantGroup({
     lastActivityAt: string;
     isPlatformTenant?: boolean;
   }>;
-  onToggleStatus: (tenantId: string, status: "active" | "inactive") => void;
+  onRequestDisable: (tenant: { id: string; name: string; slug: string }) => void;
+  onToggleStatus: (tenantId: string, status: "active" | "inactive", confirmationPassword?: string) => void;
   processing: boolean;
 }) {
   return (
     <Card className="border-border/50 bg-card">
       <CardHeader className="space-y-4">
-        <button type="button" onClick={onToggle} className="flex w-full items-start justify-between gap-4 text-left">
-          <div>
+        <button type="button" onClick={onToggle} className="flex w-full items-center justify-between gap-4 text-left">
+          <div className="space-y-1">
             <CardTitle className="text-2xl font-semibold tracking-tight">{title}</CardTitle>
-            <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+            <p className="text-sm text-muted-foreground">{description}</p>
+            <p className="text-sm text-foreground">
+              {count} {count === 1 ? "tenant" : "tenants"}
+            </p>
           </div>
-          <div className="flex items-center gap-3">
-            <Badge variant="outline" className="border-border/50 bg-muted/20 text-muted-foreground">
-              {count}
-            </Badge>
-            {open ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-          </div>
+          {open ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
         </button>
       </CardHeader>
 
@@ -446,8 +498,8 @@ function TenantGroup({
           {tenants.length ? (
             tenants.map((tenant) => (
               <div key={tenant.id} className="rounded-3xl border border-border/50 bg-muted/20 p-4">
-                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                  <div className="space-y-3">
+                <div className="space-y-4">
+                  <div className="space-y-2">
                     <div className="flex flex-wrap items-center gap-2">
                       <h3 className="text-base font-semibold text-foreground">{tenant.name}</h3>
                       <Badge
@@ -476,26 +528,26 @@ function TenantGroup({
                         Updated {format(new Date(tenant.updatedAt), "dd MMM yyyy")}
                       </span>
                     </div>
-
-                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                      <TenantStat label="Users" value={`${tenant.userCount}`} />
-                      <TenantStat label="Admins" value={`${tenant.adminCount}`} />
-                      <TenantStat label="Employees" value={`${tenant.employeeCount}`} />
-                      <TenantStat label="Clients" value={`${tenant.clientCount}`} />
-                    </div>
-
-                    <p className="text-sm text-muted-foreground">
-                      Last activity {tenant.lastActivityAt ? summarizeDate(tenant.lastActivityAt) : "No activity recorded yet"}.
-                    </p>
                   </div>
 
-                  <div className="flex items-center gap-3 lg:flex-col lg:items-end">
-                    <div className="rounded-2xl border border-border/50 bg-background/60 px-3 py-2 text-right">
+                  <div className="space-y-2">
+                    <TenantStat label="Users" value={`${tenant.userCount}`} />
+                    <TenantStat label="Admins" value={`${tenant.adminCount}`} />
+                    <TenantStat label="Employees" value={`${tenant.employeeCount}`} />
+                    <TenantStat label="Clients" value={`${tenant.clientCount}`} />
+                  </div>
+
+                  <p className="text-sm text-muted-foreground">
+                    Last activity {tenant.lastActivityAt ? summarizeDate(tenant.lastActivityAt) : "No activity recorded yet"}.
+                  </p>
+
+                  <div className="space-y-3">
+                    <div className="rounded-2xl border border-border/50 bg-background/60 px-3 py-2 text-left">
                       <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">Owner accounts</p>
                       <p className="mt-1 text-lg font-medium text-foreground">{tenant.adminCount}</p>
                     </div>
                     {tenant.isPlatformTenant ? (
-                      <span className="rounded-xl border border-border/50 bg-muted/30 px-3 py-2 text-xs font-medium text-foreground">
+                      <span className="inline-flex w-fit rounded-xl border border-border/50 bg-muted/30 px-3 py-2 text-xs font-medium text-foreground">
                         Protected workspace
                       </span>
                     ) : (
@@ -503,12 +555,18 @@ function TenantGroup({
                         variant="outline"
                         size="sm"
                         className={cn(
-                          "border-border/50 bg-card",
+                          "w-fit border-border/50 bg-card",
                           tenant.status === "active"
                             ? "text-rose-200 hover:border-rose-400/20 hover:bg-rose-400/10 hover:text-rose-100"
                             : "text-emerald-200 hover:border-emerald-400/20 hover:bg-emerald-400/10 hover:text-emerald-100",
                         )}
-                        onClick={() => onToggleStatus(tenant.id, tenant.status === "active" ? "inactive" : "active")}
+                        onClick={() => {
+                          if (tenant.status === "active") {
+                            onRequestDisable({ id: tenant.id, name: tenant.name, slug: tenant.slug });
+                            return;
+                          }
+                          onToggleStatus(tenant.id, "active");
+                        }}
                         disabled={processing}
                       >
                         {tenant.status === "active" ? "Disable" : "Enable"}

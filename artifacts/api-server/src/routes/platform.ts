@@ -1,5 +1,6 @@
 import { Router, type IRouter, type NextFunction, type Request, type Response } from "express";
 import { z } from "zod";
+import { findUserById } from "../lib/auth-service";
 import { requireAuth, requirePlatformRole } from "../middlewares/auth";
 import {
   acknowledgePlatformEvent,
@@ -21,6 +22,7 @@ import {
   runPlatformRetentionPrune,
   setTenantStatus,
 } from "../lib/platform";
+import { verifyPassword } from "../lib/security";
 
 const router: IRouter = Router();
 
@@ -42,6 +44,7 @@ const createTenantSchema = z.object({
 
 const tenantStatusSchema = z.object({
   status: z.enum(["active", "inactive"]),
+  confirmationPassword: z.string().trim().min(1).optional(),
 });
 
 const monitoringQuerySchema = z.object({
@@ -160,13 +163,39 @@ router.post("/tenants", async (request, response) => {
 });
 
 router.patch("/tenants/:id/status", async (request, response) => {
-  const parsed = tenantStatusSchema.safeParse(request.body);
+  const parsed = tenantStatusSchema.safeParse(request.body ?? {});
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid tenant status payload" });
     return;
   }
 
   const tenantId = request.params.id.trim();
+  if (parsed.data.status === "inactive") {
+    const actor = request.auth?.user;
+    if (!actor) {
+      response.status(401).json({ message: "Unauthorized" });
+      return;
+    }
+
+    const confirmationPassword = parsed.data.confirmationPassword?.trim();
+    if (!confirmationPassword) {
+      response.status(400).json({ message: "Enter the super admin password to disable a tenant" });
+      return;
+    }
+
+    const currentUser = await findUserById(actor.id, actor.tenantId);
+    if (!currentUser) {
+      response.status(403).json({ message: "Super admin account not found" });
+      return;
+    }
+
+    const validPassword = await verifyPassword(confirmationPassword, currentUser.hashedPassword);
+    if (!validPassword) {
+      response.status(403).json({ message: "Invalid super admin password" });
+      return;
+    }
+  }
+
   const tenant = await setTenantStatus(tenantId, parsed.data.status);
   if (!tenant) {
     response.status(404).json({ message: "Tenant not found" });

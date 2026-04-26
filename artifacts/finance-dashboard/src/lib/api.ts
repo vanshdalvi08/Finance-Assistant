@@ -1780,8 +1780,21 @@ export const api = {
       passwordWasGenerated: boolean;
     }>("/tenants", input),
 
-  updatePlatformTenantStatus: async (tenantId: string, status: "active" | "inactive") =>
-    (await platformPost<{ tenant: PlatformTenantSummary }>(`/tenants/${tenantId}/status`, { status }, "PATCH")).tenant,
+  updatePlatformTenantStatus: async (input: {
+    tenantId: string;
+    status: "active" | "inactive";
+    confirmationPassword?: string;
+  }) =>
+    (
+      await platformPost<{ tenant: PlatformTenantSummary }>(
+        `/tenants/${input.tenantId}/status`,
+        {
+          status: input.status,
+          confirmationPassword: input.confirmationPassword,
+        },
+        "PATCH",
+      )
+    ).tenant,
 
   getPlatformMonitoring: async (limit?: number) => {
     const path = withQuery("/monitoring", { limit: limit ? String(limit) : undefined });

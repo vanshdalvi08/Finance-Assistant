@@ -110,6 +110,43 @@ export function clientPortalEmailTemplate(input: {
   };
 }
 
+export function tenantOwnerEmailTemplate(input: {
+  name: string;
+  loginEmail: string;
+  temporaryPassword: string;
+  portalUrl: string;
+}): { subject: string; text: string; html: string } {
+  const text = [
+    `Hello ${input.name},`,
+    "",
+    "Your Reforix Payroll tenant admin account has been created.",
+    `Login email: ${input.loginEmail}`,
+    `Temporary password: ${input.temporaryPassword}`,
+    `Portal: ${input.portalUrl}`,
+    "",
+    "Please sign in and change your password when you first access the dashboard.",
+  ].join("\n");
+
+  const html = baseLayout(
+    "Your Reforix Payroll tenant is ready",
+    `
+      <p style="font-size:15px;line-height:1.75;color:#cbd5e1;margin:0 0 24px;">Hello ${escapeHtml(input.name)}, your tenant admin account has been created.</p>
+      <div style="background:#0b1220;border:1px solid #243244;border-radius:16px;padding:18px 20px;margin-bottom:20px;">
+        <p style="margin:0 0 8px;color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:.12em;">Login details</p>
+        <p style="margin:0;color:#e2e8f0;font-size:15px;line-height:1.8;">Email: <strong>${escapeHtml(input.loginEmail)}</strong><br/>Temporary password: <strong>${escapeHtml(input.temporaryPassword)}</strong></p>
+      </div>
+      <a href="${escapeHtml(input.portalUrl)}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 18px;border-radius:12px;font-weight:700;">Go to Dashboard</a>
+      <p style="font-size:13px;line-height:1.7;color:#94a3b8;margin:20px 0 0;">Please sign in and change your password when you first access the dashboard.</p>
+    `,
+  );
+
+  return {
+    subject: "Your Reforix Payroll tenant is ready",
+    text,
+    html,
+  };
+}
+
 export function passwordResetEmailTemplate(input: {
   name: string;
   resetUrl: string;
