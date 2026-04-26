@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import sidebarLogo from "@/assets/SideBar Logo.png";
+import sidebarLogo from "@/assets/sidebar-brandmark-rx.png";
 
 export function AppLogo({ compact = false }: { compact?: boolean }) {
   return (
@@ -11,10 +11,10 @@ export function AppLogo({ compact = false }: { compact?: boolean }) {
       />
       {!compact ? (
         <div className="min-w-0 leading-tight">
-          <div className="truncate text-[1.02rem] font-semibold tracking-[0.1em] text-sidebar-foreground">
+          <div className="truncate text-[1.05rem] font-semibold tracking-[0.08em] text-sidebar-foreground">
             Reforix
           </div>
-          <div className="mt-0.5 truncate text-[0.86rem] font-medium tracking-[0.06em] text-sidebar-foreground/75">
+          <div className="mt-0.5 truncate text-[0.82rem] font-medium tracking-[0.06em] text-sidebar-foreground/72">
             Payroll
           </div>
         </div>
