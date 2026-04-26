@@ -483,6 +483,25 @@ export async function loginWithPassword(
   return issueSession(user);
 }
 
+export async function loginWithOAuthAccount(email: string): Promise<LoginResult> {
+  const user = await findUserByEmail(email);
+
+  if (!user) {
+    throw new Error("No account is linked to this email. Ask your administrator to create your account first.");
+  }
+
+  if (user.status !== "active") {
+    throw new Error("Your account is inactive");
+  }
+
+  const tenant = await getTenantById(user.tenantId);
+  if (!tenant || tenant.status !== "active") {
+    throw new Error("This workspace is inactive");
+  }
+
+  return issueSession(user);
+}
+
 export async function refreshLogin(refreshToken: string): Promise<LoginResult> {
   const payload = verifyRefreshToken(refreshToken);
   if (payload.typ !== "refresh") {

@@ -17,6 +17,15 @@ function getApiBaseUrl() {
   return import.meta.env.PROD ? DEFAULT_PROD_API_BASE_URL : DEFAULT_DEV_API_BASE_URL;
 }
 
+export type OAuthProvider = "google" | "microsoft";
+
+export function buildOAuthStartUrl(provider: OAuthProvider, returnTo = "/") {
+  const url = new URL(getApiBaseUrl());
+  url.pathname = `${url.pathname.replace(/\/$/, "")}/auth/oauth/${provider}/start`;
+  url.searchParams.set("returnTo", returnTo);
+  return url.toString();
+}
+
 function toErrorMessage(error: unknown, fallback: string) {
   if (axios.isAxiosError(error)) {
     const message = error.response?.data?.message;

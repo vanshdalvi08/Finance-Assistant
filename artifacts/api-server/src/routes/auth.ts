@@ -2,6 +2,7 @@ import { Router, type IRouter, type Response } from "express";
 import { z } from "zod";
 import {
   loginWithPassword,
+  loginWithOAuthAccount,
   logoutAllSessions,
   logoutRefreshToken,
   refreshLogin,
@@ -23,6 +24,7 @@ import { rateLimit, rateLimitKeyByRemoteAddress, rateLimitKeyByRemoteAddressAndF
 import { recordPlatformEventSafe } from "../lib/platform";
 import { generateRandomToken } from "../lib/security";
 import { requireCsrfToken, requireSameOriginAuthMutation } from "../middlewares/csrf";
+import { buildOAuthStartUrl, exchangeOAuthCode, getOAuthRedirectTarget, parseOAuthState, type OAuthProvider } from "../lib/oauth";
 
 const router: IRouter = Router();
 
@@ -118,6 +120,11 @@ const updateProfileSchema = z.object({
   profilePhotoUrl: z.string().trim().max(2_500_000).nullable().optional(),
 });
 
+const oauthProviderSchema = z.enum(["google", "microsoft"]);
+const oauthStartSchema = z.object({
+  returnTo: z.string().trim().optional(),
+});
+
 function issueCsrfToken(response: Response) {
   const csrfToken = generateRandomToken(24);
   response.cookie(CSRF_COOKIE_NAME, csrfToken, csrfCookieOptions());
@@ -129,6 +136,79 @@ router.use(requireSameOriginAuthMutation);
 router.get("/csrf", (_request, response) => {
   const csrfToken = issueCsrfToken(response);
   response.json({ csrfToken });
+});
+
+router.get("/oauth/:provider/start", async (request, response) => {
+  const providerResult = oauthProviderSchema.safeParse(request.params.provider);
+  if (!providerResult.success) {
+    response.status(400).json({ message: "Invalid OAuth provider" });
+    return;
+  }
+
+  const parsed = oauthStartSchema.safeParse(request.query);
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid OAuth start payload" });
+    return;
+  }
+
+  try {
+    const startUrl = buildOAuthStartUrl(providerResult.data, parsed.data.returnTo ?? "/");
+    response.redirect(302, startUrl);
+  } catch (error) {
+    await recordPlatformEventSafe({
+      severity: "warning",
+      category: "auth",
+      title: "OAuth start rejected",
+      message: error instanceof Error ? error.message : "OAuth start failed",
+      path: `/api/auth/oauth/${providerResult.data}/start`,
+      method: "GET",
+      statusCode: 503,
+      metadata: {
+        provider: providerResult.data,
+      },
+    });
+    response.status(503).json({
+      message: `${providerResult.data === "google" ? "Google" : "Microsoft"} sign-in is not configured yet.`,
+    });
+  }
+});
+
+router.get("/oauth/:provider/callback", async (request, response) => {
+  const providerResult = oauthProviderSchema.safeParse(request.params.provider);
+  if (!providerResult.success) {
+    response.status(400).json({ message: "Invalid OAuth provider" });
+    return;
+  }
+
+  const code = typeof request.query.code === "string" ? request.query.code : "";
+  const state = typeof request.query.state === "string" ? request.query.state : "";
+  if (!code || !state) {
+    response.status(400).json({ message: "Missing OAuth callback data" });
+    return;
+  }
+
+  try {
+    const statePayload = parseOAuthState(state, providerResult.data);
+    const profile = await exchangeOAuthCode(providerResult.data, code);
+    const session = await loginWithOAuthAccount(profile.email);
+    response.cookie(REFRESH_COOKIE_NAME, session.refreshToken, refreshCookieOptions());
+    issueCsrfToken(response);
+    response.redirect(302, getOAuthRedirectTarget(statePayload.redirectPath ?? "/"));
+  } catch (error) {
+    await recordPlatformEventSafe({
+      severity: "warning",
+      category: "auth",
+      title: "OAuth login rejected",
+      message: error instanceof Error ? error.message : "OAuth login failed",
+      path: `/api/auth/oauth/${providerResult.data}/callback`,
+      method: "GET",
+      statusCode: 401,
+      metadata: {
+        provider: providerResult.data,
+      },
+    });
+    response.redirect(302, getOAuthRedirectTarget("/"));
+  }
 });
 
 router.post("/login", loginLimiter, async (request, response) => {

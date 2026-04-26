@@ -5,9 +5,14 @@ import RigVector from "@/assets/images/login-rig.png";
 import RigVectorTwo from "@/assets/images/2 image.png";
 import RigVectorThree from "@/assets/images/3 image.png";
 import { useAuthStore } from "@/store/auth";
-import { verifyMfaChallenge } from "@/auth/auth-service";
+import { requestPasswordReset, verifyMfaChallenge } from "@/auth/auth-service";
+import { buildOAuthStartUrl } from "@/auth/http-client";
 import type { MfaChallenge } from "@/auth/types";
 import QRCode from "qrcode";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { useToast } from "@/hooks/use-toast";
 
 const heroVectors = [RigVector, RigVectorTwo, RigVectorThree];
 const heroVectorClasses = [
@@ -70,8 +75,14 @@ const LoginPage = () => {
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string | null>(null);
   const [selectedVectorIndex] = useState(getInitialVectorIndex);
   const [selectedCopyIndex] = useState(getInitialCopyIndex);
+  const [forgotPasswordOpen, setForgotPasswordOpen] = useState(false);
+  const [forgotPasswordEmail, setForgotPasswordEmail] = useState("");
+  const [forgotPasswordSubmitting, setForgotPasswordSubmitting] = useState(false);
+  const [forgotPasswordMessage, setForgotPasswordMessage] = useState<string | null>(null);
+  const [accessRequestOpen, setAccessRequestOpen] = useState(false);
   const login = useAuthStore((state) => state.login);
   const loginWithSession = useAuthStore((state) => state.loginWithSession);
+  const { toast } = useToast();
   const [, setLocation] = useLocation();
 
   useEffect(() => {
@@ -167,6 +178,33 @@ const LoginPage = () => {
     }
   }
 
+  async function handleForgotPasswordSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const targetEmail = forgotPasswordEmail.trim();
+    if (!targetEmail) {
+      setForgotPasswordMessage("Please enter your email address.");
+      return;
+    }
+
+    setForgotPasswordSubmitting(true);
+    setForgotPasswordMessage(null);
+
+    try {
+      await requestPasswordReset({ email: targetEmail });
+      toast({
+        title: "Reset email sent",
+        description: "If the account exists, you'll receive a reset link shortly.",
+      });
+      setForgotPasswordOpen(false);
+      setForgotPasswordEmail("");
+    } catch (error) {
+      setForgotPasswordMessage(error instanceof Error ? error.message : "Please try again.");
+    } finally {
+      setForgotPasswordSubmitting(false);
+    }
+  }
+
   return (
     <div className="flex min-h-screen w-full overflow-hidden bg-[#edf4fb] font-sans">
       <section className="relative hidden w-[60%] flex-col justify-between overflow-hidden bg-[#2a3441] pt-12 pl-12 lg:flex">
@@ -210,6 +248,7 @@ const LoginPage = () => {
                 <button
                   type="button"
                   className="ml-0.5 border-b border-[#10233f] font-bold leading-none text-[#10233f] hover:text-[#2563eb]"
+                  onClick={() => setAccessRequestOpen(true)}
                 >
                   Create now
                 </button>
@@ -238,8 +277,8 @@ const LoginPage = () => {
                     onChange={(event) => setEmail(event.target.value)}
                     autoComplete="username"
                     required
-                    className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-900 caret-slate-900 placeholder:text-slate-400 transition-colors focus:border-[#2563eb] focus:outline-none focus:ring-2 focus:ring-[#bfdbfe]"
-                    style={{ WebkitTextFillColor: "rgb(17 24 39)" }}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-700 caret-slate-900 placeholder:text-slate-400/70 transition-colors focus:border-[#2563eb] focus:outline-none focus:ring-2 focus:ring-[#bfdbfe]"
+                    style={{ WebkitTextFillColor: "rgb(55 65 81)" }}
                   />
                 </div>
 
@@ -256,8 +295,8 @@ const LoginPage = () => {
                       onChange={(event) => setPassword(event.target.value)}
                       autoComplete="current-password"
                       required
-                      className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 pr-12 text-sm tracking-widest text-slate-900 caret-slate-900 placeholder:text-slate-400 transition-colors focus:border-[#2563eb] focus:outline-none focus:ring-2 focus:ring-[#bfdbfe]"
-                      style={{ WebkitTextFillColor: "rgb(17 24 39)" }}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 pr-12 text-sm tracking-widest text-slate-700 caret-slate-900 placeholder:text-slate-400/70 transition-colors focus:border-[#2563eb] focus:outline-none focus:ring-2 focus:ring-[#bfdbfe]"
+                      style={{ WebkitTextFillColor: "rgb(55 65 81)" }}
                     />
                     <button
                       type="button"
@@ -325,8 +364,8 @@ const LoginPage = () => {
                     value={mfaCode}
                     onChange={(event) => setMfaCode(event.target.value)}
                     required
-                    className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-900 caret-slate-900 placeholder:text-slate-400 transition-colors focus:border-[#2563eb] focus:outline-none focus:ring-2 focus:ring-[#bfdbfe]"
-                    style={{ WebkitTextFillColor: "rgb(17 24 39)" }}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-700 caret-slate-900 placeholder:text-slate-400/70 transition-colors focus:border-[#2563eb] focus:outline-none focus:ring-2 focus:ring-[#bfdbfe]"
+                    style={{ WebkitTextFillColor: "rgb(55 65 81)" }}
                   />
                 </div>
 
@@ -354,17 +393,25 @@ const LoginPage = () => {
               </>
             )}
 
-            {!mfaChallenge ? (
-              <div className="flex items-center justify-between pb-2 pt-1">
-                <label className="flex cursor-pointer items-center text-[11px] text-slate-500">
-                  <input type="checkbox" className="mr-2 h-3 w-3 rounded border-slate-300 text-[#2563eb] focus:ring-[#2563eb]" />
-                  Remember me
-                </label>
-                <button type="button" className="text-[11px] font-medium text-[#10233f] hover:text-[#2563eb] hover:underline">
-                  Forgot Password?
-                </button>
-              </div>
-            ) : null}
+              {!mfaChallenge ? (
+                <div className="flex items-center justify-between pb-2 pt-1">
+                  <label className="flex cursor-pointer items-center text-[11px] text-slate-500">
+                    <input type="checkbox" className="mr-2 h-3 w-3 rounded border-slate-300 text-[#2563eb] focus:ring-[#2563eb]" />
+                    Remember me
+                  </label>
+                  <button
+                    type="button"
+                    className="text-[11px] font-medium text-[#10233f] hover:text-[#2563eb] hover:underline"
+                    onClick={() => {
+                      setForgotPasswordEmail(email.trim());
+                      setForgotPasswordMessage(null);
+                      setForgotPasswordOpen(true);
+                    }}
+                  >
+                    Forgot Password?
+                  </button>
+                </div>
+              ) : null}
 
             <button
               type="submit"
@@ -386,6 +433,9 @@ const LoginPage = () => {
                   <button
                     type="button"
                     className="flex w-full items-center justify-center gap-2 rounded-full border border-slate-200 bg-white py-2.5 transition-colors hover:border-slate-300 hover:bg-slate-50"
+                    onClick={() => {
+                      window.location.assign(buildOAuthStartUrl("google"));
+                    }}
                   >
                     <img
                       src="https://www.svgrepo.com/show/475656/google-color.svg"
@@ -398,13 +448,16 @@ const LoginPage = () => {
                   <button
                     type="button"
                     className="flex w-full items-center justify-center gap-2 rounded-full border border-slate-200 bg-white py-2.5 transition-colors hover:border-slate-300 hover:bg-slate-50"
+                    onClick={() => {
+                      window.location.assign(buildOAuthStartUrl("microsoft"));
+                    }}
                   >
-                    <img
-                      src="https://www.svgrepo.com/show/475647/facebook-color.svg"
-                      className="h-4 w-4"
-                      alt="Facebook"
-                    />
-                    <span className="text-[12px] font-bold text-slate-600">Continue with Facebook</span>
+                    <svg viewBox="0 0 24 24" className="h-4 w-4" aria-hidden="true">
+                      <rect x="3" y="4" width="18" height="16" rx="3" fill="#0F6CBD" />
+                      <path d="M6 8.5L12 12.25L18 8.5V14.75C18 15.44 17.44 16 16.75 16H7.25C6.56 16 6 15.44 6 14.75V8.5Z" fill="#fff" />
+                      <path d="M6.4 7.9L12 11.38L17.6 7.9" fill="none" stroke="#fff" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    <span className="text-[12px] font-bold text-slate-600">Continue with Outlook</span>
                   </button>
                 </div>
               </>
@@ -412,6 +465,81 @@ const LoginPage = () => {
           </form>
         </div>
       </section>
+
+      <Dialog
+        open={forgotPasswordOpen}
+        onOpenChange={(open) => {
+          setForgotPasswordOpen(open);
+          if (!open) {
+            setForgotPasswordSubmitting(false);
+            setForgotPasswordMessage(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Reset your password</DialogTitle>
+            <DialogDescription>
+              Enter the email address on your account and we&apos;ll send a reset link.
+            </DialogDescription>
+          </DialogHeader>
+
+          <form className="space-y-4" onSubmit={handleForgotPasswordSubmit}>
+            <div className="space-y-2">
+              <label htmlFor="forgot-password-email" className="text-sm font-medium text-foreground">
+                Email address
+              </label>
+              <Input
+                id="forgot-password-email"
+                type="email"
+                value={forgotPasswordEmail}
+                onChange={(event) => {
+                  setForgotPasswordEmail(event.target.value);
+                  if (forgotPasswordMessage) {
+                    setForgotPasswordMessage(null);
+                  }
+                }}
+                placeholder="you@example.com"
+                autoComplete="email"
+                autoFocus
+              />
+              {forgotPasswordMessage ? <p className="text-sm text-destructive">{forgotPasswordMessage}</p> : null}
+            </div>
+
+            <DialogFooter className="gap-2 sm:gap-0">
+              <Button type="button" variant="outline" onClick={() => setForgotPasswordOpen(false)} disabled={forgotPasswordSubmitting}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={forgotPasswordSubmitting}>
+                {forgotPasswordSubmitting ? "Sending..." : "Send reset link"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={accessRequestOpen}
+        onOpenChange={(open) => {
+          setAccessRequestOpen(open);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Access is managed by your admin</DialogTitle>
+            <DialogDescription>
+              Reforix Payroll works by invitation. If you need access, please ask your workspace admin or platform super
+              admin to create your account.
+            </DialogDescription>
+          </DialogHeader>
+
+          <DialogFooter>
+            <Button type="button" onClick={() => setAccessRequestOpen(false)}>
+              Got it
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
