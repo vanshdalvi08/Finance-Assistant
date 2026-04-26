@@ -30,7 +30,7 @@ import { useAuthStore } from "@/store/auth";
 import { useToast } from "@/hooks/use-toast";
 import { EmployeeAvatar } from "@/components/employee-avatar";
 import { api } from "@/lib/api";
-import sidebarLogo from "@/assets/SideBar Logo.png";
+import sidebarLogo from "@/assets/reforix-rx.png";
 
 type NavItem = {
   href: string;
@@ -331,14 +331,7 @@ export function Sidebar() {
       )}
     >
       <div className={cn("flex h-16 items-center border-b border-sidebar-border", sidebarCollapsed ? "justify-center px-2" : "justify-between px-4")}>
-        {!sidebarCollapsed ? (
-          <div className="flex min-w-0 items-center gap-3">
-            <img src={sidebarLogo} alt="Reforix Payroll" className="h-8 w-8 shrink-0 object-contain" />
-            <span className="block truncate font-bold tracking-tight text-sidebar-foreground">Reforix Payroll</span>
-          </div>
-        ) : (
-          <img src={sidebarLogo} alt="Reforix Payroll" className="h-8 w-8 object-contain" />
-        )}
+        <img src={sidebarLogo} alt="Reforix Payroll" className="h-10 w-10 object-contain" />
       </div>
 
       <div className={cn("flex-1 px-2 py-4", sidebarCollapsed ? "overflow-y-auto no-scrollbar" : "overflow-y-auto")}>
