@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { bootstrapSession, signIn, signOut } from "@/auth/auth-service";
-import { clearAccessToken, setAccessToken } from "@/auth/session";
+import { clearAccessToken, clearCsrfToken, setAccessToken, setCsrfToken } from "@/auth/session";
 import type { AuthSession, LoginCredentials, LoginResponse, UserRole } from "@/auth/types";
 
 const TAB_SESSION_USER_KEY = "yojak.auth.tab.user";
@@ -62,6 +62,7 @@ function clearSessionState(
   options?: { keepTabSessionUser?: boolean },
 ) {
   clearAccessToken();
+  clearCsrfToken();
   if (!options?.keepTabSessionUser) {
     clearTabSessionUserId();
   }
@@ -78,6 +79,9 @@ function clearSessionState(
 
 function applySession(set: (partial: Partial<AuthState>) => void, session: AuthSession) {
   setAccessToken(session.accessToken);
+  if (session.csrfToken) {
+    setCsrfToken(session.csrfToken);
+  }
   setTabSessionUserId(session.user.id);
   set({
     status: "authenticated",
@@ -111,6 +115,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     if (tabSessionUser && tabSessionUser !== session.user.id) {
       // Prevent silent identity/role switching in this tab.
       clearAccessToken();
+      clearCsrfToken();
       clearSessionState(set, true, { keepTabSessionUser: true });
       return;
     }

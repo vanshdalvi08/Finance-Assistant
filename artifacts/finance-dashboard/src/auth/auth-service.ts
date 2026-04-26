@@ -1,4 +1,4 @@
-import { clearAccessToken, setAccessToken } from "./session";
+import { clearAccessToken, clearCsrfToken, setAccessToken, setCsrfToken } from "./session";
 import { rawAuthRequest, refreshAccessToken, requestJson } from "./http-client";
 import type {
   AuthSession,
@@ -29,6 +29,9 @@ export async function signIn(credentials: LoginCredentials): Promise<LoginRespon
 
   if (!("mfaRequired" in session)) {
     setAccessToken(session.accessToken);
+    if (session.csrfToken) {
+      setCsrfToken(session.csrfToken);
+    }
   }
   return session;
 }
@@ -43,6 +46,9 @@ export async function verifyMfaChallenge(payload: {
     data: payload,
   });
   setAccessToken(session.accessToken);
+  if (session.csrfToken) {
+    setCsrfToken(session.csrfToken);
+  }
   return session;
 }
 
@@ -50,9 +56,13 @@ export async function bootstrapSession(): Promise<AuthSession | null> {
   try {
     const session = await refreshAccessToken();
     setAccessToken(session.accessToken);
+    if (session.csrfToken) {
+      setCsrfToken(session.csrfToken);
+    }
     return session;
   } catch {
     clearAccessToken();
+    clearCsrfToken();
     return null;
   }
 }
@@ -64,6 +74,7 @@ export async function signOut(): Promise<void> {
     // Session is cleared locally even if revocation fails.
   } finally {
     clearAccessToken();
+    clearCsrfToken();
   }
 }
 

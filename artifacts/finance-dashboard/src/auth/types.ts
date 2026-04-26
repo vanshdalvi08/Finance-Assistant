@@ -44,6 +44,7 @@ export interface LoginCredentials {
 export interface AuthSession {
   user: AuthUser;
   accessToken: string;
+  csrfToken?: string;
 }
 
 export interface MfaChallenge {

@@ -1,11 +1,17 @@
 import axios, { AxiosError, type AxiosRequestConfig, type InternalAxiosRequestConfig } from "axios";
-import { clearAccessToken, getAccessToken, setAccessToken } from "./session";
+import {
+  clearAccessToken,
+  clearCsrfToken,
+  getAccessToken,
+  getCsrfToken,
+  setAccessToken,
+  setCsrfToken,
+} from "./session";
 import type { AuthSession } from "./types";
 
 const DEFAULT_DEV_API_BASE_URL = "http://localhost:3001/api";
 const DEFAULT_PROD_API_BASE_URL = "https://finance-assistant-api-nmc7.onrender.com/api";
 const TAB_SESSION_USER_KEY = "yojak.auth.tab.user";
-const CSRF_COOKIE_NAME = "yojak_csrf_token";
 const CSRF_HEADER_NAME = "X-CSRF-Token";
 
 function getApiBaseUrl() {
@@ -86,29 +92,6 @@ function isMutatingMethod(method?: string) {
   return value === "POST" || value === "PUT" || value === "PATCH" || value === "DELETE";
 }
 
-function readCookie(name: string): string | null {
-  if (typeof document === "undefined") {
-    return null;
-  }
-
-  const prefix = `${name}=`;
-  const value = document.cookie
-    .split(";")
-    .map((part) => part.trim())
-    .find((part) => part.startsWith(prefix));
-
-  if (!value) {
-    return null;
-  }
-
-  const raw = value.slice(prefix.length);
-  try {
-    return decodeURIComponent(raw);
-  } catch {
-    return raw;
-  }
-}
-
 function shouldAttachCsrfHeader(config: AxiosRequestConfig) {
   const url = config.url ?? "";
   if (!isMutatingMethod(config.method)) {
@@ -123,14 +106,18 @@ function shouldAttachCsrfHeader(config: AxiosRequestConfig) {
 }
 
 async function ensureCsrfTokenCookie() {
-  if (readCookie(CSRF_COOKIE_NAME)) {
+  if (getCsrfToken()) {
     return;
   }
 
   if (!csrfBootstrapPromise) {
     csrfBootstrapPromise = authlessAxios
       .get<{ csrfToken: string }>("/auth/csrf")
-      .then(() => undefined)
+      .then((response) => {
+        if (response.data.csrfToken) {
+          setCsrfToken(response.data.csrfToken);
+        }
+      })
       .finally(() => {
         csrfBootstrapPromise = null;
       });
@@ -144,11 +131,11 @@ async function withCsrfHeader(config: InternalAxiosRequestConfig) {
     return config;
   }
 
-  if (!readCookie(CSRF_COOKIE_NAME)) {
+  if (!getCsrfToken()) {
     await ensureCsrfTokenCookie();
   }
 
-  const token = readCookie(CSRF_COOKIE_NAME);
+  const token = getCsrfToken();
   if (token) {
     config.headers.set(CSRF_HEADER_NAME, token);
   }
@@ -167,6 +154,9 @@ async function performRefresh(): Promise<AuthSession> {
           throw new Error("Session changed in another tab. Please sign in again.");
         }
         setAccessToken(response.data.accessToken);
+        if (response.data.csrfToken) {
+          setCsrfToken(response.data.csrfToken);
+        }
         return response.data;
       })
       .finally(() => {
@@ -208,6 +198,7 @@ authAxios.interceptors.response.use(
       return await authAxios.request(config);
     } catch {
       clearAccessToken();
+      clearCsrfToken();
       throw new Error("Your session expired. Please sign in again.");
     }
   },
@@ -218,6 +209,7 @@ export async function refreshAccessToken(): Promise<AuthSession> {
     return await performRefresh();
   } catch (error) {
     clearAccessToken();
+    clearCsrfToken();
     throw new Error(toErrorMessage(error, "Your session expired. Please sign in again."));
   }
 }
