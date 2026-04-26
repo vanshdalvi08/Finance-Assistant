@@ -403,6 +403,22 @@ function countLeaveDaysInYearByStatus(
   }, 0);
 }
 
+function enumerateDays(startDate: string, endDate: string) {
+  const start = new Date(`${normalizeDate(startDate).slice(0, 10)}T12:00:00.000Z`);
+  const end = new Date(`${normalizeDate(endDate).slice(0, 10)}T12:00:00.000Z`);
+  if (end.getTime() < start.getTime()) {
+    return [] as string[];
+  }
+
+  const days: string[] = [];
+  const cursor = new Date(start);
+  while (cursor.getTime() <= end.getTime()) {
+    days.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return days;
+}
+
 function buildMonthCalendar(
   store: BusinessStore,
   employeeId: string,
