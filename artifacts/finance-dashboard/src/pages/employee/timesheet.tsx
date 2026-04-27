@@ -803,7 +803,7 @@ export default function EmployeeTimesheetPage() {
                                       {projectTaskOptions.map((task) => (
                                         <option key={task.id} value={task.id}>
                                           {task.name}
-                                          {task.description ? ` â€” ${task.description}` : ""}
+                                          {task.description ? ` - ${task.description}` : ""}
                                         </option>
                                       ))}
                                       <option value="__custom__">Custom task</option>
@@ -1080,7 +1080,7 @@ export default function EmployeeTimesheetPage() {
               {summary.leaveDays > 0 || summary.holidayDays > 0 ? (
                 <div className="rounded-xl border border-border/60 bg-background/55 px-3 py-3 text-sm text-muted-foreground">
                   {summary.leaveDays > 0 ? `${summary.leaveDays} leave day${summary.leaveDays > 1 ? "s" : ""}` : null}
-                  {summary.leaveDays > 0 && summary.holidayDays > 0 ? " Â· " : null}
+                  {summary.leaveDays > 0 && summary.holidayDays > 0 ? " Ã‚Â· " : null}
                   {summary.holidayDays > 0 ? `${summary.holidayDays} holiday${summary.holidayDays > 1 ? "s" : ""}` : null} in this week.
                 </div>
               ) : null}
