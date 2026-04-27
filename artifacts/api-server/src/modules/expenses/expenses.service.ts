@@ -14,12 +14,12 @@ import {
   pushAuditEvent,
   readStore,
   updateStore,
-} from "../business-store";
-import { assertEmployeeSelfAccess, assertTenantAccess } from "../policies";
-import { hashSha256 } from "../security";
-import { assertWorkflowTransition } from "../workflow-state";
-import { DEFAULT_TENANT_ID } from "../tenants";
-import { assertActorRoleAccess } from "../policies";
+} from "../../lib/business-store";
+import { assertEmployeeSelfAccess, assertTenantAccess } from "../../lib/policies";
+import { hashSha256 } from "../../lib/security";
+import { assertWorkflowTransition } from "../../lib/workflow-state";
+import { DEFAULT_TENANT_ID } from "../../lib/tenants";
+import { assertActorRoleAccess } from "../../lib/policies";
 
 export type ExpenseActor = {
   userId?: string;

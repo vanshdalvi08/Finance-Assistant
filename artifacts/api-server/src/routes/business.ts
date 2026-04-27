@@ -55,7 +55,7 @@ import { DEFAULT_TENANT_ID } from "../lib/tenants";
 import { resolveExpenseAttachmentUrl } from "../lib/storage";
 import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../lib/notifications";
 import fundsRouter from "./business/funds";
-import expensesRouter from "./business/expenses";
+import expensesRouter from "../modules/expenses/expenses.routes";
 import salaryRouter from "./business/salary";
 import projectsRouter from "./business/projects";
 import purchaseOrdersRouter from "./business/purchase-orders";
