@@ -748,7 +748,6 @@ export default function EmployeeTimesheetPage() {
                       const selectedTask = line.projectTaskId
                         ? projectTaskOptions.find((task) => task.id === line.projectTaskId)
                         : projectTaskOptions.find((task) => normalizeLookup(task.name) === normalizeLookup(line.task));
-                      const selectedTaskDescription = selectedTask?.description?.trim();
                       const selectedTaskSubTasks = selectedTask?.subTasks ?? [];
                       const selectedTaskBaseRemaining =
                         typeof selectedTask?.remainingHours === "number"
@@ -823,26 +822,10 @@ export default function EmployeeTimesheetPage() {
                                         <option key={task.id} value={task.id}>
                                           {task.name}
                                           {task.description ? ` — ${task.description}` : ""}
-                                          {task.subTasks?.length ? ` · ${task.subTasks.length} sub task${task.subTasks.length === 1 ? "" : "s"}` : ""}
-                                          {typeof task.remainingHours === "number"
-                                            ? ` (${formatHourValue(task.remainingHours)} remaining)`
-                                            : positiveTaskLimit(task)
-                                              ? ` (${positiveTaskLimit(task)}h max${task.durationDays ? ` / ${task.durationDays}d` : ""})`
-                                              : ""}
                                         </option>
                                       ))}
                                       <option value="__custom__">Custom task</option>
                                     </select>
-                                    {selectedTaskDescription ? (
-                                      <div className="rounded-xl border border-border/55 bg-secondary/20 px-3 py-2 text-[11px] leading-5 text-muted-foreground">
-                                        <span className="uppercase tracking-[0.16em] text-[10px] text-muted-foreground">
-                                          Short description
-                                        </span>
-                                        <p className="mt-1 text-sm leading-5 text-foreground/85">
-                                          {selectedTaskDescription}
-                                        </p>
-                                      </div>
-                                    ) : null}
                                     {showTaskInput ? (
                                       <Input
                                         value={line.task}
