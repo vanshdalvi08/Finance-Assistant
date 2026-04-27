@@ -64,11 +64,19 @@ function cloneEmptyTask(): TaskDraft {
 
 function formatCapacityHours(value: number | undefined) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    return "Ã¢â‚¬â€";
+    return "—";
   }
 
   return `${Number(value.toFixed(1)).toString()}h`;
 }
+
+function lineTotal(line: TimesheetRecord["lines"][number]) {
+  return ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].reduce(
+    (sum, day) => sum + Number(line.hours[day] ?? 0),
+    0,
+  );
+}
+
 
 function toForm(project?: ProjectRecord | null): ProjectForm {
   if (!project) {
