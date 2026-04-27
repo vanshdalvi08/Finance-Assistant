@@ -2138,7 +2138,7 @@ router.get("/projects/summary", requireTenantRole("admin", "employee"), async (_
     if (!employeeMap.has(entry.employeeId)) {
       continue;
     }
-    if (entry.status !== "submitted" && entry.status !== "approved") {
+    if (entry.status === "rejected") {
       continue;
     }
 

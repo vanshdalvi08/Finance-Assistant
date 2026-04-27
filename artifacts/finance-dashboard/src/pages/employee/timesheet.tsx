@@ -438,25 +438,6 @@ export default function EmployeeTimesheetPage() {
     updateLine(lineId, (line) => ({ ...line, subTask: value }));
   }
 
-  function getPersistedDraftTaskHours(taskId: string, excludeEntryId?: string) {
-    return timesheets.reduce((sum, entry) => {
-      if (entry.status !== "draft" || entry.id === excludeEntryId) {
-        return sum;
-      }
-
-      return (
-        sum +
-        entry.lines.reduce((lineSum, line) => {
-          if (line.projectTaskId !== taskId) {
-            return lineSum;
-          }
-
-          return lineSum + lineTotal(line);
-        }, 0)
-      );
-    }, 0);
-  }
-
   function getCurrentDraftTaskHours(taskId: string, excludeLineId?: string) {
     if (!draft) {
       return 0;
@@ -477,15 +458,22 @@ export default function EmployeeTimesheetPage() {
     }
 
     const maxHours = Number(task.maxHours ?? 0);
+    const persistedCurrentEntryTaskHours =
+      current?.lines.reduce((sum, line) => {
+        if (line.projectTaskId !== task.id) {
+          return sum;
+        }
+
+        return sum + lineTotal(line);
+      }, 0) ?? 0;
     const summaryUsed =
       typeof task.usedHours === "number"
         ? task.usedHours
         : typeof task.remainingHours === "number"
           ? Math.max(0, maxHours - task.remainingHours)
           : 0;
-    const persistedDraftHours = getPersistedDraftTaskHours(task.id, draft?.id);
     const currentDraftHours = getCurrentDraftTaskHours(task.id);
-    const used = Number((summaryUsed + persistedDraftHours + currentDraftHours).toFixed(2));
+    const used = Number((summaryUsed - persistedCurrentEntryTaskHours + currentDraftHours).toFixed(2));
     const remaining = Math.max(0, Number((maxHours - used).toFixed(2)));
 
     return {
@@ -537,6 +525,10 @@ export default function EmployeeTimesheetPage() {
     onSuccess: (savedEntry) => {
       setDraft(savedEntry);
       syncTimesheetCache(savedEntry);
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["project-budget-summary"] }),
+        queryClient.invalidateQueries({ queryKey: ["projectBudgetSummary"] }),
+      ]);
       toast({
         title: "Draft saved",
         description: "Your timesheet draft has been saved.",
@@ -559,6 +551,8 @@ export default function EmployeeTimesheetPage() {
       void Promise.all([
         queryClient.invalidateQueries({ queryKey: ["adminOverview"] }),
         queryClient.invalidateQueries({ queryKey: ["notifications"] }),
+        queryClient.invalidateQueries({ queryKey: ["project-budget-summary"] }),
+        queryClient.invalidateQueries({ queryKey: ["projectBudgetSummary"] }),
       ]);
       toast({
         title: "Timesheet submitted",

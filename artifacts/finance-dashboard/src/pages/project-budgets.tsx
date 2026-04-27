@@ -156,7 +156,7 @@ export default function ProjectBudgetsPage() {
     >();
 
     for (const timesheet of timesheets) {
-      if (timesheet.status !== "submitted" && timesheet.status !== "approved") {
+      if (timesheet.status === "rejected") {
         continue;
       }
 
@@ -464,18 +464,16 @@ export default function ProjectBudgetsPage() {
                         {projectTasks.map((task) => {
                           const summaryTask = summaryLookup.get(project.id)?.tasks.find((item) => item.id === task.id);
                           const maxHours = summaryTask?.maxHours ?? task.maxHours;
-                          const remainingHours =
-                            typeof summaryTask?.remainingHours === "number"
-                              ? summaryTask.remainingHours
-                              : typeof maxHours === "number"
-                                ? Math.max(0, maxHours - (summaryTask?.usedHours ?? 0))
-                                : undefined;
                           const allClaimedHours = taskUsageLookup.get(task.id)?.total ?? 0;
                           const employeeClaimedHours =
                             selectedEmployeeId === "all"
                               ? allClaimedHours
                               : taskUsageLookup.get(task.id)?.byEmployee.get(selectedEmployeeId) ?? 0;
                           const claimedHours = selectedEmployeeId === "all" ? allClaimedHours : employeeClaimedHours;
+                          const remainingHours =
+                            typeof maxHours === "number"
+                              ? Math.max(0, Number((maxHours - claimedHours).toFixed(2)))
+                              : undefined;
                           const initializedLabel = [
                             typeof maxHours === "number" ? `${formatCapacityHours(maxHours)} max` : "No hour cap",
                             task.durationDays ? `${task.durationDays}d window` : null,
@@ -512,7 +510,9 @@ export default function ProjectBudgetsPage() {
 
                               <div className="text-sm text-muted-foreground">
                                 <div className="font-medium text-foreground">{formatCapacityHours(remainingHours)}</div>
-                                <div className="mt-1 text-xs text-muted-foreground">Available capacity</div>
+                                <div className="mt-1 text-xs text-muted-foreground">
+                                  {selectedEmployeeId === "all" ? "Available to team" : "Remaining for selected employee"}
+                                </div>
                               </div>
                             </div>
                           );

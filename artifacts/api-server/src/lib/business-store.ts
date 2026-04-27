@@ -1911,7 +1911,7 @@ function assertTaskHourLimits(entry: TimesheetEntry, projects: ProjectBudget[], 
 
   const totalsByTask = buildTaskUsageMap(currentTimesheets, {
     excludeTimesheetId: entry.id,
-    includedStatuses: ["submitted", "approved"],
+    includedStatuses: ["draft", "submitted", "approved"],
   });
 
   for (const line of entry.lines) {

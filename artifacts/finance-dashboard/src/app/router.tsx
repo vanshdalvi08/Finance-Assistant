@@ -32,6 +32,7 @@ import PlatformMonitoringPage from "@/pages/platform/monitoring";
 import PlatformRecoveryPage from "@/pages/platform/recovery";
 import PlatformSettingsPage from "@/pages/platform/settings";
 import EmployeeTimesheetPage from "@/pages/employee/timesheet";
+import EmployeeTaskManagerPage from "@/pages/employee/task-manager";
 import EmployeeLeavesPage from "@/pages/employee/leaves";
 import EmployeeExpensesPage from "@/pages/employee/expenses";
 import EmployeeSalarySlipsPage from "@/pages/employee/salary-slips";
@@ -96,6 +97,7 @@ function EmployeeRoutes() {
   return (
     <Switch>
       <Route path={routes.employeeTimesheet}><EmployeeTimesheetPage /></Route>
+      <Route path={routes.employeeTaskManager}><EmployeeTaskManagerPage /></Route>
       <Route path={routes.employeeLeaves}><EmployeeLeavesPage /></Route>
       <Route path={routes.employeeExpenses}><EmployeeExpensesPage /></Route>
       <Route path={routes.employeeSalarySlips}><EmployeeSalarySlipsPage /></Route>

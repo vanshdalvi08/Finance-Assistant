@@ -22,6 +22,7 @@ export const routes = {
   adminReports: "/admin/reports",
   adminAuditTrail: "/admin/audit-trail",
   employeeTimesheet: "/employee/timesheet",
+  employeeTaskManager: "/employee/task-manager",
   employeeLeaves: "/employee/leaves",
   employeeExpenses: "/employee/expenses",
   employeeSalarySlips: "/employee/salary-slips",

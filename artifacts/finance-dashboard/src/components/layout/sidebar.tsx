@@ -89,6 +89,7 @@ const adminGroups: AdminNavGroup[] = [
 
 const employeeNavItems: NavItem[] = [
   { href: "/employee/timesheet", label: "My Timesheet", icon: Clock3 },
+  { href: "/employee/task-manager", label: "Task Manager", icon: FolderKanban },
   { href: "/employee/leaves", label: "My Leaves", icon: CalendarDays },
   { href: "/employee/expenses", label: "My Expenses", icon: Receipt },
   { href: "/employee/salary-slips", label: "Salary Slips", icon: CreditCard },
