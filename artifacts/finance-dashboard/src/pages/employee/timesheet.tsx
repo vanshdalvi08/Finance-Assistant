@@ -107,6 +107,26 @@ function formatHourValue(value: number) {
   return `${Number(value.toFixed(1)).toString()}h`;
 }
 
+function formatTaskOptionLabel(task: ProjectCatalogTask) {
+  const parts = [task.name];
+  if (task.description?.trim()) {
+    parts.push(task.description.trim());
+  }
+  const capacityParts: string[] = [];
+  if (typeof task.maxHours === "number" && task.maxHours > 0) {
+    capacityParts.push(`${formatHourValue(task.maxHours)} max`);
+  }
+  if (typeof task.durationDays === "number" && task.durationDays > 0) {
+    capacityParts.push(`${task.durationDays}d`);
+  }
+
+  if (capacityParts.length > 0) {
+    parts.push(`(${capacityParts.join(" / ")})`);
+  }
+
+  return parts.join(" - ");
+}
+
 
 function toDateInputValue(weekStart: string) {
   return format(new Date(weekStart), "yyyy-MM-dd");
@@ -802,8 +822,7 @@ export default function EmployeeTimesheetPage() {
                                       <option value="">Select task</option>
                                       {projectTaskOptions.map((task) => (
                                         <option key={task.id} value={task.id}>
-                                          {task.name}
-                                          {task.description ? ` - ${task.description}` : ""}
+                                          {formatTaskOptionLabel(task)}
                                         </option>
                                       ))}
                                       <option value="__custom__">Custom task</option>
