@@ -14,10 +14,10 @@ import {
   type PurchaseOrder,
   type SalaryRecord,
   updateStore,
-} from "../business-store";
-import { assertTenantAccess } from "../policies";
-import { hashSha256 } from "../security";
-import { DEFAULT_TENANT_ID } from "../tenants";
+} from "../../lib/business-store";
+import { assertTenantAccess } from "../../lib/policies";
+import { hashSha256 } from "../../lib/security";
+import { DEFAULT_TENANT_ID } from "../../lib/tenants";
 
 export type PurchaseOrderActor = {
   userId?: string;

@@ -58,7 +58,7 @@ import fundsRouter from "./business/funds";
 import expensesRouter from "../modules/expenses/expenses.routes";
 import salaryRouter from "../modules/payroll/payroll.routes";
 import projectsRouter from "./business/projects";
-import purchaseOrdersRouter from "./business/purchase-orders";
+import purchaseOrdersRouter from "../modules/purchase-orders/purchase-orders.routes";
 import timesheetsRouter from "./business/timesheets";
 import {
   addPreApprovalComment,
