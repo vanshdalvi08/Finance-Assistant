@@ -15,10 +15,10 @@ import {
   pushAuditEvent,
   readStore,
   updateStore,
-} from "../business-store";
-import { assertEmployeeSelfAccess, assertTenantAccess } from "../policies";
-import { hashSha256 } from "../security";
-import { DEFAULT_TENANT_ID } from "../tenants";
+} from "../../lib/business-store";
+import { assertEmployeeSelfAccess, assertTenantAccess } from "../../lib/policies";
+import { hashSha256 } from "../../lib/security";
+import { DEFAULT_TENANT_ID } from "../../lib/tenants";
 
 export type SalaryActor = {
   userId?: string;

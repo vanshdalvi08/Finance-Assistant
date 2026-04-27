@@ -56,7 +56,7 @@ import { resolveExpenseAttachmentUrl } from "../lib/storage";
 import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../lib/notifications";
 import fundsRouter from "./business/funds";
 import expensesRouter from "../modules/expenses/expenses.routes";
-import salaryRouter from "./business/salary";
+import salaryRouter from "../modules/payroll/payroll.routes";
 import projectsRouter from "./business/projects";
 import purchaseOrdersRouter from "./business/purchase-orders";
 import timesheetsRouter from "./business/timesheets";
