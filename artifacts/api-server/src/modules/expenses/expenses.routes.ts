@@ -17,7 +17,7 @@ import {
   getExpenseForTenant,
   saveExpense,
   setExpenseStatus,
-} from "../../lib/services/expenses-service";
+} from "./expenses.service";
 
 const router: IRouter = Router();
 const expenseSubmitLimiter = rateLimit({

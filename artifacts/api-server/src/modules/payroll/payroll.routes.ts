@@ -17,7 +17,7 @@ import {
   paySalary,
   SalaryServiceError,
   saveSalary,
-} from "../../lib/services/salary-service";
+} from "./payroll.service";
 
 const router: IRouter = Router();
 const salaryPaymentLimiter = rateLimit({

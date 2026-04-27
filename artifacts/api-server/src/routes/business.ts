@@ -54,12 +54,12 @@ import {
 import { DEFAULT_TENANT_ID } from "../lib/tenants";
 import { resolveExpenseAttachmentUrl } from "../lib/storage";
 import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../lib/notifications";
-import fundsRouter from "./business/funds";
-import expensesRouter from "./business/expenses";
-import salaryRouter from "./business/salary";
-import projectsRouter from "./business/projects";
-import purchaseOrdersRouter from "./business/purchase-orders";
-import timesheetsRouter from "./business/timesheets";
+import fundsRouter from "../modules/funds/funds.routes";
+import expensesRouter from "../modules/expenses/expenses.routes";
+import salaryRouter from "../modules/payroll/payroll.routes";
+import projectsRouter from "../modules/projects/projects.routes";
+import purchaseOrdersRouter from "../modules/purchase-orders/purchase-orders.routes";
+import timesheetsRouter from "../modules/timesheets/timesheets.routes";
 import {
   addPreApprovalComment,
   approvePreApproval,

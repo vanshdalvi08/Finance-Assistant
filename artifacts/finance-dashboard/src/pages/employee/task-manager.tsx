@@ -10,8 +10,8 @@ import { api } from "@/lib/api";
 import { useAuthStore } from "@/store/auth";
 
 type ProjectCatalogProject = Awaited<ReturnType<typeof api.getProjectCatalog>>[number];
-type ProjectSummaryProject = Awaited<ReturnType<typeof api.getProjectBudgetSummary>>[number];
 type TimesheetRecord = Awaited<ReturnType<typeof api.getTimesheets>>[number];
+const TASK_MANAGER_DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 
 function formatHours(value: number | undefined) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -22,7 +22,7 @@ function formatHours(value: number | undefined) {
 }
 
 function lineTotal(line: TimesheetRecord["lines"][number]) {
-  return ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].reduce(
+  return TASK_MANAGER_DAY_KEYS.reduce(
     (sum, day) => sum + Number(line.hours[day] ?? 0),
     0,
   );

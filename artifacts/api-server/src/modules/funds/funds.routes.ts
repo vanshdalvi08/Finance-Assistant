@@ -12,7 +12,7 @@ import {
   getFundForTenant,
   listFundsForTenant,
   saveFund,
-} from "../../lib/services/funds-service";
+} from "./funds.service";
 
 const router: IRouter = Router();
 

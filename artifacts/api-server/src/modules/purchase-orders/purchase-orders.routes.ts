@@ -18,7 +18,7 @@ import {
   payPurchaseOrderTask,
   PurchaseOrdersServiceError,
   savePurchaseOrder,
-} from "../../lib/services/purchase-orders-service";
+} from "./purchase-orders.service";
 
 const router: IRouter = Router();
 const purchaseOrderPaymentLimiter = rateLimit({
