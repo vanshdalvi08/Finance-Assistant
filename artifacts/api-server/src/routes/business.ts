@@ -1080,7 +1080,6 @@ router.use((request, response, next) => {
 router.use(fundsRouter);
 router.use(expensesRouter);
 router.use(salaryRouter);
-router.use(projectsRouter);
 router.use(purchaseOrdersRouter);
 router.use(timesheetsRouter);
 
@@ -2322,6 +2321,8 @@ router.get("/projects/names", requireTenantRole("admin", "employee"), async (_re
 
   response.json({ projectNames: Array.from(names).sort((left, right) => left.localeCompare(right)) });
 });
+
+router.use(projectsRouter);
 
 router.get("/pre-approvals", requireTenantRole("admin", "client"), async (request, response) => {
   const rows = await listPreApprovalsForActor(preApprovalActor(request));
