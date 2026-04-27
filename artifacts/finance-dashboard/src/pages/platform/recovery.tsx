@@ -114,7 +114,7 @@ export default function PlatformRecoveryPage() {
   });
 
   const restoreMutation = useMutation({
-    mutationFn: (tenantId: string) => api.updatePlatformTenantStatus(tenantId, "active"),
+    mutationFn: (tenantId: string) => api.updatePlatformTenantStatus({ tenantId, status: "active" }),
     onSuccess: async () => {
       toast({ title: "Tenant restored", description: "The workspace is active again." });
       setTenantToRestore(null);

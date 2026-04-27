@@ -30,6 +30,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 type ProjectRecord = Awaited<ReturnType<typeof api.getProjectBudgets>>[number];
 type TimesheetRecord = Awaited<ReturnType<typeof api.getTimesheets>>[number];
 type EmployeeRecord = Awaited<ReturnType<typeof api.getEmployees>>[number];
+const PROJECT_BUDGET_DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 
 type TaskDraft = {
   id?: string;
@@ -71,7 +72,7 @@ function formatCapacityHours(value: number | undefined) {
 }
 
 function lineTotal(line: TimesheetRecord["lines"][number]) {
-  return ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].reduce(
+  return PROJECT_BUDGET_DAY_KEYS.reduce(
     (sum, day) => sum + Number(line.hours[day] ?? 0),
     0,
   );

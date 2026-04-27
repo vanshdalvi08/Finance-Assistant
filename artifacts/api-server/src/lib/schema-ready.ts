@@ -9,7 +9,7 @@ async function applyPendingMigrations() {
     return;
   }
 
-  const migrationsFolder = path.resolve(process.cwd(), "lib/db/drizzle");
+  const migrationsFolder = path.resolve(process.cwd(), "..", "..", "lib", "db", "drizzle");
   await migrate(db, { migrationsFolder });
   migrationsApplied = true;
 }

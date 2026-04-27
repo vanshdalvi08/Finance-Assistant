@@ -36,8 +36,8 @@ const DAYS: Array<{ key: DayKey; label: string }> = [
 type ProjectCatalogProject = Awaited<ReturnType<typeof api.getProjectCatalog>>[number];
 type ProjectCatalogTask = ProjectCatalogProject["tasks"][number];
 
-function normalizeLookup(value: string) {
-  return value.trim().toLowerCase();
+function normalizeLookup(value: string | undefined | null) {
+  return (value ?? "").trim().toLowerCase();
 }
 
 function weekStartIso(base = new Date()) {
