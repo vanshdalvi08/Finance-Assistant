@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import {
   BriefcaseBusiness,
+  BarChart3,
   FolderKanban,
   Layers3,
   Pencil,
@@ -17,7 +18,7 @@ import { DashboardCard } from "@/components/dashboard-card";
 import { api } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -27,6 +28,8 @@ import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 type ProjectRecord = Awaited<ReturnType<typeof api.getProjectBudgets>>[number];
+type TimesheetRecord = Awaited<ReturnType<typeof api.getTimesheets>>[number];
+type EmployeeRecord = Awaited<ReturnType<typeof api.getEmployees>>[number];
 
 type TaskDraft = {
   id?: string;
@@ -57,6 +60,14 @@ const EMPTY_TASK: TaskDraft = {
 
 function cloneEmptyTask(): TaskDraft {
   return { ...EMPTY_TASK };
+}
+
+function formatCapacityHours(value: number | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "Ã¢â‚¬â€";
+  }
+
+  return `${Number(value.toFixed(1)).toString()}h`;
 }
 
 function toForm(project?: ProjectRecord | null): ProjectForm {
@@ -93,6 +104,8 @@ export default function ProjectBudgetsPage() {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [editorOpen, setEditorOpen] = useState(false);
+  const [showCapacityInspector, setShowCapacityInspector] = useState(false);
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState("all");
   const [form, setForm] = useState<ProjectForm>(() => toForm(null));
 
   const { data: projects = [] } = useQuery({
@@ -105,10 +118,59 @@ export default function ProjectBudgetsPage() {
     queryFn: api.getProjectBudgetSummary,
   });
 
+  const { data: employees = [] } = useQuery({
+    queryKey: ["employees"],
+    queryFn: api.getEmployees,
+  });
+
+  const { data: timesheets = [] } = useQuery({
+    queryKey: ["timesheets"],
+    queryFn: () => api.getTimesheets(),
+  });
+
   const summaryLookup = useMemo(
     () => new Map(projectBudgetSummary.map((summary) => [summary.id, summary])),
     [projectBudgetSummary],
   );
+
+  const employeeOptions = useMemo(
+    () => [{ id: "all", name: "All employees" }, ...employees.map((employee) => ({ id: employee.id, name: employee.name }))],
+    [employees],
+  );
+
+  const taskUsageLookup = useMemo(() => {
+    const lookup = new Map<
+      string,
+      {
+        total: number;
+        byEmployee: Map<string, number>;
+      }
+    >();
+
+    for (const timesheet of timesheets) {
+      if (timesheet.status !== "submitted" && timesheet.status !== "approved") {
+        continue;
+      }
+
+      for (const line of timesheet.lines) {
+        if (!line.projectTaskId) {
+          continue;
+        }
+
+        const lineHours = lineTotal(line);
+        if (lineHours <= 0) {
+          continue;
+        }
+
+        const current = lookup.get(line.projectTaskId) ?? { total: 0, byEmployee: new Map<string, number>() };
+        current.total += lineHours;
+        current.byEmployee.set(timesheet.employeeId, (current.byEmployee.get(timesheet.employeeId) ?? 0) + lineHours);
+        lookup.set(line.projectTaskId, current);
+      }
+    }
+
+    return lookup;
+  }, [timesheets]);
 
   const filteredProjects = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -298,6 +360,15 @@ export default function ProjectBudgetsPage() {
                 className="pl-9"
               />
             </div>
+            <Button
+              type="button"
+              variant="outline"
+              className="rounded-xl border-border/60"
+              onClick={() => setShowCapacityInspector((current) => !current)}
+            >
+              <BarChart3 className="mr-2 h-4 w-4" />
+              {showCapacityInspector ? "Hide hours" : "View hours"}
+            </Button>
             <Button className="rounded-xl" onClick={openCreate}>
               <Plus className="mr-2 h-4 w-4" />
               Create Project
@@ -312,17 +383,144 @@ export default function ProjectBudgetsPage() {
           <DashboardCard label="Clients" value={String(stats.clients)} icon={<Users className="h-5 w-5" />} />
         </div>
 
+        {showCapacityInspector ? (
+          <Card className="border-border/60 bg-card/80 shadow-sm">
+            <CardHeader className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+              <div className="space-y-1">
+                <CardTitle className="text-base font-medium">Project Hours Inspector</CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  Review initialized task hours, what has been claimed, and what remains across the current project budget.
+                </p>
+              </div>
+              <div className="w-full max-w-xs space-y-2">
+                <Label className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Employee</Label>
+                <Select value={selectedEmployeeId} onValueChange={setSelectedEmployeeId}>
+                  <SelectTrigger className="rounded-xl">
+                    <SelectValue placeholder="Select employee" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {employeeOptions.map((employee) => (
+                      <SelectItem key={employee.id} value={employee.id}>
+                        {employee.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </CardHeader>
+
+            <CardContent className="space-y-4">
+              {filteredProjects.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-border/60 px-6 py-10 text-center text-sm text-muted-foreground">
+                  No matching projects found.
+                </div>
+              ) : (
+                filteredProjects.map((project) => {
+                  const projectTasks = project.tasks.filter((task) => task.status === "active" || task.status === "archived");
+
+                  if (projectTasks.length === 0) {
+                    return null;
+                  }
+
+                  return (
+                    <div key={project.id} className="overflow-hidden rounded-2xl border border-border/60 bg-background/60">
+                      <div className="flex flex-col gap-2 border-b border-border/60 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-sm font-semibold text-foreground">{project.project}</p>
+                            {project.client ? (
+                              <Badge variant="outline" className="rounded-full border-border/60 bg-background/50 font-normal">
+                                {project.client}
+                              </Badge>
+                            ) : null}
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            {projectTasks.length} task{projectTasks.length === 1 ? "" : "s"}
+                          </p>
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {selectedEmployeeId === "all"
+                            ? "Showing team totals"
+                            : `Showing ${employeeOptions.find((employee) => employee.id === selectedEmployeeId)?.name ?? "selected employee"}`}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-[minmax(0,2fr)_minmax(180px,1fr)_minmax(180px,1fr)_minmax(180px,1fr)] border-b border-border/60 bg-secondary/10 px-4 py-3 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+                        <span>Task</span>
+                        <span>Initialized</span>
+                        <span>Claimed</span>
+                        <span>Remaining</span>
+                      </div>
+
+                      <div className="divide-y divide-border/60">
+                        {projectTasks.map((task) => {
+                          const summaryTask = summaryLookup.get(project.id)?.tasks.find((item) => item.id === task.id);
+                          const maxHours = summaryTask?.maxHours ?? task.maxHours;
+                          const remainingHours =
+                            typeof summaryTask?.remainingHours === "number"
+                              ? summaryTask.remainingHours
+                              : typeof maxHours === "number"
+                                ? Math.max(0, maxHours - (summaryTask?.usedHours ?? 0))
+                                : undefined;
+                          const allClaimedHours = taskUsageLookup.get(task.id)?.total ?? 0;
+                          const employeeClaimedHours =
+                            selectedEmployeeId === "all"
+                              ? allClaimedHours
+                              : taskUsageLookup.get(task.id)?.byEmployee.get(selectedEmployeeId) ?? 0;
+                          const claimedHours = selectedEmployeeId === "all" ? allClaimedHours : employeeClaimedHours;
+                          const initializedLabel = [
+                            typeof maxHours === "number" ? `${formatCapacityHours(maxHours)} max` : "No hour cap",
+                            task.durationDays ? `${task.durationDays}d window` : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" - ");
+
+                          return (
+                            <div key={task.id} className="grid gap-4 px-4 py-4 md:grid-cols-[minmax(0,2fr)_minmax(180px,1fr)_minmax(180px,1fr)_minmax(180px,1fr)] md:items-center">
+                              <div className="min-w-0 space-y-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <p className="text-sm font-semibold text-foreground">{task.name}</p>
+                                  {task.subTasks?.length ? (
+                                    <Badge variant="outline" className="rounded-full border-border/60 bg-background/50 font-normal">
+                                      {task.subTasks.length} sub tasks
+                                    </Badge>
+                                  ) : null}
+                                </div>
+                                <p className="text-sm text-muted-foreground">{task.description || "No short description added."}</p>
+                              </div>
+
+                              <div className="text-sm text-muted-foreground">
+                                <div className="font-medium text-foreground">{initializedLabel || "-"}</div>
+                                <div className="mt-1 text-xs text-muted-foreground">
+                                  {task.subTasks?.length ? task.subTasks.slice(0, 2).join(", ") : "No sub tasks"}
+                                  {task.subTasks && task.subTasks.length > 2 ? ` +${task.subTasks.length - 2} more` : ""}
+                                </div>
+                              </div>
+
+                              <div className="text-sm text-muted-foreground">
+                                <div className="font-medium text-foreground">{formatCapacityHours(claimedHours)}</div>
+                                <div className="mt-1 text-xs text-muted-foreground">Used by {selectedEmployeeId === "all" ? "team" : "selected employee"}</div>
+                              </div>
+
+                              <div className="text-sm text-muted-foreground">
+                                <div className="font-medium text-foreground">{formatCapacityHours(remainingHours)}</div>
+                                <div className="mt-1 text-xs text-muted-foreground">Available capacity</div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </CardContent>
+          </Card>
+        ) : null}
+
         <Card className="border-border/60 bg-card/80 shadow-sm">
-          <CardHeader className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-            <div className="space-y-1">
-              <CardTitle className="text-base font-medium">Project & Task Catalog</CardTitle>
-              <CardDescription>
-                Keep this section lightweight for admin: make the project once, add the task list underneath, and let employees pick from the same list in timesheets.
-              </CardDescription>
-            </div>
-            <div className="rounded-xl border border-border/60 bg-secondary/15 px-3 py-2 text-xs text-muted-foreground">
-              Employees can still write a custom one-off task if needed.
-            </div>
+          <CardHeader>
+            <CardTitle className="text-base font-medium">Project & Task Catalog</CardTitle>
           </CardHeader>
 
           <CardContent className="space-y-4">
@@ -348,7 +546,7 @@ export default function ProjectBudgetsPage() {
                       </div>
                       <p className="text-sm text-muted-foreground">
                         Created {format(new Date(project.createdAt), "dd MMM yyyy")}
-                        {" · "}
+                        {" - "}
                         Updated {format(new Date(project.updatedAt), "dd MMM yyyy")}
                       </p>
                       {project.note ? (
@@ -399,66 +597,38 @@ export default function ProjectBudgetsPage() {
                     <BriefcaseBusiness className="h-4 w-4 text-muted-foreground" />
                     Admin-defined task list
                   </div>
-                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <div className="mt-3 space-y-3">
                     {project.tasks.length === 0 ? (
                       <div className="rounded-xl border border-dashed border-border/60 px-4 py-4 text-sm text-muted-foreground">
                         No tasks added yet. Edit this project to add work items for employees.
                       </div>
                     ) : (
-                      project.tasks.map((task) => {
-                        const summary = summaryLookup.get(project.id);
-                        const summaryTask = summary?.tasks.find((item) => item.id === task.id);
-                        const limitHours = summaryTask?.maxHours ?? task.maxHours;
-                        const remainingHours = summaryTask?.remainingHours;
-                        const hoursPerDay = summaryTask?.hoursPerDay;
-
-                        return (
-                          <div key={task.id} className="rounded-xl border border-border/60 bg-background/60 px-4 py-3">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
+                      project.tasks.map((task) => (
+                        <div key={task.id} className="rounded-xl border border-border/60 bg-background/60 px-4 py-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0 space-y-1">
+                              <div className="flex flex-wrap items-center gap-2">
                                 <p className="font-medium text-foreground">{task.name}</p>
-                                {task.description ? (
-                                  <p className="mt-1 text-sm text-muted-foreground">{task.description}</p>
-                                ) : null}
-                                {limitHours || task.durationDays ? (
-                                  <p className="mt-2 text-xs text-muted-foreground">
-                                    {limitHours ? (
-                                      <span className="font-medium text-foreground">{limitHours}h</span>
-                                    ) : null}
-                                    {task.durationDays ? (
-                                      <>
-                                        {limitHours ? " over " : ""}
-                                        <span className="font-medium text-foreground">{task.durationDays} day{task.durationDays === 1 ? "" : "s"}</span>
-                                      </>
-                                    ) : null}
-                                    {hoursPerDay ? ` (~${hoursPerDay}h/day)` : ""}
-                                  </p>
-                                ) : null}
-                                {typeof remainingHours === "number" ? (
-                                  <p className="mt-1 text-xs text-muted-foreground">
-                                    Used <span className="font-medium text-foreground">{summaryTask?.usedHours?.toFixed(1) ?? "0.0"}h</span>
-                                    {" · "}
-                                    Remaining <span className="font-medium text-foreground">{remainingHours.toFixed(1)}h</span>
-                                  </p>
-                                ) : null}
                                 {task.subTasks?.length ? (
-                                  <p className="mt-1 text-xs text-muted-foreground">
-                                    Sub tasks <span className="font-medium text-foreground">{task.subTasks.length}</span>
-                                    {" · "}
-                                    <span className="font-medium text-foreground">
-                                      {task.subTasks.slice(0, 2).join(", ")}
-                                      {task.subTasks.length > 2 ? ` +${task.subTasks.length - 2} more` : ""}
-                                    </span>
-                                  </p>
+                                  <Badge variant="outline" className="rounded-full border-border/60 bg-background/50 font-normal">
+                                    {task.subTasks.length} sub tasks
+                                  </Badge>
                                 ) : null}
                               </div>
-                              <Badge variant="outline" className="rounded-full border-border/60 bg-background/50 font-normal capitalize">
-                                {task.status}
-                              </Badge>
+                              {task.description ? <p className="text-sm text-muted-foreground">{task.description}</p> : null}
+                              {task.subTasks?.length ? (
+                                <p className="text-xs text-muted-foreground">
+                                  {task.subTasks.slice(0, 2).join(", ")}
+                                  {task.subTasks.length > 2 ? ` +${task.subTasks.length - 2} more` : ""}
+                                </p>
+                              ) : null}
                             </div>
+                            <Badge variant="outline" className="rounded-full border-border/60 bg-background/50 font-normal capitalize">
+                              {task.status}
+                            </Badge>
                           </div>
-                        );
-                      })
+                        </div>
+                      ))
                     )}
                   </div>
                 </div>

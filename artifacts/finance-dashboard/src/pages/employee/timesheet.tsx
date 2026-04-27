@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addDays, format } from "date-fns";
 import {
@@ -107,13 +107,6 @@ function formatHourValue(value: number) {
   return `${Number(value.toFixed(1)).toString()}h`;
 }
 
-function formatCapacityHours(value: number | undefined) {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return "—";
-  }
-
-  return `${Number(value.toFixed(1)).toString()}h`;
-}
 
 function toDateInputValue(weekStart: string) {
   return format(new Date(weekStart), "yyyy-MM-dd");
@@ -749,17 +742,6 @@ export default function EmployeeTimesheetPage() {
                         ? projectTaskOptions.find((task) => task.id === line.projectTaskId)
                         : projectTaskOptions.find((task) => normalizeLookup(task.name) === normalizeLookup(line.task));
                       const selectedTaskSubTasks = selectedTask?.subTasks ?? [];
-                      const selectedTaskBaseRemaining =
-                        typeof selectedTask?.remainingHours === "number"
-                          ? selectedTask.remainingHours
-                          : positiveTaskLimit(selectedTask);
-                      const selectedTaskClaimed = line.projectTaskId
-                        ? claimedHoursForTask(line.projectTaskId, line.id) + lineTotal(line)
-                        : lineTotal(line);
-                      const selectedTaskRemaining =
-                        typeof selectedTaskBaseRemaining === "number"
-                          ? Math.max(0, selectedTaskBaseRemaining - selectedTaskClaimed)
-                          : undefined;
                       const showProjectInput = projectSelectionValue === "__custom__" || projectOptions.length === 0;
                       const hasProjectValue = Boolean(line.project.trim());
                       const showTaskInput = hasProjectValue && (taskSelectionValue === "__custom__" || projectTaskOptions.length === 0);
@@ -821,7 +803,7 @@ export default function EmployeeTimesheetPage() {
                                       {projectTaskOptions.map((task) => (
                                         <option key={task.id} value={task.id}>
                                           {task.name}
-                                          {task.description ? ` — ${task.description}` : ""}
+                                          {task.description ? ` â€” ${task.description}` : ""}
                                         </option>
                                       ))}
                                       <option value="__custom__">Custom task</option>
@@ -858,14 +840,6 @@ export default function EmployeeTimesheetPage() {
                                           ))}
                                         </select>
                                       </div>
-                                    ) : null}
-                                    {selectedTaskRemaining !== undefined ? (
-                                      <p className="text-[11px] text-muted-foreground">
-                                        Remaining task capacity:{" "}
-                                        <span className="font-medium text-foreground">{formatHourValue(selectedTaskRemaining)}</span>
-                                        {" · "}
-                                        Claimed: <span className="font-medium text-foreground">{Number(selectedTaskClaimed.toFixed(1))}h</span>
-                                      </p>
                                     ) : null}
                                   </>
                               ) : (
@@ -1106,7 +1080,7 @@ export default function EmployeeTimesheetPage() {
               {summary.leaveDays > 0 || summary.holidayDays > 0 ? (
                 <div className="rounded-xl border border-border/60 bg-background/55 px-3 py-3 text-sm text-muted-foreground">
                   {summary.leaveDays > 0 ? `${summary.leaveDays} leave day${summary.leaveDays > 1 ? "s" : ""}` : null}
-                  {summary.leaveDays > 0 && summary.holidayDays > 0 ? " · " : null}
+                  {summary.leaveDays > 0 && summary.holidayDays > 0 ? " Â· " : null}
                   {summary.holidayDays > 0 ? `${summary.holidayDays} holiday${summary.holidayDays > 1 ? "s" : ""}` : null} in this week.
                 </div>
               ) : null}
