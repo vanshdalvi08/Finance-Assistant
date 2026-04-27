@@ -1,15 +1,33 @@
+import fs from "node:fs";
 import path from "node:path";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { db, businessStateTable, usersTable } from "@workspace/db";
 
 let migrationsApplied = false;
 
+function resolveMigrationsFolder() {
+  const candidates = [
+    path.resolve(__dirname, "..", "..", "..", "lib", "db", "drizzle"),
+    path.resolve(process.cwd(), "lib", "db", "drizzle"),
+    path.resolve(process.cwd(), "..", "..", "lib", "db", "drizzle"),
+  ];
+
+  for (const candidate of candidates) {
+    const journalPath = path.join(candidate, "meta", "_journal.json");
+    if (fs.existsSync(journalPath)) {
+      return candidate;
+    }
+  }
+
+  return candidates[0];
+}
+
 async function applyPendingMigrations() {
   if (migrationsApplied) {
     return;
   }
 
-  const migrationsFolder = path.resolve(process.cwd(), "..", "..", "lib", "db", "drizzle");
+  const migrationsFolder = resolveMigrationsFolder();
   await migrate(db, { migrationsFolder });
   migrationsApplied = true;
 }
