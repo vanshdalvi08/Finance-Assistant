@@ -57,7 +57,7 @@ import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../lib/notificat
 import fundsRouter from "../modules/funds/funds.routes";
 import expensesRouter from "../modules/expenses/expenses.routes";
 import salaryRouter from "../modules/payroll/payroll.routes";
-import projectsRouter from "./business/projects";
+import projectsRouter from "../modules/projects/projects.routes";
 import purchaseOrdersRouter from "../modules/purchase-orders/purchase-orders.routes";
 import timesheetsRouter from "./business/timesheets";
 import {
