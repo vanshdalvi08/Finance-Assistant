@@ -19,6 +19,7 @@ import AdminLeaveManagementPage from "@/pages/admin/leave-management";
 import AdminReportsPage from "@/pages/admin/reports";
 import AdminAuditTrailPage from "@/pages/admin/audit-trail";
 import EmployeeTimesheetPage from "@/pages/employee/timesheet";
+import EmployeeTaskManagerPage from "@/pages/employee/task-manager";
 import EmployeeLeavesPage from "@/pages/employee/leaves";
 import EmployeeExpensesPage from "@/pages/employee/expenses";
 import EmployeeSalarySlipsPage from "@/pages/employee/salary-slips";
@@ -161,6 +162,9 @@ function LegacyRouter() {
         </Route>
         <Route path="/employee/timesheet">
           {renderRoleRoute(isAuthenticated, role, "employee", <EmployeeTimesheetPage />)}
+        </Route>
+        <Route path="/employee/task-manager">
+          {renderRoleRoute(isAuthenticated, role, "employee", <EmployeeTaskManagerPage />)}
         </Route>
         <Route path="/employee/leaves">
           {renderRoleRoute(isAuthenticated, role, "employee", <EmployeeLeavesPage />)}
