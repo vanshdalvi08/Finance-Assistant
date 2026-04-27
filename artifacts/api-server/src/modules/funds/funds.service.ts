@@ -9,11 +9,11 @@ import {
   pushAuditEvent,
   readStore,
   updateStore,
-} from "../business-store";
-import { hashSha256 } from "../security";
-import { assertTenantAccess } from "../policies";
-import { DEFAULT_TENANT_ID } from "../tenants";
-import { resolveFundReceiptUrl } from "../storage";
+} from "../../lib/business-store";
+import { hashSha256 } from "../../lib/security";
+import { assertTenantAccess } from "../../lib/policies";
+import { DEFAULT_TENANT_ID } from "../../lib/tenants";
+import { resolveFundReceiptUrl } from "../../lib/storage";
 
 export type FundActor = {
   userId?: string;
