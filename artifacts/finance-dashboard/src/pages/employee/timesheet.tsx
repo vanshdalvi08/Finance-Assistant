@@ -108,23 +108,7 @@ function formatHourValue(value: number) {
 }
 
 function formatTaskOptionLabel(task: ProjectCatalogTask) {
-  const parts = [task.name];
-  if (task.description?.trim()) {
-    parts.push(task.description.trim());
-  }
-  const capacityParts: string[] = [];
-  if (typeof task.maxHours === "number" && task.maxHours > 0) {
-    capacityParts.push(`${formatHourValue(task.maxHours)} max`);
-  }
-  if (typeof task.durationDays === "number" && task.durationDays > 0) {
-    capacityParts.push(`${task.durationDays}d`);
-  }
-
-  if (capacityParts.length > 0) {
-    parts.push(`(${capacityParts.join(" / ")})`);
-  }
-
-  return parts.join(" - ");
+  return task.description?.trim() ? `${task.name} - ${task.description.trim()}` : task.name;
 }
 
 
@@ -454,16 +438,26 @@ export default function EmployeeTimesheetPage() {
     updateLine(lineId, (line) => ({ ...line, subTask: value }));
   }
 
-  function taskLimitForLine(line: TimesheetTaskLine) {
-    if (!line.projectTaskId) {
-      return undefined;
-    }
+  function getPersistedDraftTaskHours(taskId: string, excludeEntryId?: string) {
+    return timesheets.reduce((sum, entry) => {
+      if (entry.status !== "draft" || entry.id === excludeEntryId) {
+        return sum;
+      }
 
-    const task = getProjectTaskOptions(line.project).find((option) => option.id === line.projectTaskId);
-    return positiveTaskLimit(task);
+      return (
+        sum +
+        entry.lines.reduce((lineSum, line) => {
+          if (line.projectTaskId !== taskId) {
+            return lineSum;
+          }
+
+          return lineSum + lineTotal(line);
+        }, 0)
+      );
+    }, 0);
   }
 
-  function claimedHoursForTask(taskId: string, excludeLineId?: string) {
+  function getCurrentDraftTaskHours(taskId: string, excludeLineId?: string) {
     if (!draft) {
       return 0;
     }
@@ -475,6 +469,31 @@ export default function EmployeeTimesheetPage() {
 
       return sum + lineTotal(line);
     }, 0);
+  }
+
+  function getTaskCapacitySnapshot(task?: ProjectCatalogTask) {
+    if (!task || Number(task.maxHours ?? 0) <= 0) {
+      return null;
+    }
+
+    const maxHours = Number(task.maxHours ?? 0);
+    const summaryUsed =
+      typeof task.usedHours === "number"
+        ? task.usedHours
+        : typeof task.remainingHours === "number"
+          ? Math.max(0, maxHours - task.remainingHours)
+          : 0;
+    const persistedDraftHours = getPersistedDraftTaskHours(task.id, draft?.id);
+    const currentDraftHours = getCurrentDraftTaskHours(task.id);
+    const used = Number((summaryUsed + persistedDraftHours + currentDraftHours).toFixed(2));
+    const remaining = Math.max(0, Number((maxHours - used).toFixed(2)));
+
+    return {
+      maxHours,
+      used,
+      remaining,
+      currentDraftHours: Number(currentDraftHours.toFixed(2)),
+    };
   }
 
   const fieldControlClass =
@@ -577,18 +596,19 @@ export default function EmployeeTimesheetPage() {
   function changeHour(lineId: string, day: DayKey, rawValue: string) {
     const requestedValue = rawValue === "" ? 0 : Math.max(0, Math.min(24, Number(rawValue || 0)));
     const targetLine = draft?.lines.find((line) => line.id === lineId);
-    const taskLimit = targetLine ? taskLimitForLine(targetLine) : undefined;
     const currentValue = Number(targetLine?.hours[day] ?? 0);
-    const currentLineTotal = targetLine ? lineTotal(targetLine) : 0;
-    const otherTaskHours = targetLine?.projectTaskId ? claimedHoursForTask(targetLine.projectTaskId, lineId) : 0;
-    const maxAvailableForCell =
-      taskLimit !== undefined ? Math.max(0, taskLimit - otherTaskHours - (currentLineTotal - currentValue)) : 24;
+    const selectedTask =
+      targetLine?.projectTaskId && targetLine.project.trim()
+        ? getProjectTaskOptions(targetLine.project).find((option) => option.id === targetLine.projectTaskId)
+        : undefined;
+    const taskSnapshot = getTaskCapacitySnapshot(selectedTask);
+    const maxAvailableForCell = taskSnapshot ? Math.max(0, Number((taskSnapshot.remaining + currentValue).toFixed(2))) : 24;
     const nextValue = Math.max(0, Math.min(requestedValue, maxAvailableForCell, 24));
 
-    if (requestedValue > nextValue && taskLimit !== undefined) {
+    if (requestedValue > nextValue && taskSnapshot) {
       toast({
         title: "Task hour limit reached",
-        description: `${targetLine?.task || "This task"} allows a maximum of ${taskLimit} hours this week.`,
+        description: `${targetLine?.task || "This task"} has ${formatHourValue(taskSnapshot.remaining)} remaining in its allocation window.`,
         variant: "destructive",
       });
     }
@@ -761,6 +781,7 @@ export default function EmployeeTimesheetPage() {
                       const selectedTask = line.projectTaskId
                         ? projectTaskOptions.find((task) => task.id === line.projectTaskId)
                         : projectTaskOptions.find((task) => normalizeLookup(task.name) === normalizeLookup(line.task));
+                      const taskCapacity = getTaskCapacitySnapshot(selectedTask);
                       const selectedTaskSubTasks = selectedTask?.subTasks ?? [];
                       const showProjectInput = projectSelectionValue === "__custom__" || projectOptions.length === 0;
                       const hasProjectValue = Boolean(line.project.trim());
@@ -841,6 +862,17 @@ export default function EmployeeTimesheetPage() {
                                           }))
                                         }
                                       />
+                                    ) : null}
+                                    {taskCapacity ? (
+                                      <div className="rounded-xl border border-border/45 bg-background/55 px-3 py-2 text-xs text-muted-foreground">
+                                        <span className="font-medium text-foreground">
+                                          Remaining task capacity: {formatHourValue(taskCapacity.remaining)}
+                                        </span>
+                                        {" · "}
+                                        <span>
+                                          Being used: {formatHourValue(taskCapacity.currentDraftHours)}
+                                        </span>
+                                      </div>
                                     ) : null}
                                     {selectedTaskSubTasks.length > 0 ? (
                                       <div className="space-y-1.5">
