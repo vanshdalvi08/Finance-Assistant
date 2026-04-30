@@ -13,11 +13,31 @@ const DEFAULT_DEV_API_BASE_URL = "http://localhost:3001/api";
 const DEFAULT_PROD_API_BASE_URL = "https://finance-assistant-api-nmc7.onrender.com/api";
 const TAB_SESSION_USER_KEY = "yojak.auth.tab.user";
 const CSRF_HEADER_NAME = "X-CSRF-Token";
+const SAME_SITE_FRONTEND_HOST = "payroll.reforix.com";
+const SAME_SITE_API_BASE_URL = "https://api.payroll.reforix.com/api";
+
+function getSameSiteApiBaseUrl() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const hostname = window.location.hostname.trim().toLowerCase();
+  if (hostname === SAME_SITE_FRONTEND_HOST) {
+    return SAME_SITE_API_BASE_URL;
+  }
+
+  return null;
+}
 
 function getApiBaseUrl() {
   const configuredBaseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "");
   if (configuredBaseUrl) {
     return configuredBaseUrl;
+  }
+
+  const sameSiteBaseUrl = getSameSiteApiBaseUrl();
+  if (sameSiteBaseUrl) {
+    return sameSiteBaseUrl;
   }
 
   return import.meta.env.PROD ? DEFAULT_PROD_API_BASE_URL : DEFAULT_DEV_API_BASE_URL;
