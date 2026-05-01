@@ -364,7 +364,7 @@ const LoginPage = () => {
                     value={mfaCode}
                     onChange={(event) => setMfaCode(event.target.value)}
                     required
-                    className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-700 caret-slate-900 placeholder:text-slate-400/70 transition-colors focus:border-[#2563eb] focus:outline-none focus:ring-2 focus:ring-[#bfdbfe]"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-700 caret-slate-900 placeholder:text-slate-300/85 transition-colors focus:border-[#2563eb] focus:outline-none focus:ring-2 focus:ring-[#bfdbfe]"
                     style={{ WebkitTextFillColor: "rgb(55 65 81)" }}
                   />
                 </div>
