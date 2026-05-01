@@ -221,58 +221,11 @@ export default function EmployeeTimesheetPage() {
   const [projectSelections, setProjectSelections] = useState<Record<string, string>>({});
   const [taskSelections, setTaskSelections] = useState<Record<string, string>>({});
 
-  const projectOptions = useMemo(() => {
-    const byName = new Map<string, ProjectCatalogProject>();
-
-    const upsert = (project: ProjectCatalogProject) => {
-      const key = normalizeLookup(project.project);
-      if (!key) {
-        return;
-      }
-
-      const existing = byName.get(key);
-      if (!existing) {
-        byName.set(key, project);
-        return;
-      }
-
-      const mergedTasks = new Map<string, ProjectCatalogTask>();
-      for (const task of existing.tasks) {
-        mergedTasks.set(normalizeLookup(task.name), task);
-      }
-      for (const task of project.tasks) {
-        mergedTasks.set(normalizeLookup(task.name), task);
-      }
-
-      byName.set(key, {
-        ...existing,
-        ...project,
-        tasks: Array.from(mergedTasks.values()),
-        client: project.client || existing.client,
-        notes: project.notes || existing.notes,
-        updatedAt: project.updatedAt > existing.updatedAt ? project.updatedAt : existing.updatedAt,
-      });
-    };
-
-    for (const project of catalogProjects) {
-      upsert(project);
-    }
-
-    for (const summary of projectBudgetSummary) {
-      upsert({
-        id: summary.id,
-        project: summary.project,
-        client: summary.client ?? "",
-        notes: summary.note ?? "",
-        totalBudget: summary.totalBudget ?? 0,
-        createdAt: new Date().toISOString(),
-        tasks: summary.tasks ?? [],
-        updatedAt: new Date().toISOString(),
-      });
-    }
-
-    return Array.from(byName.values()).sort((left, right) => left.project.localeCompare(right.project));
-  }, [catalogProjects, projectBudgetSummary]);
+  const projectOptions = useMemo(
+    () =>
+      [...catalogProjects].sort((left, right) => left.project.localeCompare(right.project)),
+    [catalogProjects],
+  );
 
   const projectLookup = useMemo(
     () => new Map(projectOptions.map((project) => [normalizeLookup(project.project), project])),

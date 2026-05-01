@@ -189,8 +189,8 @@ export default function AdminTimesheetValidationPage() {
           </Card>
         </div>
 
-        <div className="grid gap-6 xl:grid-cols-[340px_minmax(0,1fr)]">
-          <Card className="border-border/60 bg-card/80 shadow-sm">
+        <div className="grid items-start gap-6 xl:grid-cols-[340px_minmax(0,1fr)]">
+          <Card className="self-start border-border/60 bg-card/80 shadow-sm">
             <CardHeader>
               <CardTitle className="text-base font-medium">Submission Queue</CardTitle>
               <CardDescription>Pick one submitted week to review.</CardDescription>
@@ -201,29 +201,31 @@ export default function AdminTimesheetValidationPage() {
                   No submitted timesheets yet.
                 </div>
               ) : (
-                pendingTimesheets.map((entry) => (
-                  <button
-                    key={entry.id}
-                    onClick={() => setSelectedTimesheetId(entry.id)}
-                    className={cn(
-                      "flex w-full items-center justify-between gap-4 rounded-xl border border-border/60 bg-background/70 px-4 py-3 text-left transition-colors hover:bg-secondary/15",
-                      selectedTimesheet?.id === entry.id && "border-primary/20 bg-primary/5",
-                    )}
-                  >
-                    <div className="min-w-0 space-y-1">
-                      <p className="truncate font-medium text-foreground">{entry.employeeNameSnapshot}</p>
-                      <p className="text-xs text-muted-foreground">{weekLabel(entry.weekStart)}</p>
-                    </div>
-                    <Badge className="rounded-full border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium text-sky-300 shadow-none">
-                      Submitted
-                    </Badge>
-                  </button>
-                ))
+                <div className="max-h-[540px] space-y-3 overflow-y-auto pr-1">
+                  {pendingTimesheets.map((entry) => (
+                    <button
+                      key={entry.id}
+                      onClick={() => setSelectedTimesheetId(entry.id)}
+                      className={cn(
+                        "flex w-full items-center justify-between gap-4 rounded-xl border border-border/60 bg-background/70 px-4 py-3 text-left transition-colors hover:bg-secondary/15",
+                        selectedTimesheet?.id === entry.id && "border-primary/20 bg-primary/5",
+                      )}
+                    >
+                      <div className="min-w-0 space-y-1">
+                        <p className="truncate font-medium text-foreground">{entry.employeeNameSnapshot}</p>
+                        <p className="text-xs text-muted-foreground">{weekLabel(entry.weekStart)}</p>
+                      </div>
+                      <Badge className="rounded-full border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium text-sky-300 shadow-none">
+                        Submitted
+                      </Badge>
+                    </button>
+                  ))}
+                </div>
               )}
             </CardContent>
           </Card>
 
-          <Card className="border-border/60 bg-card/80 shadow-sm">
+          <Card className="self-start border-border/60 bg-card/80 shadow-sm">
             <CardHeader>
               <CardTitle className="text-base font-medium">Review Workspace</CardTitle>
               <CardDescription>A cleaner breakdown of one submitted week before approval.</CardDescription>

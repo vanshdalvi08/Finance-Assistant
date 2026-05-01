@@ -4,7 +4,7 @@ import { differenceInCalendarDays, format, isAfter, isBefore } from "date-fns";
 import { CalendarDays, CheckCircle2, Clock3, PlaneTakeoff, Umbrella } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { DashboardCard } from "@/components/dashboard-card";
-import { api, type Holiday, type LeaveRequest } from "@/lib/api";
+import { api, type Holiday, type LeavePolicy, type LeaveRequest } from "@/lib/api";
 import { useAuthStore } from "@/store/auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -35,6 +35,77 @@ function requestDateLabel(request: LeaveRequest) {
   return `${formatDate(request.startDate)} - ${formatDate(request.endDate)}`;
 }
 
+function normalizeLeavePolicy(policy?: LeavePolicy | null) {
+  return {
+    annualLimit: Math.max(0, Math.round(Number(policy?.annualLimit ?? 10))),
+    period: policy?.period === "monthly" || policy?.period === "quarterly" || policy?.period === "yearly" ? policy.period : "yearly",
+    appliesTo: policy?.appliesTo === "selected" ? "selected" : "all",
+    employeeIds:
+      policy?.appliesTo === "selected"
+        ? Array.from(new Set((policy.employeeIds ?? []).map((employeeId) => employeeId.trim()).filter(Boolean)))
+        : [],
+  };
+}
+
+function effectiveLeavePolicy(policy: ReturnType<typeof normalizeLeavePolicy>, employeeId?: string) {
+  if (policy.appliesTo !== "selected") {
+    return policy;
+  }
+
+  if (employeeId && policy.employeeIds.includes(employeeId)) {
+    return policy;
+  }
+
+  return normalizeLeavePolicy({ annualLimit: 10, period: "yearly", appliesTo: "all", employeeIds: [], updatedAt: new Date().toISOString() });
+}
+
+function leavePolicyPeriodLabel(period?: "monthly" | "quarterly" | "yearly") {
+  if (period === "monthly") return "month";
+  if (period === "quarterly") return "quarter";
+  return "year";
+}
+
+function leavePolicyWindowForToday(period?: "monthly" | "quarterly" | "yearly") {
+  const target = new Date();
+  const year = target.getUTCFullYear();
+  const month = target.getUTCMonth();
+
+  if (period === "monthly") {
+    return {
+      startDate: new Date(Date.UTC(year, month, 1, 12, 0, 0, 0)),
+      endDate: new Date(Date.UTC(year, month + 1, 0, 12, 0, 0, 0)),
+    };
+  }
+
+  if (period === "quarterly") {
+    const quarterStartMonth = Math.floor(month / 3) * 3;
+    return {
+      startDate: new Date(Date.UTC(year, quarterStartMonth, 1, 12, 0, 0, 0)),
+      endDate: new Date(Date.UTC(year, quarterStartMonth + 3, 0, 12, 0, 0, 0)),
+    };
+  }
+
+  return {
+    startDate: new Date(Date.UTC(year, 0, 1, 12, 0, 0, 0)),
+    endDate: new Date(Date.UTC(year, 12, 0, 12, 0, 0, 0)),
+  };
+}
+
+function countLeaveDaysInWindow(requests: LeaveRequest[], startDate: Date, endDate: Date, status: "approved" | "pending") {
+  return requests
+    .filter((request) => request.status === status)
+    .reduce((sum, request) => {
+      const requestStart = new Date(`${request.startDate.slice(0, 10)}T12:00:00.000Z`);
+      const requestEnd = new Date(`${request.endDate.slice(0, 10)}T12:00:00.000Z`);
+      const overlapStart = requestStart.getTime() > startDate.getTime() ? requestStart : startDate;
+      const overlapEnd = requestEnd.getTime() < endDate.getTime() ? requestEnd : endDate;
+      if (overlapStart.getTime() > overlapEnd.getTime()) {
+        return sum;
+      }
+      return sum + differenceInCalendarDays(overlapEnd, overlapStart) + 1;
+    }, 0);
+}
+
 export default function EmployeeLeavesPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -63,9 +134,11 @@ export default function EmployeeLeavesPage() {
     const approved = leaveRequests.filter((request) => request.status === "approved");
     const pending = leaveRequests.filter((request) => request.status === "pending");
     const rejected = leaveRequests.filter((request) => request.status === "rejected");
-    const approvedDays = approved.reduce((sum, request) => sum + leaveDays(request), 0);
-    const pendingDays = pending.reduce((sum, request) => sum + leaveDays(request), 0);
-    const annualLimit = leavePolicy?.annualLimit ?? 10;
+    const policy = effectiveLeavePolicy(normalizeLeavePolicy(leavePolicy), user?.id);
+    const window = leavePolicyWindowForToday(policy.period);
+    const approvedDays = countLeaveDaysInWindow(approved, window.startDate, window.endDate, "approved");
+    const pendingDays = countLeaveDaysInWindow(pending, window.startDate, window.endDate, "pending");
+    const annualLimit = policy.annualLimit;
     const remaining = Math.max(0, annualLimit - approvedDays - pendingDays);
 
     return {
@@ -74,8 +147,9 @@ export default function EmployeeLeavesPage() {
       pendingDays,
       rejectedCount: rejected.length,
       remaining,
+      period: policy.period,
     };
-  }, [leavePolicy?.annualLimit, leaveRequests]);
+  }, [leavePolicy, leaveRequests, user?.id]);
 
   const upcomingHolidays = useMemo(() => {
     const today = new Date();
@@ -138,9 +212,9 @@ export default function EmployeeLeavesPage() {
         </div>
 
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <DashboardCard label="Annual Leave Limit" value={`${summary.annualLimit}d`} icon={<Umbrella className="h-5 w-5" />} />
-          <DashboardCard label="Approved Leave" value={`${summary.approvedDays}d`} icon={<CheckCircle2 className="h-5 w-5" />} />
-          <DashboardCard label="Pending Approval" value={`${summary.pendingDays}d`} icon={<Clock3 className="h-5 w-5" />} />
+          <DashboardCard label={`Policy Limit / ${leavePolicyPeriodLabel(summary.period)}`} value={`${summary.annualLimit}d`} icon={<Umbrella className="h-5 w-5" />} />
+          <DashboardCard label="Approved In Cycle" value={`${summary.approvedDays}d`} icon={<CheckCircle2 className="h-5 w-5" />} />
+          <DashboardCard label="Pending In Cycle" value={`${summary.pendingDays}d`} icon={<Clock3 className="h-5 w-5" />} />
           <DashboardCard label="Leave Remaining" value={`${summary.remaining}d`} icon={<PlaneTakeoff className="h-5 w-5" />} />
         </div>
 

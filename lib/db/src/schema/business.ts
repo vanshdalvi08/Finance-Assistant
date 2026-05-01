@@ -15,6 +15,8 @@ export type PurchaseOrderStatus = "active" | "archived";
 export type PurchaseOrderTaskStatus = "pending" | "paid";
 export type PreApprovalStatus = "draft" | "submitted" | "changes_requested" | "approved";
 export type IdempotencyRequestStatus = "processing" | "completed";
+export type LeavePolicyPeriod = "monthly" | "quarterly" | "yearly";
+export type LeavePolicyScope = "all" | "selected";
 export type AuditEntityType =
   | "employee"
   | "expense"
@@ -112,6 +114,9 @@ export interface PreApprovalProjectInfoRecord {
 export interface CompanySettingsRecord extends PreApprovalPartyInfoRecord {
   leavePolicy?: {
     annualLimit: number;
+    period?: LeavePolicyPeriod;
+    appliesTo?: LeavePolicyScope;
+    employeeIds?: string[];
     updatedAt: string;
     updatedBy?: string;
   };

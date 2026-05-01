@@ -173,6 +173,9 @@ export interface LeaveRequest {
 
 export interface LeavePolicy {
   annualLimit: number;
+  period?: "monthly" | "quarterly" | "yearly";
+  appliesTo?: "all" | "selected";
+  employeeIds?: string[];
   updatedAt: string;
   updatedBy?: string;
 }
@@ -904,6 +907,64 @@ interface LocalTimeOffStore {
   leavePolicy?: LeavePolicy;
 }
 
+function normalizeLeavePolicy(input?: Partial<LeavePolicy> | null): LeavePolicy {
+  return {
+    annualLimit: Math.max(0, Math.round(Number(input?.annualLimit ?? 10))),
+    period: input?.period === "monthly" || input?.period === "quarterly" || input?.period === "yearly" ? input.period : "yearly",
+    appliesTo: input?.appliesTo === "selected" ? "selected" : "all",
+    employeeIds:
+      input?.appliesTo === "selected"
+        ? Array.from(
+            new Set(
+              Array.isArray(input.employeeIds)
+                ? input.employeeIds.map((employeeId) => employeeId?.trim()).filter((employeeId): employeeId is string => Boolean(employeeId))
+                : [],
+            ),
+          )
+        : [],
+    updatedAt: String(input?.updatedAt ?? new Date().toISOString()),
+    updatedBy: typeof input?.updatedBy === "string" ? input.updatedBy : undefined,
+  };
+}
+
+function leavePolicyAppliesToEmployee(policy: LeavePolicy, employeeId?: string) {
+  if (policy.appliesTo !== "selected") {
+    return true;
+  }
+
+  return Boolean(employeeId && policy.employeeIds?.includes(employeeId));
+}
+
+function effectiveLeavePolicy(policy: LeavePolicy, employeeId?: string) {
+  return leavePolicyAppliesToEmployee(policy, employeeId) ? policy : normalizeLeavePolicy();
+}
+
+function leavePolicyWindowForDate(date: string, period: LeavePolicy["period"]) {
+  const target = new Date(`${date.slice(0, 10)}T12:00:00.000Z`);
+  const year = target.getUTCFullYear();
+  const month = target.getUTCMonth();
+
+  if (period === "monthly") {
+    return {
+      startDate: new Date(Date.UTC(year, month, 1, 12, 0, 0, 0)).toISOString().slice(0, 10),
+      endDate: new Date(Date.UTC(year, month + 1, 0, 12, 0, 0, 0)).toISOString().slice(0, 10),
+    };
+  }
+
+  if (period === "quarterly") {
+    const quarterStartMonth = Math.floor(month / 3) * 3;
+    return {
+      startDate: new Date(Date.UTC(year, quarterStartMonth, 1, 12, 0, 0, 0)).toISOString().slice(0, 10),
+      endDate: new Date(Date.UTC(year, quarterStartMonth + 3, 0, 12, 0, 0, 0)).toISOString().slice(0, 10),
+    };
+  }
+
+  return {
+    startDate: new Date(Date.UTC(year, 0, 1, 12, 0, 0, 0)).toISOString().slice(0, 10),
+    endDate: new Date(Date.UTC(year, 12, 0, 12, 0, 0, 0)).toISOString().slice(0, 10),
+  };
+}
+
 function canUseLocalStorage() {
   return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
 }
@@ -923,13 +984,7 @@ function readLocalTimeOffStore(): LocalTimeOffStore {
   return {
     holidays: Array.isArray(parsed.holidays) ? parsed.holidays : [],
     leaveRequests: Array.isArray(parsed.leaveRequests) ? parsed.leaveRequests : [],
-    leavePolicy: parsed.leavePolicy
-      ? {
-          annualLimit: Math.max(0, Math.round(Number(parsed.leavePolicy.annualLimit ?? 10))),
-          updatedAt: String(parsed.leavePolicy.updatedAt ?? new Date().toISOString()),
-          updatedBy: typeof parsed.leavePolicy.updatedBy === "string" ? parsed.leavePolicy.updatedBy : undefined,
-        }
-      : undefined,
+    leavePolicy: parsed.leavePolicy ? normalizeLeavePolicy(parsed.leavePolicy) : undefined,
   };
   } catch {
     return { holidays: [], leaveRequests: [] };
@@ -1129,6 +1184,7 @@ async function fallbackGetEmployeeMonthCalendar({ employeeId, month }: { employe
     fallbackGetLeaveRequests({ employeeId, status: "all" }),
     fallbackGetLeavePolicy(),
   ]);
+  const employeeLeavePolicy = effectiveLeavePolicy(leavePolicy, employeeId);
 
   const [yearString, monthString] = month.split("-");
   const year = Number(yearString);
@@ -1213,23 +1269,33 @@ async function fallbackGetEmployeeMonthCalendar({ employeeId, month }: { employe
       expenseSubmissions: 0,
     },
   );
-  const approvedLeaveDaysYear = leaveRequests
-    .filter((request) => request.kind !== "holiday" && request.status === "approved" && request.startDate.slice(0, 4) === yearString)
-    .reduce((sum, request) => sum + dayRange(request.startDate, request.endDate).length, 0);
-  const pendingLeaveDaysYear = leaveRequests
-    .filter((request) => request.kind !== "holiday" && request.status === "pending" && request.startDate.slice(0, 4) === yearString)
-    .reduce((sum, request) => sum + dayRange(request.startDate, request.endDate).length, 0);
-  const annualLeaveLimit = Math.max(0, Number(leavePolicy.annualLimit ?? 0));
-  const remainingLeaveDaysYear = Math.max(0, annualLeaveLimit - approvedLeaveDaysYear - pendingLeaveDaysYear);
+  const policyWindow = leavePolicyWindowForDate(`${month}-01`, employeeLeavePolicy.period);
+  const approvedLeaveDaysInCycle = leaveRequests
+    .filter((request) => request.kind !== "holiday" && request.status === "approved")
+    .reduce(
+      (sum, request) =>
+        sum +
+        dayRange(request.startDate, request.endDate).filter((day) => day >= policyWindow.startDate && day <= policyWindow.endDate).length,
+      0,
+    );
+  const pendingLeaveDaysInCycle = leaveRequests
+    .filter((request) => request.kind !== "holiday" && request.status === "pending")
+    .reduce(
+      (sum, request) =>
+        sum +
+        dayRange(request.startDate, request.endDate).filter((day) => day >= policyWindow.startDate && day <= policyWindow.endDate).length,
+      0,
+    );
+  const annualLeaveLimit = Math.max(0, Number(employeeLeavePolicy.annualLimit ?? 0));
 
   return {
     month,
     monthLabel: new Date(`${month}-01T00:00:00`).toLocaleString("en-US", { month: "long", year: "numeric" }),
     summary: {
       annualLeaveLimit,
-      approvedLeaveDaysYear,
-      pendingLeaveDaysYear,
-      remainingLeaveDaysYear,
+      approvedLeaveDaysYear: approvedLeaveDaysInCycle,
+      pendingLeaveDaysYear: pendingLeaveDaysInCycle,
+      remainingLeaveDaysYear: Math.max(0, annualLeaveLimit - approvedLeaveDaysInCycle - pendingLeaveDaysInCycle),
       ...summary,
       hoursLogged: Number(summary.hoursLogged.toFixed(1)),
     },
@@ -1239,18 +1305,18 @@ async function fallbackGetEmployeeMonthCalendar({ employeeId, month }: { employe
 
 async function fallbackGetLeavePolicy() {
   const store = readLocalTimeOffStore();
-  return store.leavePolicy ?? {
-    annualLimit: 10,
-    updatedAt: new Date().toISOString(),
-  };
+  return normalizeLeavePolicy(store.leavePolicy);
 }
 
-async function fallbackUpdateLeavePolicy(input: { annualLimit: number; updatedBy?: string }) {
-  const policy: LeavePolicy = {
-    annualLimit: Math.max(0, Math.round(Number(input.annualLimit ?? 0))),
+async function fallbackUpdateLeavePolicy(input: { annualLimit: number; period?: LeavePolicy["period"]; appliesTo?: LeavePolicy["appliesTo"]; employeeIds?: string[]; updatedBy?: string }) {
+  const policy: LeavePolicy = normalizeLeavePolicy({
+    annualLimit: input.annualLimit,
+    period: input.period,
+    appliesTo: input.appliesTo,
+    employeeIds: input.employeeIds,
     updatedAt: new Date().toISOString(),
     updatedBy: input.updatedBy?.trim() || undefined,
-  };
+  });
 
   updateLocalTimeOffStore((store) => ({
     ...store,
@@ -1733,7 +1799,7 @@ export const api = {
       () => fallbackGetLeavePolicy(),
     ),
 
-  updateLeavePolicy: async (input: { annualLimit: number; updatedBy?: string }) =>
+  updateLeavePolicy: async (input: { annualLimit: number; period?: LeavePolicy["period"]; appliesTo?: LeavePolicy["appliesTo"]; employeeIds?: string[]; updatedBy?: string }) =>
     withFallback(
       async () => (await businessPost<{ leavePolicy: LeavePolicy }>("/leave-settings", input, "PATCH")).leavePolicy,
       () => fallbackUpdateLeavePolicy(input),

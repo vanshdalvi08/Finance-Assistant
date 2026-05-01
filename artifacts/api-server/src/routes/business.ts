@@ -375,6 +375,9 @@ const leaveDecisionSchema = z.object({
 
 const leaveSettingsSchema = z.object({
   annualLimit: z.coerce.number().min(0).max(365),
+  period: z.enum(["monthly", "quarterly", "yearly"]).default("yearly"),
+  appliesTo: z.enum(["all", "selected"]).default("all"),
+  employeeIds: z.array(z.string().uuid()).optional(),
 });
 
 const poTaskSchema = z.object({
@@ -835,7 +838,82 @@ function leaveKindLabel(kind: LeaveRequestKind) {
   return kind === "holiday" ? "holiday" : "leave";
 }
 
-function countLeaveDaysInYear(store: BusinessStore, employeeId: string, year: number, tenantId: string) {
+const DEFAULT_LEAVE_POLICY: LeavePolicyRecord = {
+  annualLimit: 10,
+  period: "yearly",
+  appliesTo: "all",
+  employeeIds: [],
+  updatedAt: "1970-01-01T00:00:00.000Z",
+};
+
+function normalizeLeavePolicy(input?: Partial<LeavePolicyRecord> | null): LeavePolicyRecord {
+  return {
+    annualLimit: Math.max(0, Math.round(Number(input?.annualLimit ?? DEFAULT_LEAVE_POLICY.annualLimit))),
+    period: input?.period === "monthly" || input?.period === "quarterly" || input?.period === "yearly" ? input.period : "yearly",
+    appliesTo: input?.appliesTo === "selected" ? "selected" : "all",
+    employeeIds:
+      input?.appliesTo === "selected"
+        ? Array.from(
+            new Set(
+              Array.isArray(input.employeeIds)
+                ? input.employeeIds.map((employeeId) => employeeId?.trim()).filter((employeeId): employeeId is string => Boolean(employeeId))
+                : [],
+            ),
+          )
+        : [],
+    updatedAt: typeof input?.updatedAt === "string" && input.updatedAt ? input.updatedAt : DEFAULT_LEAVE_POLICY.updatedAt,
+    updatedBy: input?.updatedBy?.trim() || undefined,
+  };
+}
+
+function leavePolicyAppliesToEmployee(policy: LeavePolicyRecord, employeeId: string) {
+  if (policy.appliesTo !== "selected") {
+    return true;
+  }
+
+  return policy.employeeIds?.includes(employeeId) ?? false;
+}
+
+function effectiveLeavePolicyForEmployee(policy: LeavePolicyRecord, employeeId: string) {
+  return leavePolicyAppliesToEmployee(policy, employeeId) ? policy : DEFAULT_LEAVE_POLICY;
+}
+
+function leavePolicyPeriodLabel(period: LeavePolicyRecord["period"]) {
+  if (period === "monthly") return "monthly";
+  if (period === "quarterly") return "quarterly";
+  return "yearly";
+}
+
+function leavePolicyWindowForDate(date: string, period: LeavePolicyRecord["period"]) {
+  const target = new Date(`${isoDay(date)}T12:00:00.000Z`);
+  const year = target.getUTCFullYear();
+  const month = target.getUTCMonth();
+
+  if (period === "monthly") {
+    return {
+      key: `${year}-${String(month + 1).padStart(2, "0")}`,
+      startDate: new Date(Date.UTC(year, month, 1, 12, 0, 0, 0)).toISOString().slice(0, 10),
+      endDate: new Date(Date.UTC(year, month + 1, 0, 12, 0, 0, 0)).toISOString().slice(0, 10),
+    };
+  }
+
+  if (period === "quarterly") {
+    const quarterStartMonth = Math.floor(month / 3) * 3;
+    return {
+      key: `${year}-Q${Math.floor(month / 3) + 1}`,
+      startDate: new Date(Date.UTC(year, quarterStartMonth, 1, 12, 0, 0, 0)).toISOString().slice(0, 10),
+      endDate: new Date(Date.UTC(year, quarterStartMonth + 3, 0, 12, 0, 0, 0)).toISOString().slice(0, 10),
+    };
+  }
+
+  return {
+    key: `${year}`,
+    startDate: new Date(Date.UTC(year, 0, 1, 12, 0, 0, 0)).toISOString().slice(0, 10),
+    endDate: new Date(Date.UTC(year, 12, 0, 12, 0, 0, 0)).toISOString().slice(0, 10),
+  };
+}
+
+function countLeaveDaysInWindow(store: BusinessStore, employeeId: string, tenantId: string, startDate: string, endDate: string) {
   return store.leaveRequests.reduce((sum, request) => {
     if (
       (request.tenantId ?? DEFAULT_TENANT_ID) !== tenantId ||
@@ -848,8 +926,7 @@ function countLeaveDaysInYear(store: BusinessStore, employeeId: string, year: nu
 
     return (
       sum +
-      enumerateDays(request.startDate, request.endDate).filter((day) => new Date(`${day}T00:00:00.000Z`).getUTCFullYear() === year)
-        .length
+      enumerateDays(request.startDate, request.endDate).filter((day) => isDateWithinRange(day, startDate, endDate)).length
     );
   }, 0);
 }
@@ -1337,12 +1414,12 @@ router.get("/leave-settings", async (_request, response) => {
   const rows = await db.select().from(companySettingsTable).where(eq(companySettingsTable.tenantId, tenantId)).limit(1);
   const leavePolicy = (rows[0]?.data as { leavePolicy?: LeavePolicyRecord } | undefined)?.leavePolicy;
   if (leavePolicy) {
-    response.json({ leavePolicy });
+    response.json({ leavePolicy: normalizeLeavePolicy(leavePolicy) });
     return;
   }
 
   const store = await readStore();
-  response.json({ leavePolicy: store.leavePolicy });
+  response.json({ leavePolicy: normalizeLeavePolicy(store.leavePolicy) });
 });
 
 router.patch("/leave-settings", requireTenantRole("admin"), async (request, response) => {
@@ -1352,13 +1429,32 @@ router.patch("/leave-settings", requireTenantRole("admin"), async (request, resp
     return;
   }
 
-  const leavePolicy: LeavePolicyRecord = {
-    annualLimit: Math.max(0, Math.round(parsed.data.annualLimit)),
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const selectedEmployeeIds =
+    parsed.data.appliesTo === "selected"
+      ? Array.from(new Set((parsed.data.employeeIds ?? []).map((employeeId) => employeeId.trim()).filter(Boolean)))
+      : [];
+  const tenantEmployees = selectedEmployeeIds.length > 0 ? await loadEmployees(tenantId) : [];
+  const validEmployeeIds = new Set(tenantEmployees.map((employee) => employee.id));
+  const invalidEmployeeIds = selectedEmployeeIds.filter((employeeId) => !validEmployeeIds.has(employeeId));
+  if (parsed.data.appliesTo === "selected" && selectedEmployeeIds.length === 0) {
+    response.status(400).json({ message: "Select at least one employee or apply the rule to all employees." });
+    return;
+  }
+  if (invalidEmployeeIds.length > 0) {
+    response.status(400).json({ message: "One or more selected employees are not part of this tenant." });
+    return;
+  }
+
+  const leavePolicy: LeavePolicyRecord = normalizeLeavePolicy({
+    annualLimit: parsed.data.annualLimit,
+    period: parsed.data.period,
+    appliesTo: parsed.data.appliesTo,
+    employeeIds: selectedEmployeeIds,
     updatedAt: nowIso(),
     updatedBy: request.auth?.user.name ?? "Admin",
-  };
+  });
 
-  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const rows = await db.select().from(companySettingsTable).where(eq(companySettingsTable.tenantId, tenantId)).limit(1);
   const existing = rows[0]?.data ?? {};
   const nextData = {
@@ -1384,7 +1480,26 @@ router.patch("/leave-settings", requireTenantRole("admin"), async (request, resp
     })
     .returning();
 
-  response.json({ leavePolicy: (updated[0]?.data as { leavePolicy?: LeavePolicyRecord } | undefined)?.leavePolicy ?? leavePolicy });
+  logger.info(
+    {
+      tenantId,
+      actorUserId: request.auth?.user.id,
+      actorName: request.auth?.user.name,
+      leavePolicy: {
+        annualLimit: leavePolicy.annualLimit,
+        period: leavePolicy.period,
+        appliesTo: leavePolicy.appliesTo,
+        selectedEmployees: leavePolicy.employeeIds?.length ?? 0,
+      },
+    },
+    "Updated leave policy",
+  );
+
+  response.json({
+    leavePolicy: normalizeLeavePolicy(
+      (updated[0]?.data as { leavePolicy?: LeavePolicyRecord } | undefined)?.leavePolicy ?? leavePolicy,
+    ),
+  });
 });
 
 router.get("/company-settings", requireTenantRole("admin"), async (_request, response) => {
@@ -1508,12 +1623,6 @@ router.post("/leave-requests", requireTenantRole("employee"), async (request, re
     return;
   }
 
-  const requestYear = new Date(startDate).getUTCFullYear();
-  if (requestYear !== new Date(endDate).getUTCFullYear()) {
-    response.status(400).json({ message: "Leave request must stay within a single calendar year." });
-    return;
-  }
-
   const overlapping = store.leaveRequests.find(
     (requestItem) =>
       requestItem.employeeId === employeeId &&
@@ -1529,16 +1638,31 @@ router.post("/leave-requests", requireTenantRole("employee"), async (request, re
     return;
   }
 
-  const requestedDays = enumerateDays(startDate, endDate).length;
-  const alreadyUsedDays = countLeaveDaysInYear(store, employeeId, requestYear, tenantId);
-  const nextUsedDays = alreadyUsedDays + requestedDays;
   const leavePolicyRows = await db.select().from(companySettingsTable).where(eq(companySettingsTable.tenantId, tenantId)).limit(1);
-  const tenantLeavePolicy = (leavePolicyRows[0]?.data as { leavePolicy?: LeavePolicyRecord } | undefined)?.leavePolicy ?? store.leavePolicy;
-  if (nextUsedDays > tenantLeavePolicy.annualLimit) {
-    response.status(400).json({
-      message: `This request exceeds the annual leave limit of ${tenantLeavePolicy.annualLimit} day(s).`,
-    });
-    return;
+  const tenantLeavePolicy = normalizeLeavePolicy(
+    (leavePolicyRows[0]?.data as { leavePolicy?: LeavePolicyRecord } | undefined)?.leavePolicy ?? store.leavePolicy,
+  );
+  const effectiveLeavePolicy = effectiveLeavePolicyForEmployee(tenantLeavePolicy, employeeId);
+  const requestedDaysByWindow = new Map<string, { startDate: string; endDate: string; days: number }>();
+  for (const day of enumerateDays(startDate, endDate)) {
+    const window = leavePolicyWindowForDate(day, effectiveLeavePolicy.period);
+    const existing = requestedDaysByWindow.get(window.key);
+    if (existing) {
+      existing.days += 1;
+      continue;
+    }
+    requestedDaysByWindow.set(window.key, { startDate: window.startDate, endDate: window.endDate, days: 1 });
+  }
+
+  for (const window of requestedDaysByWindow.values()) {
+    const alreadyUsedDays = countLeaveDaysInWindow(store, employeeId, tenantId, window.startDate, window.endDate);
+    const nextUsedDays = alreadyUsedDays + window.days;
+    if (nextUsedDays > effectiveLeavePolicy.annualLimit) {
+      response.status(400).json({
+        message: `This request exceeds the ${leavePolicyPeriodLabel(effectiveLeavePolicy.period)} leave limit of ${effectiveLeavePolicy.annualLimit} day(s).`,
+      });
+      return;
+    }
   }
 
   const leaveRequest: LeaveRequestRecord = {

@@ -35,6 +35,8 @@ export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type ActorRole = "admin" | "employee" | "client" | "platform_super_admin" | "system";
 export type LeaveRequestStatus = "pending" | "approved" | "rejected";
 export type LeaveRequestKind = "leave" | "holiday";
+export type LeavePolicyPeriod = "monthly" | "quarterly" | "yearly";
+export type LeavePolicyScope = "all" | "selected";
 
 export interface AuditTrailDetailsRecord {
   entityLabel?: string;
@@ -212,6 +214,9 @@ export interface LeaveRequestRecord {
 
 export interface LeavePolicyRecord {
   annualLimit: number;
+  period?: LeavePolicyPeriod;
+  appliesTo?: LeavePolicyScope;
+  employeeIds?: string[];
   updatedAt: string;
   updatedBy?: string;
 }
@@ -1124,6 +1129,9 @@ export function createDefaultStore(): BusinessStore {
     leaveRequests: [],
     leavePolicy: {
       annualLimit: 10,
+      period: "yearly",
+      appliesTo: "all",
+      employeeIds: [],
       updatedAt: "1970-01-01T00:00:00.000Z",
     },
     auditTrail: [],
@@ -1288,6 +1296,21 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
     })) : [],
     leavePolicy: {
       annualLimit: Math.max(0, Math.round(Number(input.leavePolicy?.annualLimit ?? defaults.leavePolicy.annualLimit))),
+      period:
+        input.leavePolicy?.period === "monthly" || input.leavePolicy?.period === "quarterly" || input.leavePolicy?.period === "yearly"
+          ? input.leavePolicy.period
+          : (defaults.leavePolicy.period ?? "yearly"),
+      appliesTo: input.leavePolicy?.appliesTo === "selected" ? "selected" : "all",
+      employeeIds:
+        input.leavePolicy?.appliesTo === "selected"
+          ? Array.from(
+              new Set(
+                Array.isArray(input.leavePolicy.employeeIds)
+                  ? input.leavePolicy.employeeIds.map((employeeId) => employeeId?.trim()).filter((employeeId): employeeId is string => Boolean(employeeId))
+                  : [],
+              ),
+            )
+          : [],
       updatedAt: normalizeDate(String(input.leavePolicy?.updatedAt ?? defaults.leavePolicy.updatedAt ?? nowIso())),
       updatedBy: input.leavePolicy?.updatedBy?.trim() || undefined,
     },

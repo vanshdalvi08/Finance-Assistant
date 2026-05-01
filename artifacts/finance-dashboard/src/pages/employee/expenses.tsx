@@ -1,4 +1,4 @@
-import { useMemo, useState, type ChangeEvent } from "react";
+import { useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { DashboardCard } from "@/components/dashboard-card";
@@ -13,7 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { uploadExpenseAttachment } from "@/lib/uploads";
-import { Building2 } from "lucide-react";
+import { Paperclip, UploadCloud, X } from "lucide-react";
 
 function formatCurrency(value: number) {
   return value.toLocaleString("en-IN", { style: "currency", currency: "INR" });
@@ -45,6 +45,7 @@ export default function EmployeeExpensesPage() {
   const [attachmentLabel, setAttachmentLabel] = useState("");
   const [attachmentPath, setAttachmentPath] = useState("");
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
+  const attachmentInputRef = useRef<HTMLInputElement | null>(null);
 
   const { data: employee } = useQuery({
     queryKey: ["employee-profile", user?.id, user?.email],
@@ -161,6 +162,15 @@ export default function EmployeeExpensesPage() {
     }
   }
 
+  function clearAttachment() {
+    setAttachmentLabel("");
+    setAttachmentPath("");
+    setForm((current) => ({ ...current, attachmentName: "" }));
+    if (attachmentInputRef.current) {
+      attachmentInputRef.current.value = "";
+    }
+  }
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -181,10 +191,6 @@ export default function EmployeeExpensesPage() {
             <CardTitle className="text-base">New Expense</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="flex items-center gap-2 rounded-xl border border-border/60 bg-secondary/10 px-4 py-3 text-sm text-muted-foreground">
-              <Building2 className="h-4 w-4 text-primary" />
-              <span>Employees can submit office expenses only. Personal expenses stay on the admin side.</span>
-            </div>
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <Label>Category</Label>
@@ -223,17 +229,47 @@ export default function EmployeeExpensesPage() {
               </div>
               <div className="space-y-2">
                 <Label>Attachment</Label>
-                <div className="flex items-center gap-2 rounded-md border border-border bg-background px-3">
-                  <Input
+                <div className="rounded-xl border border-border/60 bg-secondary/10 p-3">
+                  <input
+                    ref={attachmentInputRef}
                     type="file"
                     accept="image/*,.pdf"
-                    className="border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
+                    className="hidden"
                     onChange={(event) => void handleAttachmentChange(event)}
                     disabled={isUploadingAttachment}
                   />
-                  <span className="text-xs text-muted-foreground whitespace-nowrap">
-                    {isUploadingAttachment ? "Uploading..." : attachmentLabel || "Optional"}
-                  </span>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                        <Paperclip className="h-4 w-4 text-primary" />
+                        {attachmentLabel ? (
+                          <span className="truncate">{attachmentLabel}</span>
+                        ) : (
+                          <span>No file selected</span>
+                        )}
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {isUploadingAttachment ? "Uploading receipt..." : "PNG, JPG, or PDF up to your current upload limit."}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {attachmentLabel ? (
+                        <Button type="button" variant="ghost" size="icon" onClick={clearAttachment} disabled={isUploadingAttachment}>
+                          <X className="h-4 w-4" />
+                        </Button>
+                      ) : null}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="shrink-0"
+                        onClick={() => attachmentInputRef.current?.click()}
+                        disabled={isUploadingAttachment}
+                      >
+                        <UploadCloud className="mr-2 h-4 w-4" />
+                        {attachmentLabel ? "Replace" : "Attach File"}
+                      </Button>
+                    </div>
+                  </div>
                 </div>
               </div>
               <div className="space-y-2">
