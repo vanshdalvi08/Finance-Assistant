@@ -43,7 +43,9 @@ import {
   loadEmployees,
   loadEmployeeProfile,
   blankHours,
+  calculateTaskWindowDays,
   sumTimesheetHours,
+  sumTaskLineHoursWithinWindow,
   effectiveHourlyRate,
   reviewTimesheetFast,
   saveTimesheetFast,
@@ -2271,7 +2273,11 @@ router.get("/projects/summary", requireTenantRole("admin", "employee"), async (_
       }
 
       const hours = DAY_KEYS.reduce((sum, day) => sum + Number(line.hours[day] ?? 0), 0);
-      taskUsageById.set(line.projectTaskId, (taskUsageById.get(line.projectTaskId) ?? 0) + hours);
+      const taskWindow = activeTaskCatalog.get(line.projectTaskId);
+      const effectiveHours = taskWindow
+        ? sumTaskLineHoursWithinWindow(entry.weekStart, line.hours, taskWindow)
+        : hours;
+      taskUsageById.set(line.projectTaskId, (taskUsageById.get(line.projectTaskId) ?? 0) + effectiveHours);
     }
   }
   const grouped = new Map<string, {
@@ -2288,6 +2294,8 @@ router.get("/projects/summary", requireTenantRole("admin", "employee"), async (_
       name: string;
       description?: string;
       maxHours?: number;
+      startDate?: string;
+      endDate?: string;
       durationDays?: number;
       hourLimitScope: "overall" | "per_employee";
       status: "active" | "archived";
@@ -2365,8 +2373,9 @@ router.get("/projects/summary", requireTenantRole("admin", "employee"), async (_
       const maxHours = Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : 0;
       const remainingHours = maxHours > 0 ? Math.max(0, Number((maxHours - usedHours).toFixed(2))) : undefined;
       const utilisation = maxHours > 0 ? Math.min(100, Number(((usedHours / maxHours) * 100).toFixed(1))) : 0;
-      const hoursPerDay = maxHours > 0 && Number(task.durationDays ?? 0) > 0
-        ? Number((maxHours / Number(task.durationDays)).toFixed(1))
+      const durationDays = calculateTaskWindowDays(task);
+      const hoursPerDay = maxHours > 0 && Number(durationDays ?? 0) > 0
+        ? Number((maxHours / Number(durationDays)).toFixed(1))
         : undefined;
 
       return {
@@ -2374,7 +2383,9 @@ router.get("/projects/summary", requireTenantRole("admin", "employee"), async (_
         name: task.name,
         description: task.description,
         maxHours: task.maxHours,
-        durationDays: task.durationDays,
+        startDate: task.startDate,
+        endDate: task.endDate,
+        durationDays,
         hourLimitScope: task.hourLimitScope === "per_employee" ? "per_employee" : "overall",
         status: task.status,
         usedHours,

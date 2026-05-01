@@ -218,6 +218,13 @@
       "when": 1777593600000,
       "tag": "0029_task_hour_limit_scope",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1777597200000,
+      "tag": "0030_task_date_window",
+      "breakpoints": true
     }
   ]
 }

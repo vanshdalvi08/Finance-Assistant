@@ -37,7 +37,8 @@ type TaskDraft = {
   name: string;
   description: string;
   maxHours: string;
-  durationDays: string;
+  startDate: string;
+  endDate: string;
   hourLimitScope: "overall" | "per_employee";
   subTasks: string;
   status: "active" | "archived";
@@ -55,7 +56,8 @@ const EMPTY_TASK: TaskDraft = {
   name: "",
   description: "",
   maxHours: "",
-  durationDays: "",
+  startDate: "",
+  endDate: "",
   hourLimitScope: "overall",
   subTasks: "",
   status: "active",
@@ -77,11 +79,43 @@ function formatCapacityHours(value: number | undefined) {
   return `${Number(value.toFixed(1)).toString()}h`;
 }
 
+function formatTaskWindowLabel(task: { startDate?: string; endDate?: string; durationDays?: number }) {
+  if (task.startDate && task.endDate) {
+    return `${format(new Date(`${task.startDate}T12:00:00`), "dd MMM yyyy")} - ${format(new Date(`${task.endDate}T12:00:00`), "dd MMM yyyy")}`;
+  }
+
+  return task.durationDays ? `${task.durationDays}d window` : null;
+}
+
 function lineTotal(line: TimesheetRecord["lines"][number]) {
   return PROJECT_BUDGET_DAY_KEYS.reduce(
     (sum, day) => sum + Number(line.hours[day] ?? 0),
     0,
   );
+}
+
+function lineHoursWithinTaskWindow(
+  weekStart: string,
+  line: TimesheetRecord["lines"][number],
+  task?: { startDate?: string; endDate?: string },
+) {
+  const startDate = task?.startDate;
+  const endDate = task?.endDate;
+  if (!startDate || !endDate) {
+    return lineTotal(line);
+  }
+
+  return PROJECT_BUDGET_DAY_KEYS.reduce((sum, day, index) => {
+    const hours = Number(line.hours[day] ?? 0);
+    if (hours <= 0) {
+      return sum;
+    }
+
+    const date = new Date(weekStart);
+    date.setDate(date.getDate() + index);
+    const dateIso = format(date, "yyyy-MM-dd");
+    return dateIso >= startDate && dateIso <= endDate ? sum + hours : sum;
+  }, 0);
 }
 
 
@@ -106,7 +140,8 @@ function toForm(project?: ProjectRecord | null): ProjectForm {
           name: task.name,
           description: task.description ?? "",
           maxHours: task.maxHours ? String(task.maxHours) : "",
-          durationDays: task.durationDays ? String(task.durationDays) : "",
+          startDate: task.startDate ?? "",
+          endDate: task.endDate ?? "",
           hourLimitScope: task.hourLimitScope === "per_employee" ? "per_employee" : "overall",
           subTasks: task.subTasks?.join("\n") ?? "",
           status: task.status === "archived" ? "archived" : "active",
@@ -148,6 +183,15 @@ export default function ProjectBudgetsPage() {
     () => new Map(projectBudgetSummary.map((summary) => [summary.id, summary])),
     [projectBudgetSummary],
   );
+  const taskWindowLookup = useMemo(
+    () =>
+      new Map(
+        projects.flatMap((project) =>
+          project.tasks.map((task) => [task.id, { startDate: task.startDate, endDate: task.endDate }] as const),
+        ),
+      ),
+    [projects],
+  );
 
   const employeeOptions = useMemo(
     () => [{ id: "all", name: "All employees" }, ...employees.map((employee) => ({ id: employee.id, name: employee.name }))],
@@ -173,7 +217,7 @@ export default function ProjectBudgetsPage() {
           continue;
         }
 
-        const lineHours = lineTotal(line);
+        const lineHours = lineHoursWithinTaskWindow(timesheet.weekStart, line, taskWindowLookup.get(line.projectTaskId));
         if (lineHours <= 0) {
           continue;
         }
@@ -186,7 +230,7 @@ export default function ProjectBudgetsPage() {
     }
 
     return lookup;
-  }, [timesheets]);
+  }, [taskWindowLookup, timesheets]);
 
   const filteredProjects = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -234,7 +278,8 @@ export default function ProjectBudgetsPage() {
           name: task.name.trim(),
           description: task.description.trim(),
           maxHours: Math.max(0, Number(task.maxHours || 0)) || undefined,
-          durationDays: Math.max(0, Number(task.durationDays || 0)) || undefined,
+          startDate: task.startDate || undefined,
+          endDate: task.endDate || undefined,
           hourLimitScope: normalizeTaskHourLimitScope(task.hourLimitScope),
           subTasks: task.subTasks
             .split(/[\n,]/)
@@ -498,7 +543,7 @@ export default function ProjectBudgetsPage() {
                             typeof maxHours === "number"
                               ? `${formatCapacityHours(maxHours)} max ${hourLimitScope === "per_employee" ? "per employee" : "overall"}`
                               : "No hour cap",
-                            task.durationDays ? `${task.durationDays}d window` : null,
+                            formatTaskWindowLabel(task),
                           ]
                             .filter(Boolean)
                             .join(" - ");
@@ -767,7 +812,7 @@ export default function ProjectBudgetsPage() {
                       </div>
                     </div>
 
-                    <div className="grid gap-4 md:grid-cols-[minmax(0,1.6fr)_140px_140px_minmax(180px,0.9fr)]">
+                    <div className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(360px,0.95fr)]">
                       <div className="space-y-2">
                         <Label className="text-xs font-medium text-muted-foreground">Short description</Label>
                         <Input
@@ -777,41 +822,60 @@ export default function ProjectBudgetsPage() {
                         />
                       </div>
 
-                      <div className="space-y-2">
-                        <Label className="text-xs font-medium text-muted-foreground">Max hours</Label>
-                        <Input
-                          type="number"
-                          min={0}
-                          step={0.5}
-                          value={task.maxHours}
-                          onChange={(event) => updateTask(index, "maxHours", event.target.value)}
-                          placeholder="0"
-                        />
-                      </div>
+                      <div className="rounded-xl border border-border/60 bg-background/55 p-3">
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-xs font-medium text-muted-foreground">Capacity & window</p>
+                            <p className="text-[11px] text-muted-foreground">Set the cap, scope, and active claim period.</p>
+                          </div>
+                        </div>
 
-                      <div className="space-y-2">
-                        <Label className="text-xs font-medium text-muted-foreground">Days</Label>
-                        <Input
-                          type="number"
-                          min={0}
-                          step={1}
-                          value={task.durationDays}
-                          onChange={(event) => updateTask(index, "durationDays", event.target.value)}
-                          placeholder="0"
-                        />
-                      </div>
+                        <div className="grid gap-3 sm:grid-cols-[110px_minmax(170px,0.9fr)]">
+                          <div className="space-y-2">
+                            <Label className="text-xs font-medium text-muted-foreground">Max hours</Label>
+                            <Input
+                              type="number"
+                              min={0}
+                              step={0.5}
+                              value={task.maxHours}
+                              onChange={(event) => updateTask(index, "maxHours", event.target.value)}
+                              placeholder="0"
+                            />
+                          </div>
 
-                      <div className="space-y-2">
-                        <Label className="text-xs font-medium text-muted-foreground">Hour scope</Label>
-                        <Select value={task.hourLimitScope} onValueChange={(value) => updateTask(index, "hourLimitScope", value)}>
-                          <SelectTrigger className="rounded-xl">
-                            <SelectValue placeholder="Select scope" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="overall">Overall total</SelectItem>
-                            <SelectItem value="per_employee">Per employee</SelectItem>
-                          </SelectContent>
-                        </Select>
+                          <div className="space-y-2">
+                            <Label className="text-xs font-medium text-muted-foreground">Hour scope</Label>
+                            <Select value={task.hourLimitScope} onValueChange={(value) => updateTask(index, "hourLimitScope", value)}>
+                              <SelectTrigger className="rounded-xl">
+                                <SelectValue placeholder="Select scope" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="overall">Overall total</SelectItem>
+                                <SelectItem value="per_employee">Per employee</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                          <div className="space-y-2">
+                            <Label className="text-xs font-medium text-muted-foreground">Start date</Label>
+                            <Input
+                              type="date"
+                              value={task.startDate}
+                              onChange={(event) => updateTask(index, "startDate", event.target.value)}
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            <Label className="text-xs font-medium text-muted-foreground">End date</Label>
+                            <Input
+                              type="date"
+                              value={task.endDate}
+                              onChange={(event) => updateTask(index, "endDate", event.target.value)}
+                            />
+                          </div>
+                        </div>
                       </div>
                     </div>
 

@@ -83,6 +83,29 @@ function lineTotal(line: TimesheetTaskLine) {
   return DAYS.reduce((sum, day) => sum + (line.hours[day.key] ?? 0), 0);
 }
 
+function lineHoursWithinTaskWindow(
+  weekStart: string,
+  line: TimesheetTaskLine,
+  task?: { startDate?: string; endDate?: string },
+) {
+  const startDate = task?.startDate;
+  const endDate = task?.endDate;
+  if (!startDate || !endDate) {
+    return lineTotal(line);
+  }
+
+  return DAYS.reduce((sum, day, index) => {
+    const hours = Number(line.hours[day.key] ?? 0);
+    if (hours <= 0) {
+      return sum;
+    }
+
+    const date = addDays(new Date(weekStart), index);
+    const dateIso = format(date, "yyyy-MM-dd");
+    return dateIso >= startDate && dateIso <= endDate ? sum + hours : sum;
+  }, 0);
+}
+
 function positiveTaskLimit(task?: { maxHours?: number; remainingHours?: number }) {
   if (typeof task?.remainingHours === "number") {
     return task.remainingHours;
@@ -109,6 +132,23 @@ function formatHourValue(value: number) {
 
 function formatTaskOptionLabel(task: ProjectCatalogTask) {
   return task.description?.trim() ? `${task.name} - ${task.description.trim()}` : task.name;
+}
+
+function formatTaskWindowLabel(task?: { startDate?: string; endDate?: string; durationDays?: number }) {
+  if (task?.startDate && task.endDate) {
+    return `${task.startDate} to ${task.endDate}`;
+  }
+
+  return task?.durationDays ? `${task.durationDays} day window` : null;
+}
+
+function isTaskWindowDay(task: { startDate?: string; endDate?: string } | undefined, date: Date) {
+  if (!task?.startDate || !task.endDate) {
+    return true;
+  }
+
+  const dayIso = format(date, "yyyy-MM-dd");
+  return dayIso >= task.startDate && dayIso <= task.endDate;
 }
 
 
@@ -229,6 +269,15 @@ export default function EmployeeTimesheetPage() {
 
   const projectLookup = useMemo(
     () => new Map(projectOptions.map((project) => [normalizeLookup(project.project), project])),
+    [projectOptions],
+  );
+  const taskWindowLookup = useMemo(
+    () =>
+      new Map(
+        projectOptions.flatMap((project) =>
+          project.tasks.map((task) => [task.id, { startDate: task.startDate, endDate: task.endDate }] as const),
+        ),
+      ),
     [projectOptions],
   );
   const summaryTaskLookup = useMemo(() => {
@@ -402,7 +451,11 @@ export default function EmployeeTimesheetPage() {
     updateLine(lineId, (line) => ({ ...line, subTask: value }));
   }
 
-  function getCurrentDraftTaskHours(taskId: string, excludeLineId?: string) {
+  function getCurrentDraftTaskHours(
+    taskId: string,
+    taskWindow?: { startDate?: string; endDate?: string },
+    excludeLineId?: string,
+  ) {
     if (!draft) {
       return 0;
     }
@@ -412,7 +465,7 @@ export default function EmployeeTimesheetPage() {
         return sum;
       }
 
-      return sum + lineTotal(line);
+      return sum + lineHoursWithinTaskWindow(draft.weekStart, line, taskWindow);
     }, 0);
   }
 
@@ -429,12 +482,15 @@ export default function EmployeeTimesheetPage() {
           continue;
         }
 
-        lookup.set(line.projectTaskId, (lookup.get(line.projectTaskId) ?? 0) + lineTotal(line));
+        lookup.set(
+          line.projectTaskId,
+          (lookup.get(line.projectTaskId) ?? 0) + lineHoursWithinTaskWindow(entry.weekStart, line, taskWindowLookup.get(line.projectTaskId)),
+        );
       }
     }
 
     return lookup;
-  }, [timesheets]);
+  }, [taskWindowLookup, timesheets]);
 
   function getTaskCapacitySnapshot(task?: ProjectCatalogTask) {
     if (!task || Number(task.maxHours ?? 0) <= 0) {
@@ -450,7 +506,7 @@ export default function EmployeeTimesheetPage() {
           return sum;
         }
 
-        return sum + lineTotal(line);
+        return sum + lineHoursWithinTaskWindow(current.weekStart, line, task);
       }, 0) ?? 0;
     const overallUsed =
       typeof summaryTask?.usedHours === "number"
@@ -459,7 +515,7 @@ export default function EmployeeTimesheetPage() {
           ? Math.max(0, maxHours - summaryTask.remainingHours)
           : 0;
     const employeeUsed = persistedEmployeeTaskHours.get(task.id) ?? 0;
-    const currentDraftHours = getCurrentDraftTaskHours(task.id);
+    const currentDraftHours = getCurrentDraftTaskHours(task.id, task);
     const baselineUsed = hourLimitScope === "per_employee" ? employeeUsed : overallUsed;
     const used = Number((baselineUsed - persistedCurrentEntryTaskHours + currentDraftHours).toFixed(2));
     const remaining = Math.max(0, Number((maxHours - used).toFixed(2)));
@@ -470,6 +526,9 @@ export default function EmployeeTimesheetPage() {
       used,
       remaining,
       currentDraftHours: Number(currentDraftHours.toFixed(2)),
+      startDate: summaryTask?.startDate ?? task.startDate,
+      endDate: summaryTask?.endDate ?? task.endDate,
+      durationDays: summaryTask?.durationDays ?? task.durationDays,
     };
   }
 
@@ -584,6 +643,15 @@ export default function EmployeeTimesheetPage() {
       targetLine?.projectTaskId && targetLine.project.trim()
         ? getProjectTaskOptions(targetLine.project).find((option) => option.id === targetLine.projectTaskId)
         : undefined;
+    const claimDate = weekDates.find((weekDay) => weekDay.key === day)?.date;
+    if (requestedValue > 0 && claimDate && selectedTask && !isTaskWindowDay(selectedTask, claimDate)) {
+      toast({
+        title: "Task window closed for this day",
+        description: `${selectedTask.name} can only be claimed ${formatTaskWindowLabel(selectedTask) ?? "inside its allowed date window"}.`,
+        variant: "destructive",
+      });
+      return;
+    }
     const taskSnapshot = getTaskCapacitySnapshot(selectedTask);
     const maxAvailableForCell = taskSnapshot ? Math.max(0, Number((taskSnapshot.remaining + currentValue).toFixed(2))) : 24;
     const nextValue = Math.max(0, Math.min(requestedValue, maxAvailableForCell, 24));
@@ -859,6 +927,12 @@ export default function EmployeeTimesheetPage() {
                                         <span>
                                           {taskCapacity.hourLimitScope === "per_employee" ? "Per employee cap" : "Overall cap"}
                                         </span>
+                                        {formatTaskWindowLabel(taskCapacity) ? (
+                                          <>
+                                            {" · "}
+                                            <span>{formatTaskWindowLabel(taskCapacity)}</span>
+                                          </>
+                                        ) : null}
                                       </div>
                                     ) : null}
                                     {selectedTaskSubTasks.length > 0 ? (
@@ -906,12 +980,17 @@ export default function EmployeeTimesheetPage() {
                         (() => {
                           const calendarDay = weekCalendarLookup.get(day.date.toISOString().slice(0, 10));
                           const isOffDay = Boolean(calendarDay?.holiday || calendarDay?.leave || calendarDay?.leaveStatus === "pending");
+                          const outsideTaskWindow = selectedTask ? !isTaskWindowDay(selectedTask, day.date) : false;
+                          const hasExistingHours = Number(line.hours[day.key] ?? 0) > 0;
+                          const blockTaskWindowDay = outsideTaskWindow && !hasExistingHours;
                           const placeholder = calendarDay?.holiday
                             ? calendarDay.holidayName ?? "Holiday"
                             : calendarDay?.leaveStatus === "pending"
                               ? "Pending"
                               : calendarDay?.leave
                                 ? "Leave"
+                                : outsideTaskWindow
+                                  ? "Window"
                                 : "0";
                           return (
                             <td
@@ -921,6 +1000,7 @@ export default function EmployeeTimesheetPage() {
                                 hoveredDay === day.key && "bg-secondary/15",
                                 day.key === "sat" || day.key === "sun" ? "bg-secondary/5" : "",
                                 isOffDay && "bg-secondary/10",
+                                outsideTaskWindow && "bg-secondary/10",
                               )}
                               onMouseEnter={() => setHoveredDay(day.key)}
                               onMouseLeave={() => setHoveredDay((currentDay) => (currentDay === day.key ? null : currentDay))}
@@ -930,7 +1010,7 @@ export default function EmployeeTimesheetPage() {
                                 min={0}
                                 max={24}
                                 step={0.5}
-                                disabled={readOnly || isOffDay}
+                                disabled={readOnly || isOffDay || blockTaskWindowDay}
                                 className="h-9 rounded-xl border-border/55 bg-background/80 px-2 text-center text-sm shadow-none"
                                 placeholder={placeholder}
                                 value={hourInputValue(line.hours[day.key])}

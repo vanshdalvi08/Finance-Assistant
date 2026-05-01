@@ -32,6 +32,38 @@ function normalizeLookup(value: string) {
   return value.trim().toLowerCase();
 }
 
+function lineHoursWithinTaskWindow(
+  weekStart: string,
+  line: TimesheetRecord["lines"][number],
+  task?: { startDate?: string; endDate?: string },
+) {
+  const startDate = task?.startDate;
+  const endDate = task?.endDate;
+  if (!startDate || !endDate) {
+    return lineTotal(line);
+  }
+
+  return TASK_MANAGER_DAY_KEYS.reduce((sum, day, index) => {
+    const hours = Number(line.hours[day] ?? 0);
+    if (hours <= 0) {
+      return sum;
+    }
+
+    const date = new Date(weekStart);
+    date.setDate(date.getDate() + index);
+    const dateIso = date.toISOString().slice(0, 10);
+    return dateIso >= startDate && dateIso <= endDate ? sum + hours : sum;
+  }, 0);
+}
+
+function formatTaskWindow(task: { startDate?: string; endDate?: string; durationDays?: number }) {
+  if (task.startDate && task.endDate) {
+    return `${task.startDate} to ${task.endDate}`;
+  }
+
+  return task.durationDays ? `${task.durationDays} day window` : null;
+}
+
 export default function EmployeeTaskManagerPage() {
   const user = useAuthStore((state) => state.user);
 
@@ -88,6 +120,11 @@ export default function EmployeeTaskManagerPage() {
 
   const taskUsageById = useMemo(() => {
     const usage = new Map<string, number>();
+    const taskWindowLookup = new Map(
+      projectCatalog.flatMap((project) =>
+        project.tasks.map((task) => [task.id, { startDate: task.startDate, endDate: task.endDate }] as const),
+      ),
+    );
 
     for (const timesheet of timesheets) {
       if (timesheet.status === "rejected") {
@@ -99,12 +136,15 @@ export default function EmployeeTaskManagerPage() {
           continue;
         }
 
-        usage.set(line.projectTaskId, (usage.get(line.projectTaskId) ?? 0) + lineTotal(line));
+        usage.set(
+          line.projectTaskId,
+          (usage.get(line.projectTaskId) ?? 0) + lineHoursWithinTaskWindow(timesheet.weekStart, line, taskWindowLookup.get(line.projectTaskId)),
+        );
       }
     }
 
     return usage;
-  }, [timesheets]);
+  }, [projectCatalog, timesheets]);
 
   const taskProjects = useMemo(() => {
     const projects = projectCatalog
@@ -140,6 +180,8 @@ export default function EmployeeTaskManagerPage() {
               myLoggedHours,
               hourLimitScope,
               remainingHours,
+              startDate: summaryTask?.startDate ?? task.startDate,
+              endDate: summaryTask?.endDate ?? task.endDate,
               durationDays: summaryTask?.durationDays ?? task.durationDays,
               progress,
             };
@@ -231,9 +273,9 @@ export default function EmployeeTaskManagerPage() {
                             <Badge variant="outline" className="rounded-full border-border/60 bg-background/50 font-normal">
                               {task.hourLimitScope === "per_employee" ? "Per employee cap" : "Overall pool"}
                             </Badge>
-                            {task.durationDays ? (
+                            {formatTaskWindow(task) ? (
                               <Badge variant="outline" className="rounded-full border-border/60 bg-background/50 font-normal">
-                                {task.durationDays} day window
+                                {formatTaskWindow(task)}
                               </Badge>
                             ) : null}
                           </div>

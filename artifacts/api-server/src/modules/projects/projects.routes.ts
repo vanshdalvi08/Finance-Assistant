@@ -18,16 +18,38 @@ import { hashSha256 } from "../../lib/security";
 const router: IRouter = Router();
 
 const businessIdSchema = z.string().trim().min(1);
+const dateOnlySchema = z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/);
 
 const projectTaskSchema = z.object({
   id: businessIdSchema.optional(),
   name: z.string().trim().min(2),
   description: z.string().trim().optional(),
   maxHours: z.coerce.number().min(0).optional(),
+  startDate: dateOnlySchema.optional(),
+  endDate: dateOnlySchema.optional(),
   durationDays: z.coerce.number().int().min(0).optional(),
   hourLimitScope: z.enum(["overall", "per_employee"]).optional(),
   subTasks: z.array(z.string().trim().min(1)).optional(),
   status: z.enum(["active", "archived"]).optional(),
+}).superRefine((task, context) => {
+  const hasStartDate = Boolean(task.startDate);
+  const hasEndDate = Boolean(task.endDate);
+
+  if (hasStartDate !== hasEndDate) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Task start and end dates must both be provided.",
+      path: [hasStartDate ? "endDate" : "startDate"],
+    });
+  }
+
+  if (task.startDate && task.endDate && task.endDate < task.startDate) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Task end date must be on or after the start date.",
+      path: ["endDate"],
+    });
+  }
 });
 
 const projectSchema = z.object({
@@ -76,6 +98,8 @@ function requestHashForProjectMutation(input: z.infer<typeof projectSchema> & { 
         name: task.name.trim(),
         description: task.description?.trim() ?? "",
         maxHours: Number(task.maxHours ?? 0),
+        startDate: task.startDate?.trim() ?? "",
+        endDate: task.endDate?.trim() ?? "",
         durationDays: Number(task.durationDays ?? 0),
         hourLimitScope: task.hourLimitScope ?? "overall",
         subTasks: (task.subTasks ?? []).map((subTask) => subTask.trim()),
@@ -98,6 +122,8 @@ function requestHashForProjectTask(input: { projectId: string; task: z.infer<typ
         name: input.task.name.trim(),
         description: input.task.description?.trim() ?? "",
         maxHours: Number(input.task.maxHours ?? 0),
+        startDate: input.task.startDate?.trim() ?? "",
+        endDate: input.task.endDate?.trim() ?? "",
         durationDays: Number(input.task.durationDays ?? 0),
         hourLimitScope: input.task.hourLimitScope ?? "overall",
         subTasks: (input.task.subTasks ?? []).map((subTask) => subTask.trim()),
@@ -282,6 +308,8 @@ router.post("/projects", requireTenantRole("admin"), async (request, response) =
       name: task.name.trim(),
       description: task.description?.trim() || undefined,
       maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : undefined,
+      startDate: task.startDate?.trim() || undefined,
+      endDate: task.endDate?.trim() || undefined,
       durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : undefined,
       hourLimitScope: task.hourLimitScope === "per_employee" ? "per_employee" : "overall",
       subTasks: normalizeSubTasks(task.subTasks),
@@ -412,6 +440,8 @@ router.route("/projects/:id").get(async (request, response) => {
       name: task.name.trim(),
       description: task.description?.trim() || undefined,
       maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : undefined,
+      startDate: task.startDate?.trim() || undefined,
+      endDate: task.endDate?.trim() || undefined,
       durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : undefined,
       hourLimitScope: task.hourLimitScope === "per_employee" ? "per_employee" : "overall",
       subTasks: normalizeSubTasks(task.subTasks),
@@ -620,6 +650,8 @@ router.post("/projects/:id/tasks", requireTenantRole("admin"), async (request, r
     name: parsed.data.name.trim(),
     description: parsed.data.description?.trim() || undefined,
     maxHours: Number(parsed.data.maxHours ?? 0) > 0 ? Number(parsed.data.maxHours) : undefined,
+    startDate: parsed.data.startDate?.trim() || undefined,
+    endDate: parsed.data.endDate?.trim() || undefined,
     durationDays: Number(parsed.data.durationDays ?? 0) > 0 ? Number(parsed.data.durationDays) : undefined,
     hourLimitScope: parsed.data.hourLimitScope === "per_employee" ? "per_employee" : "overall",
     subTasks: normalizeSubTasks(parsed.data.subTasks),

@@ -29,6 +29,7 @@ import {
   submitTimesheetFast,
   sumTimesheetHours,
   TaskHourLimitError,
+  TaskWindowError,
   updateStore,
 } from "../../lib/business-store";
 import { DEFAULT_TENANT_ID } from "../../lib/tenants";
@@ -121,7 +122,22 @@ function handleTaskHourLimitError(error: unknown, response: Response) {
         : null;
 
   if (!taskHourLimitError) {
-    throw error;
+    const taskWindowError =
+      error instanceof TaskWindowError
+        ? error
+        : error &&
+              typeof error === "object" &&
+              "code" in error &&
+              (error as { code?: unknown }).code === "task_window"
+          ? (error as { message?: string })
+          : null;
+
+    if (!taskWindowError) {
+      throw error;
+    }
+
+    response.status(400).json({ message: taskWindowError.message ?? "Task date window violated." });
+    return true;
   }
 
   response.status(400).json({ message: taskHourLimitError.message ?? "Task hour limit exceeded." });

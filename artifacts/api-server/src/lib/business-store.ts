@@ -52,6 +52,15 @@ export class TaskHourLimitError extends Error {
   }
 }
 
+export class TaskWindowError extends Error {
+  code = "task_window" as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "TaskWindowError";
+  }
+}
+
 export interface AuditTrailDetailsRecord {
   entityLabel?: string;
   requestId?: string;
@@ -155,6 +164,8 @@ export interface ProjectBudgetTask {
   name: string;
   description?: string;
   maxHours?: number;
+  startDate?: string;
+  endDate?: string;
   durationDays?: number;
   hourLimitScope?: "overall" | "per_employee";
   subTasks?: string[];
@@ -346,6 +357,89 @@ export function normalizeDate(value: string): string {
   }
 
   return new Date(`${value}T12:00:00`).toISOString();
+}
+
+export function normalizeDateOnly(value?: string | null): string | undefined {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    return undefined;
+  }
+
+  return parsed.toISOString().slice(0, 10);
+}
+
+function normalizeTaskWindowRange(startDate?: string | null, endDate?: string | null) {
+  const normalizedStartDate = normalizeDateOnly(startDate);
+  const normalizedEndDate = normalizeDateOnly(endDate);
+  if (!normalizedStartDate || !normalizedEndDate) {
+    return {
+      startDate: undefined,
+      endDate: undefined,
+    };
+  }
+
+  return normalizedEndDate >= normalizedStartDate
+    ? { startDate: normalizedStartDate, endDate: normalizedEndDate }
+    : { startDate: undefined, endDate: undefined };
+}
+
+function weekDateIso(weekStart: string, day: DayKey): string {
+  const base = new Date(weekStart);
+  const dayIndex = DAY_KEYS.indexOf(day);
+  const next = new Date(base);
+  next.setUTCDate(base.getUTCDate() + Math.max(0, dayIndex));
+  return next.toISOString().slice(0, 10);
+}
+
+export function calculateTaskWindowDays(task: { startDate?: string; endDate?: string; durationDays?: number }): number | undefined {
+  const startDate = normalizeDateOnly(task.startDate);
+  const endDate = normalizeDateOnly(task.endDate);
+  if (startDate && endDate) {
+    const start = new Date(`${startDate}T00:00:00.000Z`);
+    const end = new Date(`${endDate}T00:00:00.000Z`);
+    const diff = Math.floor((end.getTime() - start.getTime()) / 86_400_000);
+    return diff >= 0 ? diff + 1 : undefined;
+  }
+
+  return Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : undefined;
+}
+
+export function isDateWithinTaskWindow(
+  dateIso: string,
+  task: { startDate?: string; endDate?: string },
+): boolean {
+  const startDate = normalizeDateOnly(task.startDate);
+  const endDate = normalizeDateOnly(task.endDate);
+  if (!startDate || !endDate) {
+    return true;
+  }
+
+  return dateIso >= startDate && dateIso <= endDate;
+}
+
+export function sumTaskLineHoursWithinWindow(
+  weekStart: string,
+  lineHours: Record<DayKey, number>,
+  task: { startDate?: string; endDate?: string },
+): number {
+  return DAY_KEYS.reduce((sum, day) => {
+    const hours = Number(lineHours[day] ?? 0);
+    if (hours <= 0) {
+      return sum;
+    }
+
+    const dateIso = weekDateIso(weekStart, day);
+    return isDateWithinTaskWindow(dateIso, task) ? sum + hours : sum;
+  }, 0);
 }
 
 export function startOfWeekIso(baseDate = new Date()): string {
@@ -771,14 +865,19 @@ function projectBudgetFromRow(row: DbProjectBudget): ProjectBudget {
           .filter((task) => task && task.name?.trim())
           .map((task) => {
             const taskWithMaxHours = task as typeof task & { maxHours?: number | null };
+            const taskWithStartDate = task as typeof task & { startDate?: string | null };
+            const taskWithEndDate = task as typeof task & { endDate?: string | null };
             const taskWithDurationDays = task as typeof task & { durationDays?: number | null };
             const taskWithHourLimitScope = task as typeof task & { hourLimitScope?: unknown };
             const taskWithSubTasks = task as typeof task & { subTasks?: unknown };
+            const taskWindow = normalizeTaskWindowRange(taskWithStartDate.startDate, taskWithEndDate.endDate);
             return {
               id: task.id ?? createId("pbt"),
               name: String(task.name ?? "").trim(),
               description: task.description?.trim() || undefined,
               maxHours: Number(taskWithMaxHours.maxHours ?? 0) > 0 ? Number(taskWithMaxHours.maxHours) : undefined,
+              startDate: taskWindow.startDate,
+              endDate: taskWindow.endDate,
               durationDays: Number(taskWithDurationDays.durationDays ?? 0) > 0 ? Number(taskWithDurationDays.durationDays) : undefined,
               hourLimitScope: normalizeProjectTaskHourLimitScope(taskWithHourLimitScope.hourLimitScope),
               subTasks: Array.isArray(taskWithSubTasks.subTasks)
@@ -818,14 +917,19 @@ function projectBudgetFromNormalizedRow(
       })
       .map((task) => {
         const taskWithMaxHours = task as DbProjectTask & { maxHours?: number | null };
+        const taskWithStartDate = task as DbProjectTask & { startDate?: string | null };
+        const taskWithEndDate = task as DbProjectTask & { endDate?: string | null };
         const taskWithDurationDays = task as DbProjectTask & { durationDays?: number | null };
         const taskWithHourLimitScope = task as DbProjectTask & { hourLimitScope?: unknown };
         const taskWithSubTasks = task as DbProjectTask & { subTasks?: unknown };
+        const taskWindow = normalizeTaskWindowRange(taskWithStartDate.startDate, taskWithEndDate.endDate);
         return {
           id: task.id,
           name: task.name.trim(),
           description: task.description?.trim() || undefined,
           maxHours: Number(taskWithMaxHours.maxHours ?? 0) > 0 ? Number(taskWithMaxHours.maxHours) : undefined,
+          startDate: taskWindow.startDate,
+          endDate: taskWindow.endDate,
           durationDays: Number(taskWithDurationDays.durationDays ?? 0) > 0 ? Number(taskWithDurationDays.durationDays) : undefined,
           hourLimitScope: normalizeProjectTaskHourLimitScope(taskWithHourLimitScope.hourLimitScope),
           subTasks: Array.isArray(taskWithSubTasks.subTasks)
@@ -927,6 +1031,24 @@ function timesheetFromNormalizedRow(
 }
 
 function projectBudgetToRow(budget: ProjectBudget) {
+  const tasks = (budget.tasks ?? []).map((task) => {
+    const taskWindow = normalizeTaskWindowRange(task.startDate, task.endDate);
+    return {
+      id: task.id ?? createId("pbt"),
+      name: task.name.trim(),
+      description: task.description?.trim() || undefined,
+      maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : undefined,
+      startDate: taskWindow.startDate,
+      endDate: taskWindow.endDate,
+      durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : undefined,
+      hourLimitScope: normalizeProjectTaskHourLimitScope(task.hourLimitScope),
+      subTasks: Array.isArray(task.subTasks)
+        ? task.subTasks.map((subTask) => String(subTask ?? "").trim()).filter((subTask) => Boolean(subTask))
+        : [],
+      status: task.status === "archived" ? ("archived" as const) : ("active" as const),
+    };
+  });
+
   return {
     id: budget.id,
     tenantId: budget.tenantId?.trim() || DEFAULT_TENANT_ID,
@@ -934,18 +1056,7 @@ function projectBudgetToRow(budget: ProjectBudget) {
     totalBudget: Math.abs(Number(budget.totalBudget ?? 0)),
     client: budget.client?.trim() || null,
     note: budget.note?.trim() || "",
-    tasks: (budget.tasks ?? []).map((task) => ({
-      id: task.id ?? createId("pbt"),
-      name: task.name.trim(),
-      description: task.description?.trim() || undefined,
-      maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : undefined,
-      durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : undefined,
-      hourLimitScope: normalizeProjectTaskHourLimitScope(task.hourLimitScope),
-      subTasks: Array.isArray(task.subTasks)
-        ? task.subTasks.map((subTask) => String(subTask ?? "").trim()).filter((subTask) => Boolean(subTask))
-        : [],
-      status: task.status === "archived" ? ("archived" as const) : ("active" as const),
-    })),
+    tasks,
     createdAt: toDate(budget.createdAt),
     updatedAt: toDate(budget.updatedAt),
   };
@@ -992,13 +1103,17 @@ function projectBudgetToNormalizedRow(budget: ProjectBudget, createdById: string
 }
 
 function projectTasksToRows(budget: ProjectBudget, createdById: string | null) {
-  return (budget.tasks ?? []).map((task, index) => ({
+  return (budget.tasks ?? []).map((task, index) => {
+    const taskWindow = normalizeTaskWindowRange(task.startDate, task.endDate);
+    return {
     id: task.id ?? createId("task"),
     tenantId: budget.tenantId?.trim() || DEFAULT_TENANT_ID,
     projectId: budget.id,
     name: task.name.trim(),
     description: task.description?.trim() || "",
     maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : null,
+    startDate: taskWindow.startDate ?? null,
+    endDate: taskWindow.endDate ?? null,
     durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : null,
     hourLimitScope: normalizeProjectTaskHourLimitScope(task.hourLimitScope),
     subTasks: Array.isArray(task.subTasks)
@@ -1009,7 +1124,8 @@ function projectTasksToRows(budget: ProjectBudget, createdById: string | null) {
     createdById,
     createdAt: toDate(budget.createdAt),
     updatedAt: toDate(budget.updatedAt),
-  }));
+  };
+  });
 }
 
 function timesheetLinesToRows(
@@ -1256,18 +1372,23 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
       totalBudget: Math.abs(Number(budget.totalBudget ?? 0)),
       client: budget.client?.trim() || undefined,
       note: budget.note?.trim() || undefined,
-      tasks: Array.isArray(budget.tasks) ? budget.tasks.filter((task) => task.name?.trim()).map((task) => ({
-        id: task.id ?? createId("pbt"),
-        name: String(task.name ?? "").trim(),
-        description: task.description?.trim() || undefined,
-        maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : undefined,
-        durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : undefined,
-        hourLimitScope: normalizeProjectTaskHourLimitScope(task.hourLimitScope),
-        subTasks: Array.isArray(task.subTasks)
-          ? task.subTasks.map((subTask) => String(subTask ?? "").trim()).filter((subTask) => Boolean(subTask))
-          : [],
-        status: task.status === "archived" ? "archived" : "active",
-      })) : [],
+      tasks: Array.isArray(budget.tasks) ? budget.tasks.filter((task) => task.name?.trim()).map((task) => {
+        const taskWindow = normalizeTaskWindowRange(task.startDate, task.endDate);
+        return {
+          id: task.id ?? createId("pbt"),
+          name: String(task.name ?? "").trim(),
+          description: task.description?.trim() || undefined,
+          maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : undefined,
+          startDate: taskWindow.startDate,
+          endDate: taskWindow.endDate,
+          durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : undefined,
+          hourLimitScope: normalizeProjectTaskHourLimitScope(task.hourLimitScope),
+          subTasks: Array.isArray(task.subTasks)
+            ? task.subTasks.map((subTask) => String(subTask ?? "").trim()).filter((subTask) => Boolean(subTask))
+            : [],
+          status: task.status === "archived" ? "archived" : "active",
+        };
+      }) : [],
       createdAt: normalizeDate(String(budget.createdAt ?? nowIso())),
       updatedAt: normalizeDate(String(budget.updatedAt ?? budget.createdAt ?? nowIso())),
     })) : [],
@@ -1914,7 +2035,18 @@ function taskHoursFromLine(line: TimesheetTaskLine): number {
   return DAY_KEYS.reduce((sum, day) => sum + Number(line.hours[day] ?? 0), 0);
 }
 
+type TaskWindowCatalogEntry = {
+  taskName: string;
+  projectName: string;
+  maxHours?: number;
+  startDate?: string;
+  endDate?: string;
+  durationDays?: number;
+  hourLimitScope: ProjectTaskHourLimitScope;
+};
+
 function buildTaskUsageMap(
+  taskCatalog: Map<string, TaskWindowCatalogEntry>,
   timesheets: TimesheetEntry[],
   options?: { excludeTimesheetId?: string; includedStatuses?: ApprovalStatus[] },
 ): Map<string, number> {
@@ -1935,7 +2067,9 @@ function buildTaskUsageMap(
         continue;
       }
 
-      totals.set(line.projectTaskId, (totals.get(line.projectTaskId) ?? 0) + taskHoursFromLine(line));
+      const task = taskCatalog.get(line.projectTaskId);
+      const hours = task ? sumTaskLineHoursWithinWindow(entry.weekStart, line.hours, task) : taskHoursFromLine(line);
+      totals.set(line.projectTaskId, (totals.get(line.projectTaskId) ?? 0) + hours);
     }
   }
 
@@ -1943,6 +2077,7 @@ function buildTaskUsageMap(
 }
 
 function buildTaskUsageByEmployeeMap(
+  taskCatalog: Map<string, TaskWindowCatalogEntry>,
   timesheets: TimesheetEntry[],
   options?: { excludeTimesheetId?: string; includedStatuses?: ApprovalStatus[] },
 ): Map<string, Map<string, number>> {
@@ -1963,8 +2098,10 @@ function buildTaskUsageByEmployeeMap(
         continue;
       }
 
+      const task = taskCatalog.get(line.projectTaskId);
+      const hours = task ? sumTaskLineHoursWithinWindow(entry.weekStart, line.hours, task) : taskHoursFromLine(line);
       const current = totals.get(line.projectTaskId) ?? new Map<string, number>();
-      current.set(entry.employeeId, (current.get(entry.employeeId) ?? 0) + taskHoursFromLine(line));
+      current.set(entry.employeeId, (current.get(entry.employeeId) ?? 0) + hours);
       totals.set(line.projectTaskId, current);
     }
   }
@@ -1973,7 +2110,7 @@ function buildTaskUsageByEmployeeMap(
 }
 
 function assertTaskHourLimits(entry: TimesheetEntry, projects: ProjectBudget[], currentTimesheets: TimesheetEntry[]) {
-  const taskCatalog = new Map(
+  const taskCatalog = new Map<string, TaskWindowCatalogEntry>(
     projects.flatMap((project) =>
       project.tasks.map((task) => [
         task.id,
@@ -1981,18 +2118,19 @@ function assertTaskHourLimits(entry: TimesheetEntry, projects: ProjectBudget[], 
           taskName: task.name,
           projectName: project.project,
           maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : undefined,
-          durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : undefined,
+          ...normalizeTaskWindowRange(task.startDate, task.endDate),
+          durationDays: calculateTaskWindowDays(task),
           hourLimitScope: normalizeProjectTaskHourLimitScope(task.hourLimitScope),
         },
       ] as const),
     ),
   );
 
-  const totalsByTask = buildTaskUsageMap(currentTimesheets, {
+  const totalsByTask = buildTaskUsageMap(taskCatalog, currentTimesheets, {
     excludeTimesheetId: entry.id,
     includedStatuses: ["draft", "submitted", "approved"],
   });
-  const totalsByTaskAndEmployee = buildTaskUsageByEmployeeMap(currentTimesheets, {
+  const totalsByTaskAndEmployee = buildTaskUsageByEmployeeMap(taskCatalog, currentTimesheets, {
     excludeTimesheetId: entry.id,
     includedStatuses: ["draft", "submitted", "approved"],
   });
@@ -2002,7 +2140,28 @@ function assertTaskHourLimits(entry: TimesheetEntry, projects: ProjectBudget[], 
       continue;
     }
 
-    const lineHours = taskHoursFromLine(line);
+    const task = taskCatalog.get(line.projectTaskId);
+    if (!task) {
+      continue;
+    }
+
+    for (const day of DAY_KEYS) {
+      const hours = Number(line.hours[day] ?? 0);
+      if (hours <= 0) {
+        continue;
+      }
+
+      const claimDate = weekDateIso(entry.weekStart, day);
+      if (!isDateWithinTaskWindow(claimDate, task)) {
+        const startLabel = task.startDate ?? "the task start date";
+        const endLabel = task.endDate ?? "the task end date";
+        throw new TaskWindowError(
+          `${task.taskName} in ${task.projectName} can only be claimed between ${startLabel} and ${endLabel}. Remove hours outside that window before saving.`,
+        );
+      }
+    }
+
+    const lineHours = sumTaskLineHoursWithinWindow(entry.weekStart, line.hours, task);
     totalsByTask.set(line.projectTaskId, (totalsByTask.get(line.projectTaskId) ?? 0) + lineHours);
     const employeeUsage = totalsByTaskAndEmployee.get(line.projectTaskId) ?? new Map<string, number>();
     employeeUsage.set(entry.employeeId, (employeeUsage.get(entry.employeeId) ?? 0) + lineHours);
@@ -2021,7 +2180,11 @@ function assertTaskHourLimits(entry: TimesheetEntry, projects: ProjectBudget[], 
         : totalHours;
 
     if (Number(effectiveHours.toFixed(2)) > Number(task.maxHours.toFixed(2))) {
-      const durationLabel = task.durationDays ? ` over ${task.durationDays} day${task.durationDays === 1 ? "" : "s"}` : "";
+      const durationLabel = task.startDate && task.endDate
+        ? ` between ${task.startDate} and ${task.endDate}`
+        : task.durationDays
+          ? ` over ${task.durationDays} day${task.durationDays === 1 ? "" : "s"}`
+          : "";
       const scopeLabel = task.hourLimitScope === "per_employee" ? " per employee" : "";
       throw new TaskHourLimitError(
         `${task.taskName} in ${task.projectName} allows a maximum of ${task.maxHours} hours${scopeLabel}${durationLabel}. Reduce the claimed hours before saving.`,
