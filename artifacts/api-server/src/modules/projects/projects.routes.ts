@@ -72,8 +72,21 @@ class ProjectCrudIdempotencyError extends Error {
   }
 }
 
+class ProjectValidationError extends Error {
+  code: "validation";
+
+  constructor(message: string) {
+    super(message);
+    this.code = "validation";
+  }
+}
+
 function respondNotFound(response: Response, message: string) {
   response.status(404).json({ message });
+}
+
+function firstValidationMessage(error: z.ZodError) {
+  return error.issues[0]?.message ?? "Invalid project payload";
 }
 
 function routeParam(value: string | string[] | undefined) {
@@ -143,6 +156,47 @@ function normalizeSubTasks(subTasks?: Array<string | null | undefined>) {
   );
 }
 
+function normalizeProjectName(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function findTenantProjectByName(projects: ProjectBudget[], tenantId: string, projectName: string, excludeId?: string) {
+  const normalized = normalizeProjectName(projectName);
+  return projects.find(
+    (project) =>
+      tenantProjectFilter(project, tenantId)
+      && project.id !== excludeId
+      && normalizeProjectName(project.project) === normalized,
+  );
+}
+
+function isPgUniqueViolation(error: unknown, constraintName?: string) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const candidate = error as {
+    code?: unknown;
+    cause?: { code?: unknown; constraint?: unknown } | null;
+    constraint?: unknown;
+  };
+
+  const errorCode = candidate.code;
+  const causeCode = candidate.cause?.code;
+  const errorConstraint = candidate.constraint;
+  const causeConstraint = candidate.cause?.constraint;
+
+  if (errorCode !== "23505" && causeCode !== "23505") {
+    return false;
+  }
+
+  if (!constraintName) {
+    return true;
+  }
+
+  return errorConstraint === constraintName || causeConstraint === constraintName;
+}
+
 async function claimProjectCrudIdempotency(
   actor: { tenantId: string; userId?: string },
   scope: ProjectCrudIdempotencyScope,
@@ -202,6 +256,15 @@ function handleProjectCrudIdempotencyError(error: unknown, response: Response) {
   return true;
 }
 
+function handleProjectValidationError(error: unknown, response: Response) {
+  if (!(error instanceof ProjectValidationError)) {
+    throw error;
+  }
+
+  response.status(409).json({ message: error.message });
+  return true;
+}
+
 function tenantProjectFilter(project: ProjectBudget, tenantId: string) {
   return (project.tenantId ?? DEFAULT_TENANT_ID) === tenantId;
 }
@@ -255,7 +318,7 @@ router.get("/projects/catalog", async (request, response) => {
 router.post("/projects", requireTenantRole("admin"), async (request, response) => {
   const parsed = projectSchema.safeParse(request.body);
   if (!parsed.success) {
-    response.status(400).json({ message: "Invalid project payload" });
+    response.status(400).json({ message: firstValidationMessage(parsed.error) });
     return;
   }
 
@@ -293,6 +356,11 @@ router.post("/projects", requireTenantRole("admin"), async (request, response) =
   const existing = parsed.data.id ? store.projectBudgets.find((budget) => budget.id === parsed.data.id) : null;
   if (existing && !tenantProjectFilter(existing, tenantId)) {
     response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+  const duplicateProject = findTenantProjectByName(store.projectBudgets, tenantId, parsed.data.project, existing?.id);
+  if (duplicateProject) {
+    response.status(409).json({ message: `A project named "${parsed.data.project.trim()}" already exists.` });
     return;
   }
   const budget: ProjectBudget = {
@@ -357,7 +425,15 @@ router.post("/projects", requireTenantRole("admin"), async (request, response) =
     },
   );
 
-  await updateStore(() => next);
+  try {
+    await updateStore(() => next);
+  } catch (error) {
+    if (isPgUniqueViolation(error, "project_budgets_tenant_project_unique")) {
+      response.status(409).json({ message: `A project named "${budget.project}" already exists.` });
+      return;
+    }
+    throw error;
+  }
   if (idempotencyClaim?.created) {
     await db.update(idempotencyKeysTable).set({ status: "completed", responseEntityId: budget.id, updatedAt: new Date() }).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
   }
@@ -382,7 +458,7 @@ router.route("/projects/:id").get(async (request, response) => {
 }).patch(requireTenantRole("admin"), async (request, response) => {
   const parsed = projectSchema.safeParse({ ...request.body, id: request.params.id });
   if (!parsed.success) {
-    response.status(400).json({ message: "Invalid project payload" });
+    response.status(400).json({ message: firstValidationMessage(parsed.error) });
     return;
   }
 
@@ -425,6 +501,11 @@ router.route("/projects/:id").get(async (request, response) => {
 
   if (!tenantProjectFilter(existing, tenantId)) {
     response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+  const duplicateProject = findTenantProjectByName(store.projectBudgets, tenantId, parsed.data.project, existing.id);
+  if (duplicateProject) {
+    response.status(409).json({ message: `A project named "${parsed.data.project.trim()}" already exists.` });
     return;
   }
 
@@ -486,7 +567,15 @@ router.route("/projects/:id").get(async (request, response) => {
     },
   );
 
-  await updateStore(() => next);
+  try {
+    await updateStore(() => next);
+  } catch (error) {
+    if (isPgUniqueViolation(error, "project_budgets_tenant_project_unique")) {
+      response.status(409).json({ message: `A project named "${budget.project}" already exists.` });
+      return;
+    }
+    throw error;
+  }
   if (idempotencyClaim?.created) {
     await db.update(idempotencyKeysTable).set({ status: "completed", responseEntityId: budget.id, updatedAt: new Date() }).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
   }

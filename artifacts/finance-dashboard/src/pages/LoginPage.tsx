@@ -290,7 +290,7 @@ const LoginPage = () => {
                     <input
                       id="password"
                       type={showPassword ? "text" : "password"}
-                      placeholder="..."
+                      placeholder=""
                       value={password}
                       onChange={(event) => setPassword(event.target.value)}
                       autoComplete="current-password"

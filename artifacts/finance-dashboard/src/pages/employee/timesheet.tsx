@@ -4,6 +4,7 @@ import { addDays, format } from "date-fns";
 import {
   AlertTriangle,
   CalendarDays,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Copy,
@@ -533,7 +534,7 @@ export default function EmployeeTimesheetPage() {
   }
 
   const fieldControlClass =
-    "h-9 w-full rounded-xl border border-border/55 bg-background/80 px-3 text-sm shadow-none outline-none transition focus:border-primary/50 focus:ring-2 focus:ring-primary/10 disabled:cursor-not-allowed disabled:opacity-60";
+    "h-9 w-full appearance-none rounded-xl border border-border/55 bg-background/80 px-3 pr-10 text-sm shadow-none outline-none transition focus:border-primary/50 focus:ring-2 focus:ring-primary/10 disabled:cursor-not-allowed disabled:opacity-60";
 
   useEffect(() => {
     if (current) {
@@ -848,20 +849,23 @@ export default function EmployeeTimesheetPage() {
                           <td className="sticky left-0 z-20 border-b border-r border-border/50 bg-card px-4 py-3 align-top">
                             <div className="space-y-2">
                               {projectOptions.length > 0 ? (
-                                <select
-                                  value={projectSelectionValue}
-                                  disabled={readOnly}
-                                  className={fieldControlClass}
-                                  onChange={(event) => setProjectChoice(line.id, event.target.value)}
-                                >
-                                  <option value="">Select project</option>
-                                  {projectOptions.map((project) => (
-                                    <option key={project.id} value={project.project}>
-                                      {project.project}
-                                    </option>
-                                  ))}
-                                  <option value="__custom__">Custom project</option>
-                                </select>
+                                <div className="relative">
+                                  <select
+                                    value={projectSelectionValue}
+                                    disabled={readOnly}
+                                    className={fieldControlClass}
+                                    onChange={(event) => setProjectChoice(line.id, event.target.value)}
+                                  >
+                                    <option value="">Select project</option>
+                                    {projectOptions.map((project) => (
+                                      <option key={project.id} value={project.project}>
+                                        {project.project}
+                                      </option>
+                                    ))}
+                                    <option value="__custom__">Custom project</option>
+                                  </select>
+                                  <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                                </div>
                               ) : null}
                               {showProjectInput ? (
                                 <Input
@@ -885,20 +889,23 @@ export default function EmployeeTimesheetPage() {
                               {hasProjectValue ? (
                                 projectTaskOptions.length > 0 ? (
                                   <>
-                                    <select
-                                      value={taskSelectionValue}
-                                      disabled={readOnly}
-                                      className={fieldControlClass}
-                                      onChange={(event) => setTaskChoice(line.id, event.target.value)}
-                                    >
-                                      <option value="">Select task</option>
-                                      {projectTaskOptions.map((task) => (
-                                        <option key={task.id} value={task.id}>
-                                          {formatTaskOptionLabel(task)}
-                                        </option>
-                                      ))}
-                                      <option value="__custom__">Custom task</option>
-                                    </select>
+                                    <div className="relative">
+                                      <select
+                                        value={taskSelectionValue}
+                                        disabled={readOnly}
+                                        className={fieldControlClass}
+                                        onChange={(event) => setTaskChoice(line.id, event.target.value)}
+                                      >
+                                        <option value="">Select task</option>
+                                        {projectTaskOptions.map((task) => (
+                                          <option key={task.id} value={task.id}>
+                                            {formatTaskOptionLabel(task)}
+                                          </option>
+                                        ))}
+                                        <option value="__custom__">Custom task</option>
+                                      </select>
+                                      <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                                    </div>
                                     {showTaskInput ? (
                                       <Input
                                         value={line.task}
@@ -917,40 +924,33 @@ export default function EmployeeTimesheetPage() {
                                     {taskCapacity ? (
                                       <div className="rounded-xl border border-border/45 bg-background/55 px-3 py-2 text-xs text-muted-foreground">
                                         <span className="font-medium text-foreground">
-                                          Remaining task capacity: {formatHourValue(taskCapacity.remaining)}
+                                          Remaining: {formatHourValue(taskCapacity.remaining)}
                                         </span>
-                                        {" · "}
+                                        {" | "}
                                         <span>
-                                          Being used: {formatHourValue(taskCapacity.currentDraftHours)}
+                                          Used: {formatHourValue(taskCapacity.currentDraftHours)}
                                         </span>
-                                        {" · "}
-                                        <span>
-                                          {taskCapacity.hourLimitScope === "per_employee" ? "Per employee cap" : "Overall cap"}
-                                        </span>
-                                        {formatTaskWindowLabel(taskCapacity) ? (
-                                          <>
-                                            {" · "}
-                                            <span>{formatTaskWindowLabel(taskCapacity)}</span>
-                                          </>
-                                        ) : null}
                                       </div>
                                     ) : null}
                                     {selectedTaskSubTasks.length > 0 ? (
                                       <div className="space-y-1.5">
                                         <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Sub task</p>
-                                        <select
-                                          value={line.subTask ?? ""}
-                                          disabled={readOnly}
-                                          className={fieldControlClass}
-                                          onChange={(event) => setSubTaskChoice(line.id, event.target.value)}
-                                        >
-                                          <option value="">Select sub task</option>
-                                          {selectedTaskSubTasks.map((subTask) => (
-                                            <option key={subTask} value={subTask}>
-                                              {subTask}
-                                            </option>
-                                          ))}
-                                        </select>
+                                        <div className="relative">
+                                          <select
+                                            value={line.subTask ?? ""}
+                                            disabled={readOnly}
+                                            className={fieldControlClass}
+                                            onChange={(event) => setSubTaskChoice(line.id, event.target.value)}
+                                          >
+                                            <option value="">Select sub task</option>
+                                            {selectedTaskSubTasks.map((subTask) => (
+                                              <option key={subTask} value={subTask}>
+                                                {subTask}
+                                              </option>
+                                            ))}
+                                          </select>
+                                          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                                        </div>
                                       </div>
                                     ) : null}
                                   </>

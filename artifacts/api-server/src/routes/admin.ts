@@ -97,6 +97,36 @@ class AdminIdempotencyError extends Error {
   }
 }
 
+function firstValidationMessage(error: z.ZodError) {
+  return error.issues[0]?.message ?? "Invalid request payload";
+}
+
+function classifyAdminRouteError(error: unknown, fallbackMessage: string) {
+  const message = error instanceof Error ? error.message : fallbackMessage;
+  const normalized = message.toLowerCase();
+
+  if (
+    normalized.includes("already exists")
+    || normalized.includes("already being processed")
+    || normalized.includes("last admin")
+    || normalized.includes("cannot remove your own")
+    || normalized.includes("already used")
+  ) {
+    return { status: 409, message };
+  }
+
+  if (
+    normalized.includes("not found")
+    || normalized.includes("no employee found")
+    || normalized.includes("no admin found")
+    || normalized.includes("no client found")
+  ) {
+    return { status: 404, message };
+  }
+
+  return { status: 400, message };
+}
+
 function notificationActor(request: Parameters<typeof requireAuth>[0]) {
   return {
     id: request.auth?.user.id,
@@ -346,7 +376,7 @@ router.get("/clients", async (request, response) => {
 router.post("/admins", async (request, response) => {
   const parsed = createAdminSchema.safeParse(request.body);
   if (!parsed.success) {
-    response.status(400).json({ message: "Invalid admin payload" });
+    response.status(400).json({ message: firstValidationMessage(parsed.error) });
     return;
   }
 
@@ -404,14 +434,15 @@ router.post("/admins", async (request, response) => {
     if (idempotencyClaim?.created) {
       await clearAdminIdempotency(idempotencyClaim.row.id);
     }
-    response.status(409).json({ message: error instanceof Error ? error.message : "Failed to create admin" });
+    const resolved = classifyAdminRouteError(error, "Failed to create admin");
+    response.status(resolved.status).json({ message: resolved.message });
   }
 });
 
 router.post("/employees", async (request, response) => {
   const parsed = createEmployeeSchema.safeParse(request.body);
   if (!parsed.success) {
-    response.status(400).json({ message: "Invalid employee payload" });
+    response.status(400).json({ message: firstValidationMessage(parsed.error) });
     return;
   }
 
@@ -522,14 +553,15 @@ router.post("/employees", async (request, response) => {
     if (idempotencyClaim?.created) {
       await clearAdminIdempotency(idempotencyClaim.row.id);
     }
-    response.status(409).json({ message: error instanceof Error ? error.message : "Failed to create employee" });
+    const resolved = classifyAdminRouteError(error, "Failed to create employee");
+    response.status(resolved.status).json({ message: resolved.message });
   }
 });
 
 router.post("/clients", async (request, response) => {
   const parsed = createClientSchema.safeParse(request.body);
   if (!parsed.success) {
-    response.status(400).json({ message: "Invalid client payload" });
+    response.status(400).json({ message: firstValidationMessage(parsed.error) });
     return;
   }
 
@@ -605,7 +637,8 @@ router.post("/clients", async (request, response) => {
     if (idempotencyClaim?.created) {
       await clearAdminIdempotency(idempotencyClaim.row.id);
     }
-    response.status(409).json({ message: error instanceof Error ? error.message : "Failed to create client" });
+    const resolved = classifyAdminRouteError(error, "Failed to create client");
+    response.status(resolved.status).json({ message: resolved.message });
   }
 });
 
@@ -616,7 +649,7 @@ router.patch("/admins/:id", async (request, response) => {
   });
 
   if (!parsed.success) {
-    response.status(400).json({ message: "Invalid admin payload" });
+    response.status(400).json({ message: firstValidationMessage(parsed.error) });
     return;
   }
 
@@ -665,7 +698,8 @@ router.patch("/admins/:id", async (request, response) => {
     if (idempotencyClaim?.created) {
       await clearAdminIdempotency(idempotencyClaim.row.id);
     }
-    response.status(409).json({ message: error instanceof Error ? error.message : "Failed to update admin" });
+    const resolved = classifyAdminRouteError(error, "Failed to update admin");
+    response.status(resolved.status).json({ message: resolved.message });
   }
 });
 
@@ -676,7 +710,7 @@ router.patch("/employees/:id", async (request, response) => {
   });
 
   if (!parsed.success) {
-    response.status(400).json({ message: "Invalid employee payload" });
+    response.status(400).json({ message: firstValidationMessage(parsed.error) });
     return;
   }
 
@@ -762,7 +796,8 @@ router.patch("/employees/:id", async (request, response) => {
     if (idempotencyClaim?.created) {
       await clearAdminIdempotency(idempotencyClaim.row.id);
     }
-    response.status(409).json({ message: error instanceof Error ? error.message : "Failed to update employee" });
+    const resolved = classifyAdminRouteError(error, "Failed to update employee");
+    response.status(resolved.status).json({ message: resolved.message });
   }
 });
 
@@ -773,7 +808,7 @@ router.patch("/clients/:id", async (request, response) => {
   });
 
   if (!parsed.success) {
-    response.status(400).json({ message: "Invalid client payload" });
+    response.status(400).json({ message: firstValidationMessage(parsed.error) });
     return;
   }
 
@@ -822,7 +857,8 @@ router.patch("/clients/:id", async (request, response) => {
     if (idempotencyClaim?.created) {
       await clearAdminIdempotency(idempotencyClaim.row.id);
     }
-    response.status(409).json({ message: error instanceof Error ? error.message : "Failed to update client" });
+    const resolved = classifyAdminRouteError(error, "Failed to update client");
+    response.status(resolved.status).json({ message: resolved.message });
   }
 });
 
@@ -913,7 +949,8 @@ router.delete("/employees/:id", async (request, response) => {
     if (idempotencyClaim?.created) {
       await clearAdminIdempotency(idempotencyClaim.row.id);
     }
-    response.status(404).json({ message: error instanceof Error ? error.message : "Failed to deactivate employee" });
+    const resolved = classifyAdminRouteError(error, "Failed to deactivate employee");
+    response.status(resolved.status).json({ message: resolved.message });
   }
 });
 
@@ -970,7 +1007,8 @@ router.delete("/admins/:id", async (request, response) => {
     if (idempotencyClaim?.created) {
       await clearAdminIdempotency(idempotencyClaim.row.id);
     }
-    response.status(409).json({ message: error instanceof Error ? error.message : "Failed to remove admin" });
+    const resolved = classifyAdminRouteError(error, "Failed to remove admin");
+    response.status(resolved.status).json({ message: resolved.message });
   }
 });
 
@@ -1027,7 +1065,8 @@ router.delete("/clients/:id", async (request, response) => {
     if (idempotencyClaim?.created) {
       await clearAdminIdempotency(idempotencyClaim.row.id);
     }
-    response.status(404).json({ message: error instanceof Error ? error.message : "Failed to remove client" });
+    const resolved = classifyAdminRouteError(error, "Failed to remove client");
+    response.status(resolved.status).json({ message: resolved.message });
   }
 });
 
