@@ -335,7 +335,7 @@ export default function Funds() {
                     )}
                   />
                   <div className="space-y-2">
-                    <FormLabel>Receipt (Optional)</FormLabel>
+                    <label className="text-sm font-medium leading-none text-foreground">Receipt (Optional)</label>
                     <div className="flex flex-col gap-3 rounded-xl border border-dashed border-border/60 bg-secondary/10 p-4 sm:flex-row sm:items-center sm:justify-between">
                       <div className="space-y-1">
                         <p className="text-sm font-medium">Attach a fund receipt</p>
