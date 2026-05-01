@@ -25,12 +25,52 @@ const fundSchema = z.object({
   note: z.string().optional(),
 });
 
+function getSafeDate(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function getFundMonthKey(value: string | null | undefined) {
+  if (!value || value.length < 7) {
+    return "unknown";
+  }
+
+  const key = value.slice(0, 7);
+  return /^\d{4}-\d{2}$/.test(key) ? key : "unknown";
+}
+
+function getFundMonthLabel(key: string) {
+  if (key === "unknown") {
+    return "Unknown period";
+  }
+
+  const monthDate = getSafeDate(`${key}-01T00:00:00`);
+  return monthDate ? format(monthDate, "MMMM yyyy") : "Unknown period";
+}
+
+function formatFundDate(value: string | null | undefined) {
+  const date = getSafeDate(value);
+  return date ? format(date, "MMM dd, yyyy") : "Unknown date";
+}
+
+function getFundSortTime(value: string | null | undefined) {
+  return getSafeDate(value)?.getTime() ?? 0;
+}
+
 function updateChartData(current: ChartPoint[] | undefined, fund: Fund) {
   if (!current) {
     return current;
   }
 
-  const monthKey = fund.date.slice(0, 7);
+  const monthKey = getFundMonthKey(fund.date);
+  if (monthKey === "unknown") {
+    return current;
+  }
+
   const next = current.map((point) =>
     point.month === monthKey ? { ...point, funds: point.funds + fund.amount } : point,
   );
@@ -52,14 +92,15 @@ function updateOverview(current: AdminOverview | undefined, fund: Fund) {
   const fundDate = new Date(fund.date);
   const currentMonth = new Date().toISOString().slice(0, 7);
   const currentYear = new Date().getFullYear();
-  const fundMonth = fund.date.slice(0, 7);
+  const fundMonth = getFundMonthKey(fund.date);
+  const safeFundDate = getSafeDate(fund.date);
 
   return {
     ...current,
     totalFunds: current.totalFunds + fund.amount,
     currentBalance: current.currentBalance + fund.amount,
     monthToDateFunds: current.monthToDateFunds + (fundMonth === currentMonth ? fund.amount : 0),
-    yearToDateFunds: current.yearToDateFunds + (fundDate.getFullYear() === currentYear ? fund.amount : 0),
+    yearToDateFunds: current.yearToDateFunds + (safeFundDate?.getFullYear() === currentYear ? fund.amount : 0),
   };
 }
 
@@ -117,13 +158,13 @@ export default function Funds() {
       { key: string; label: string; funds: Fund[]; total: number }
     >();
 
-    for (const fund of [...funds].sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime())) {
-      const key = fund.date.slice(0, 7);
+    for (const fund of [...funds].sort((left, right) => getFundSortTime(right.date) - getFundSortTime(left.date))) {
+      const key = getFundMonthKey(fund.date);
       const group =
         groups.get(key) ??
         {
           key,
-          label: format(new Date(`${key}-01T00:00:00`), "MMMM yyyy"),
+          label: getFundMonthLabel(key),
           funds: [],
           total: 0,
         };
@@ -132,7 +173,11 @@ export default function Funds() {
       groups.set(key, group);
     }
 
-    return Array.from(groups.values()).sort((left, right) => right.key.localeCompare(left.key));
+    return Array.from(groups.values()).sort((left, right) => {
+      if (left.key === "unknown") return 1;
+      if (right.key === "unknown") return -1;
+      return right.key.localeCompare(left.key);
+    });
   }, [funds]);
   const latestFundGroup = fundGroups[0] ?? null;
   const previousFundGroups = fundGroups.slice(1);
@@ -461,7 +506,7 @@ export default function Funds() {
                             "-"
                           )}
                         </TableCell>
-                        <TableCell className="text-muted-foreground">{format(new Date(fund.date), "MMM dd, yyyy")}</TableCell>
+                        <TableCell className="text-muted-foreground">{formatFundDate(fund.date)}</TableCell>
                         <TableCell className="text-right font-medium text-primary">
                           +{fund.amount.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
                         </TableCell>
@@ -551,7 +596,7 @@ export default function Funds() {
                                     "-"
                                   )}
                                 </TableCell>
-                                <TableCell className="text-muted-foreground">{format(new Date(fund.date), "MMM dd, yyyy")}</TableCell>
+                                <TableCell className="text-muted-foreground">{formatFundDate(fund.date)}</TableCell>
                                 <TableCell className="text-right font-medium text-primary">
                                   +{fund.amount.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
                                 </TableCell>
