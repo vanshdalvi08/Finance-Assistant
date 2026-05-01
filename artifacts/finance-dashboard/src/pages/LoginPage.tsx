@@ -272,7 +272,7 @@ const LoginPage = () => {
                   <input
                     id="email"
                     type="email"
-                    placeholder="example@gmail.com"
+                    placeholder="Enter your email address"
                     value={email}
                     onChange={(event) => setEmail(event.target.value)}
                     autoComplete="username"
@@ -290,12 +290,12 @@ const LoginPage = () => {
                     <input
                       id="password"
                       type={showPassword ? "text" : "password"}
-                      placeholder="********"
+                      placeholder="..."
                       value={password}
                       onChange={(event) => setPassword(event.target.value)}
                       autoComplete="current-password"
                       required
-                      className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 pr-12 text-sm tracking-widest text-slate-700 caret-slate-900 placeholder:text-slate-400/70 transition-colors focus:border-[#2563eb] focus:outline-none focus:ring-2 focus:ring-[#bfdbfe]"
+                      className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 pr-12 text-sm tracking-widest text-slate-700 caret-slate-900 placeholder:text-slate-300/55 transition-colors focus:border-[#2563eb] focus:outline-none focus:ring-2 focus:ring-[#bfdbfe]"
                       style={{ WebkitTextFillColor: "rgb(55 65 81)" }}
                     />
                     <button

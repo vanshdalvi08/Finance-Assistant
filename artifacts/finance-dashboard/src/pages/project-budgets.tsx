@@ -812,14 +812,28 @@ export default function ProjectBudgetsPage() {
                       </div>
                     </div>
 
-                    <div className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(360px,0.95fr)]">
-                      <div className="space-y-2">
-                        <Label className="text-xs font-medium text-muted-foreground">Short description</Label>
-                        <Input
-                          value={task.description}
-                          onChange={(event) => updateTask(index, "description", event.target.value)}
-                          placeholder="Short task description"
-                        />
+                    <div className="grid gap-4 lg:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.95fr)] lg:items-start">
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <Label className="text-xs font-medium text-muted-foreground">Short description</Label>
+                          <Input
+                            value={task.description}
+                            onChange={(event) => updateTask(index, "description", event.target.value)}
+                            placeholder="Short task description"
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label className="text-xs font-medium text-muted-foreground">Sub tasks</Label>
+                          <Textarea
+                            value={task.subTasks}
+                            onChange={(event) => updateTask(index, "subTasks", event.target.value)}
+                            placeholder="Planning\nReview\nClient handoff"
+                            rows={3}
+                            className="min-h-20 rounded-xl"
+                          />
+                          <p className="text-[11px] text-muted-foreground">Add one sub task per line or separate them with commas.</p>
+                        </div>
                       </div>
 
                       <div className="rounded-xl border border-border/60 bg-background/55 p-3">
@@ -877,18 +891,6 @@ export default function ProjectBudgetsPage() {
                           </div>
                         </div>
                       </div>
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label className="text-xs font-medium text-muted-foreground">Sub tasks</Label>
-                      <Textarea
-                        value={task.subTasks}
-                        onChange={(event) => updateTask(index, "subTasks", event.target.value)}
-                        placeholder="Planning\nReview\nClient handoff"
-                        rows={3}
-                        className="min-h-20 rounded-xl"
-                      />
-                      <p className="text-[11px] text-muted-foreground">Add one sub task per line or separate them with commas.</p>
                     </div>
                   </div>
                 </div>
