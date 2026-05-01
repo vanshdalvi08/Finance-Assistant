@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addDays, format } from "date-fns";
-import { CalendarDays, CheckCircle2, ClipboardList, RefreshCcw } from "lucide-react";
+import { CalendarDays, CheckCircle2, ClipboardList, Eye, RefreshCcw } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -47,6 +48,7 @@ export default function AdminTimesheetValidationPage() {
   const [selectedMonth, setSelectedMonth] = useState(() => format(new Date(), "yyyy-MM"));
   const [reviewNote, setReviewNote] = useState("");
   const [showReviewedHistory, setShowReviewedHistory] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
   const { data: timesheets = [] } = useQuery({ queryKey: ["timesheets"], queryFn: () => api.getTimesheets() });
@@ -140,6 +142,21 @@ export default function AdminTimesheetValidationPage() {
       day,
       total: selectedTimesheet.lines.reduce((sum, line) => sum + Number(line.hours[day] ?? 0), 0),
     }));
+  }, [selectedTimesheet]);
+
+  const detailDays = useMemo(() => {
+    if (!selectedTimesheet) {
+      return [];
+    }
+
+    return DAYS.map((day, index) => {
+      const date = addDays(new Date(selectedTimesheet.weekStart), index);
+      return {
+        key: day,
+        shortLabel: format(date, "EEE"),
+        dateLabel: format(date, "dd MMM"),
+      };
+    });
   }, [selectedTimesheet]);
 
 
@@ -305,6 +322,15 @@ export default function AdminTimesheetValidationPage() {
 
                   <div className="flex flex-wrap justify-end gap-3">
                     <Button
+                      variant="secondary"
+                      className="rounded-xl"
+                      disabled={!selectedTimesheet}
+                      onClick={() => setDetailOpen(true)}
+                    >
+                      <Eye className="mr-2 h-4 w-4" />
+                      View in detail
+                    </Button>
+                    <Button
                       variant="outline"
                       className="rounded-xl border-border/60"
                       disabled={rejectMutation.isPending}
@@ -458,6 +484,144 @@ export default function AdminTimesheetValidationPage() {
           </Card>
         ) : null}
       </div>
+
+      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+        <DialogContent className="max-h-[88vh] max-w-5xl overflow-y-auto rounded-2xl border-border/60 bg-card/95 p-0 shadow-2xl">
+          <div className="space-y-6 p-6">
+            <DialogHeader className="space-y-2 text-left">
+              <DialogTitle className="text-xl font-semibold tracking-tight">Timesheet detail</DialogTitle>
+              <DialogDescription>
+                A simple full-week breakdown for the currently selected submission.
+              </DialogDescription>
+            </DialogHeader>
+
+            {!selectedTimesheet ? (
+              <div className="rounded-xl border border-dashed border-border/60 px-4 py-10 text-center text-sm text-muted-foreground">
+                Select a submitted sheet to view its full details.
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div className="grid gap-3 md:grid-cols-4">
+                  <div className="rounded-xl border border-border/60 bg-background/70 px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Employee</p>
+                    <p className="mt-1 text-sm font-medium text-foreground">{selectedTimesheet.employeeNameSnapshot}</p>
+                  </div>
+                  <div className="rounded-xl border border-border/60 bg-background/70 px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Week</p>
+                    <p className="mt-1 text-sm font-medium text-foreground">{weekLabel(selectedTimesheet.weekStart)}</p>
+                  </div>
+                  <div className="rounded-xl border border-border/60 bg-background/70 px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Status</p>
+                    <p className="mt-1 text-sm font-medium text-foreground">Submitted for review</p>
+                  </div>
+                  <div className="rounded-xl border border-border/60 bg-background/70 px-4 py-3">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Total hours</p>
+                    <p className="mt-1 text-sm font-medium text-foreground">{selectedHours.toFixed(1)}h</p>
+                  </div>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
+                  {detailDays.map((day, index) => (
+                    <div key={day.key} className="rounded-xl border border-border/60 bg-background/70 px-4 py-3">
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{day.shortLabel}</p>
+                      <p className="mt-1 text-sm text-muted-foreground">{day.dateLabel}</p>
+                      <p className="mt-2 text-lg font-semibold text-foreground">{dailyTotals[index]?.total.toFixed(1) ?? "0.0"}h</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="overflow-hidden rounded-xl border border-border/60">
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full border-collapse">
+                      <thead>
+                        <tr className="border-b border-border/50 bg-secondary/10 text-left text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                          <th className="px-4 py-3">Project</th>
+                          <th className="px-4 py-3">Task</th>
+                          {detailDays.map((day) => (
+                            <th key={day.key} className="px-4 py-3 text-center">
+                              {day.shortLabel}
+                            </th>
+                          ))}
+                          <th className="px-4 py-3 text-right">Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedTimesheet.lines.map((line, index) => {
+                          const total = lineTotal(line);
+                          return (
+                            <tr key={line.id} className={cn(index !== 0 && "border-t border-border/40")}>
+                              <td className="px-4 py-4 align-top">
+                                <p className="text-sm font-medium text-foreground">{line.project || "Custom project"}</p>
+                                {line.notes?.trim() ? (
+                                  <p className="mt-1 max-w-[240px] text-xs text-muted-foreground">{line.notes.trim()}</p>
+                                ) : null}
+                              </td>
+                              <td className="px-4 py-4 align-top">
+                                <p className="text-sm text-foreground">{line.task || "Custom task"}</p>
+                                {line.subTask ? (
+                                  <p className="mt-1 text-xs text-muted-foreground">Sub task: {line.subTask}</p>
+                                ) : null}
+                              </td>
+                              {detailDays.map((day) => (
+                                <td key={day.key} className="px-4 py-4 text-center text-sm text-foreground">
+                                  {Number(line.hours[day.key] ?? 0).toFixed(1)}h
+                                </td>
+                              ))}
+                              <td className="px-4 py-4 text-right text-sm font-semibold text-foreground">{total.toFixed(1)}h</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-[minmax(0,1.2fr)_minmax(280px,0.8fr)]">
+                  <div className="rounded-xl border border-border/60 bg-background/70 p-4">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Submitted line notes</p>
+                    <div className="mt-3 space-y-3">
+                      {selectedTimesheet.lines.some((line) => line.notes?.trim()) ? (
+                        selectedTimesheet.lines
+                          .filter((line) => line.notes?.trim())
+                          .map((line) => (
+                            <div key={`${line.id}-note`} className="rounded-lg border border-border/50 bg-background/80 px-3 py-3">
+                              <p className="text-sm font-medium text-foreground">
+                                {line.project || "Custom project"} / {line.task || "Custom task"}
+                              </p>
+                              <p className="mt-1 text-sm text-muted-foreground">{line.notes?.trim()}</p>
+                            </div>
+                          ))
+                      ) : (
+                        <p className="text-sm text-muted-foreground">No extra notes were submitted for this week.</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-border/60 bg-background/70 p-4">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Review summary</p>
+                    <div className="mt-3 space-y-3">
+                      <div className="flex items-center justify-between rounded-lg border border-border/50 bg-background/80 px-3 py-2.5">
+                        <span className="text-sm text-muted-foreground">Lines submitted</span>
+                        <span className="text-sm font-semibold text-foreground">{selectedTimesheet.lines.length}</span>
+                      </div>
+                      <div className="flex items-center justify-between rounded-lg border border-border/50 bg-background/80 px-3 py-2.5">
+                        <span className="text-sm text-muted-foreground">Total hours</span>
+                        <span className="text-sm font-semibold text-foreground">{selectedHours.toFixed(1)}h</span>
+                      </div>
+                      <div className="rounded-lg border border-border/50 bg-background/80 px-3 py-3">
+                        <p className="text-sm text-muted-foreground">Current review note</p>
+                        <p className="mt-1 text-sm text-foreground">
+                          {reviewNote.trim() || "No review note has been written yet for this submission."}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </DashboardLayout>
   );
 }
