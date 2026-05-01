@@ -1,8 +1,10 @@
 import { clearAccessToken, clearCsrfToken, setAccessToken, setCsrfToken } from "./session";
 import { rawAuthRequest, refreshAccessToken, requestJson } from "./http-client";
 import type {
+  AdminAccountsListResult,
   AuthSession,
   ClientAccountsListResult,
+  CreateAdminAccountPayload,
   CreateClientAccountPayload,
   CreateEmployeeAccountPayload,
   EmployeeAccountsListResult,
@@ -13,6 +15,7 @@ import type {
   MfaChallenge,
   PasswordResetPayload,
   PasswordResetRequest,
+  UpdateAdminAccountPayload,
   UpdateCurrentUserProfilePayload,
   UpdateClientAccountPayload,
   UpdateEmployeeAccountPayload,
@@ -113,6 +116,20 @@ export async function createEmployeeAccount(payload: CreateEmployeeAccountPayloa
   });
 }
 
+export async function createAdminAccount(payload: CreateAdminAccountPayload) {
+  return requestJson<EmployeeAccountProvisionResult>("/admin/admins", {
+    method: "POST",
+    data: {
+      name: payload.name.trim(),
+      email: payload.email.trim().toLowerCase(),
+      phone: payload.phone.trim(),
+      position: payload.position?.trim() || undefined,
+      department: payload.department?.trim() || undefined,
+      status: payload.status ?? "active",
+    },
+  });
+}
+
 export async function createClientAccount(payload: CreateClientAccountPayload) {
   return requestJson<EmployeeAccountProvisionResult>("/admin/clients", {
     method: "POST",
@@ -124,6 +141,20 @@ export async function createClientAccount(payload: CreateClientAccountPayload) {
       address: payload.address?.trim() || undefined,
       website: payload.website?.trim() || undefined,
       billingEmail: payload.billingEmail?.trim() || undefined,
+      status: payload.status ?? "active",
+    },
+  });
+}
+
+export async function updateAdminAccount(payload: UpdateAdminAccountPayload) {
+  return requestJson<EmployeeAccountUpdateResult>(`/admin/admins/${payload.id}`, {
+    method: "PATCH",
+    data: {
+      name: payload.name.trim(),
+      email: payload.email.trim().toLowerCase(),
+      phone: payload.phone.trim(),
+      position: payload.position?.trim() || undefined,
+      department: payload.department?.trim() || undefined,
       status: payload.status ?? "active",
     },
   });
@@ -163,6 +194,12 @@ export async function updateClientAccount(payload: UpdateClientAccountPayload) {
   });
 }
 
+export async function deactivateAdminAccount(id: string) {
+  return requestJson<EmployeeAccountUpdateResult>(`/admin/admins/${id}`, {
+    method: "DELETE",
+  });
+}
+
 export async function deactivateEmployeeAccount(id: string) {
   return requestJson<EmployeeAccountUpdateResult>(`/admin/employees/${id}`, {
     method: "DELETE",
@@ -177,6 +214,10 @@ export async function deactivateClientAccount(id: string) {
 
 export async function listEmployeeAccounts() {
   return requestJson<EmployeeAccountsListResult>("/admin/employees");
+}
+
+export async function listAdminAccounts() {
+  return requestJson<AdminAccountsListResult>("/admin/admins");
 }
 
 export async function listClientAccounts() {

@@ -81,6 +81,19 @@ export interface CreateEmployeeAccountPayload {
   status?: "active" | "inactive";
 }
 
+export interface CreateAdminAccountPayload {
+  name: string;
+  email: string;
+  phone: string;
+  position?: string;
+  department?: string;
+  status?: "active" | "inactive";
+}
+
+export interface UpdateAdminAccountPayload extends CreateAdminAccountPayload {
+  id: string;
+}
+
 export interface UpdateEmployeeAccountPayload {
   id: string;
   name: string;
@@ -132,6 +145,10 @@ export interface EmployeeAccountUpdateResult {
 
 export interface EmployeeAccountsListResult {
   employees: AuthUser[];
+}
+
+export interface AdminAccountsListResult {
+  admins: AuthUser[];
 }
 
 export interface ClientAccountsListResult {

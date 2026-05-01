@@ -4,12 +4,16 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import { idempotencyKeysTable } from "@workspace/db/schema";
 import {
+  createAdminAccount,
   createClientAccount,
   createEmployeeAccount,
+  deactivateAdminAccount,
   deactivateClientAccount,
   deactivateEmployeeAccount,
+  listAdmins,
   listClients,
   listEmployees,
+  updateAdminAccount,
   updateClientAccount,
   updateEmployeeAccount,
 } from "../lib/auth-service";
@@ -45,6 +49,19 @@ const updateEmployeeSchema = createEmployeeSchema.extend({
   id: z.string().trim().uuid(),
 });
 
+const createAdminSchema = z.object({
+  name: z.string().trim().min(2),
+  email: z.string().trim().email(),
+  phone: z.string().trim().min(7),
+  position: z.string().trim().min(2).optional(),
+  department: z.string().trim().min(2).optional(),
+  status: z.enum(["active", "inactive"]).optional(),
+});
+
+const updateAdminSchema = createAdminSchema.extend({
+  id: z.string().trim().uuid(),
+});
+
 const createClientSchema = z.object({
   name: z.string().trim().min(2),
   email: z.string().trim().email(),
@@ -61,6 +78,9 @@ const updateClientSchema = createClientSchema.extend({
 });
 
 type AdminIdempotencyScope =
+  | "admin_admin_create"
+  | "admin_admin_update"
+  | "admin_admin_delete"
   | "admin_employee_create"
   | "admin_employee_update"
   | "admin_employee_delete"
@@ -118,6 +138,33 @@ function requestHashForEmployeeCreate(input: z.infer<typeof createEmployeeSchema
       payType: input.payType ?? "monthly",
       hourlyRate: Number(input.hourlyRate ?? 0),
       profilePhotoUrl: input.profilePhotoUrl?.trim() ?? null,
+      department: input.department?.trim() ?? null,
+      status: input.status ?? "active",
+    }),
+  );
+}
+
+function requestHashForAdminCreate(input: z.infer<typeof createAdminSchema>) {
+  return hashSha256(
+    JSON.stringify({
+      name: input.name.trim(),
+      email: input.email.trim().toLowerCase(),
+      phone: input.phone.trim(),
+      position: input.position?.trim() ?? null,
+      department: input.department?.trim() ?? null,
+      status: input.status ?? "active",
+    }),
+  );
+}
+
+function requestHashForAdminUpdate(input: z.infer<typeof updateAdminSchema>) {
+  return hashSha256(
+    JSON.stringify({
+      id: input.id.trim(),
+      name: input.name.trim(),
+      email: input.email.trim().toLowerCase(),
+      phone: input.phone.trim(),
+      position: input.position?.trim() ?? null,
       department: input.department?.trim() ?? null,
       status: input.status ?? "active",
     }),
@@ -256,6 +303,14 @@ async function findEmployeeById(tenantId?: string, userId?: string | null) {
   return employees.find((employee) => employee.id === userId) ?? null;
 }
 
+async function findAdminById(tenantId?: string, userId?: string | null) {
+  if (!tenantId || !userId) {
+    return null;
+  }
+  const admins = await listAdmins(tenantId);
+  return admins.find((admin) => admin.id === userId) ?? null;
+}
+
 async function findClientById(tenantId?: string, userId?: string | null) {
   if (!tenantId || !userId) {
     return null;
@@ -278,9 +333,79 @@ router.get("/employees", async (request, response) => {
   response.json({ employees });
 });
 
+router.get("/admins", async (request, response) => {
+  const admins = await listAdmins(request.auth?.user.tenantId);
+  response.json({ admins });
+});
+
 router.get("/clients", async (request, response) => {
   const clients = await listClients(request.auth?.user.tenantId);
   response.json({ clients });
+});
+
+router.post("/admins", async (request, response) => {
+  const parsed = createAdminSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid admin payload" });
+    return;
+  }
+
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForAdminCreate(parsed.data) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimAdminIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimAdminIdempotency(
+            { tenantId: request.auth?.user.tenantId, userId: request.auth?.user.id },
+            "admin_admin_create",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleAdminIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const user = await findAdminById(request.auth?.user.tenantId, idempotencyClaim.row.responseEntityId);
+      response.status(200).json({
+        user,
+        onboardingEmailSent: false,
+        duplicate: true,
+      });
+      return;
+    }
+    response.status(409).json({ message: "This admin create request is already being processed. Please retry shortly." });
+    return;
+  }
+
+  try {
+    const result = await createAdminAccount({
+      ...parsed.data,
+      tenantId: request.auth?.user.tenantId,
+    });
+    if (idempotencyClaim?.created) {
+      await completeAdminIdempotency(idempotencyClaim.row.id, result.user.id);
+    }
+    response.status(201).json({
+      user: result.user,
+      onboardingEmailSent: result.onboardingEmailSent,
+      duplicate: false,
+      ...(process.env.NODE_ENV !== "production" ? { temporaryPassword: result.temporaryPassword } : {}),
+    });
+  } catch (error) {
+    if (idempotencyClaim?.created) {
+      await clearAdminIdempotency(idempotencyClaim.row.id);
+    }
+    response.status(409).json({ message: error instanceof Error ? error.message : "Failed to create admin" });
+  }
 });
 
 router.post("/employees", async (request, response) => {
@@ -481,6 +606,66 @@ router.post("/clients", async (request, response) => {
       await clearAdminIdempotency(idempotencyClaim.row.id);
     }
     response.status(409).json({ message: error instanceof Error ? error.message : "Failed to create client" });
+  }
+});
+
+router.patch("/admins/:id", async (request, response) => {
+  const parsed = updateAdminSchema.safeParse({
+    ...request.body,
+    id: request.params.id,
+  });
+
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid admin payload" });
+    return;
+  }
+
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForAdminUpdate(parsed.data) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimAdminIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimAdminIdempotency(
+            { tenantId: request.auth?.user.tenantId, userId: request.auth?.user.id },
+            "admin_admin_update",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleAdminIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const user = await findAdminById(request.auth?.user.tenantId, idempotencyClaim.row.responseEntityId);
+      response.json({ user, duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This admin update request is already being processed. Please retry shortly." });
+    return;
+  }
+
+  try {
+    const result = await updateAdminAccount({
+      ...parsed.data,
+      tenantId: request.auth?.user.tenantId,
+    });
+    if (idempotencyClaim?.created) {
+      await completeAdminIdempotency(idempotencyClaim.row.id, result.user.id);
+    }
+    response.json({ user: result.user, duplicate: false });
+  } catch (error) {
+    if (idempotencyClaim?.created) {
+      await clearAdminIdempotency(idempotencyClaim.row.id);
+    }
+    response.status(409).json({ message: error instanceof Error ? error.message : "Failed to update admin" });
   }
 });
 
@@ -729,6 +914,63 @@ router.delete("/employees/:id", async (request, response) => {
       await clearAdminIdempotency(idempotencyClaim.row.id);
     }
     response.status(404).json({ message: error instanceof Error ? error.message : "Failed to deactivate employee" });
+  }
+});
+
+router.delete("/admins/:id", async (request, response) => {
+  const parsed = z.string().trim().uuid().safeParse(request.params.id);
+
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid admin id" });
+    return;
+  }
+
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForDelete(parsed.data) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimAdminIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimAdminIdempotency(
+            { tenantId: request.auth?.user.tenantId, userId: request.auth?.user.id },
+            "admin_admin_delete",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleAdminIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      response.json({ user: null, message: "Admin removed", duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This admin delete request is already being processed. Please retry shortly." });
+    return;
+  }
+
+  try {
+    const result = await deactivateAdminAccount(parsed.data, request.auth?.user.tenantId, request.auth?.user.id);
+    if (idempotencyClaim?.created) {
+      await completeAdminIdempotency(idempotencyClaim.row.id, result.user.id);
+    }
+    response.json({
+      user: result.user,
+      message: "Admin removed",
+      duplicate: false,
+    });
+  } catch (error) {
+    if (idempotencyClaim?.created) {
+      await clearAdminIdempotency(idempotencyClaim.row.id);
+    }
+    response.status(409).json({ message: error instanceof Error ? error.message : "Failed to remove admin" });
   }
 });
 

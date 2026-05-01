@@ -20,6 +20,7 @@ import {
   Receipt,
   ScrollText,
   Settings,
+  ShieldCheck,
   UserRound,
   Users,
   Wallet,
@@ -66,6 +67,7 @@ const adminGroups: AdminNavGroup[] = [
     label: "Workforce",
     items: [
       { href: "/employees", label: "Employees", icon: Users },
+      { href: "/admins", label: "Admins", icon: ShieldCheck },
       { href: "/clients", label: "Clients", icon: UserRound },
       { href: "/salary", label: "Salary", icon: CreditCard },
       { href: "/timesheets", label: "Timesheets", icon: Clock3 },

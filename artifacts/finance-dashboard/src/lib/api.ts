@@ -1,10 +1,14 @@
 import {
+  createAdminAccount,
   createClientAccount,
   createEmployeeAccount,
+  deactivateAdminAccount,
   deactivateClientAccount,
   deactivateEmployeeAccount,
+  listAdminAccounts,
   listClientAccounts,
   listEmployeeAccounts,
+  updateAdminAccount,
   updateClientAccount,
   updateEmployeeAccount,
 } from "@/auth/auth-service";
@@ -41,6 +45,17 @@ export interface ClientAccount {
   address?: string;
   website?: string;
   billingEmail?: string;
+  status: "Active" | "Inactive";
+  temporaryPassword?: string;
+}
+
+export interface AdminAccount {
+  id: string;
+  name: string;
+  email: string;
+  phone?: string;
+  position?: string;
+  department?: string;
   status: "Active" | "Inactive";
   temporaryPassword?: string;
 }
@@ -364,6 +379,20 @@ interface AddEmployeeInput {
   payType: "monthly" | "hourly";
   hourlyRate?: number;
   status: "Active" | "Inactive";
+}
+
+interface AddAdminInput {
+  id?: string;
+  name: string;
+  email: string;
+  phone?: string;
+  position?: string;
+  department?: string;
+  status?: "Active" | "Inactive";
+}
+
+interface UpdateAdminInput extends AddAdminInput {
+  id: string;
 }
 
 interface UpdateEmployeeInput extends AddEmployeeInput {
@@ -829,6 +858,18 @@ function mapAuthUserToClient(user: AuthUser): ClientAccount {
     address: user.clientInfo?.address ?? "",
     website: user.clientInfo?.website ?? "",
     billingEmail: user.clientInfo?.email ?? user.email,
+    status: user.status === "inactive" ? "Inactive" : "Active",
+  };
+}
+
+function mapAuthUserToAdmin(user: AuthUser): AdminAccount {
+  return {
+    id: user.id,
+    name: user.name ?? user.email.split("@")[0],
+    email: user.email,
+    phone: user.phone ?? "",
+    position: user.position ?? "Administrator",
+    department: user.department ?? "Operations",
     status: user.status === "inactive" ? "Inactive" : "Active",
   };
 }
@@ -1328,6 +1369,14 @@ export const api = {
       .sort((left, right) => left.name.localeCompare(right.name));
   },
 
+  getAdmins: async () => {
+    const result = await listAdminAccounts();
+    return result.admins
+      .filter((admin) => admin.role === "admin")
+      .map(mapAuthUserToAdmin)
+      .sort((left, right) => left.name.localeCompare(right.name));
+  },
+
   addClient: async (input: {
     name: string;
     email: string;
@@ -1383,6 +1432,40 @@ export const api = {
 
   deleteClient: async (id: string) => {
     await deactivateClientAccount(id);
+  },
+
+  addAdmin: async (input: AddAdminInput) => {
+    const result = await createAdminAccount({
+      name: input.name,
+      email: input.email,
+      phone: input.phone ?? "",
+      position: input.position,
+      department: input.department,
+      status: input.status === "Inactive" ? "inactive" : "active",
+    });
+
+    return {
+      ...mapAuthUserToAdmin(result.user),
+      temporaryPassword: result.temporaryPassword,
+    };
+  },
+
+  updateAdmin: async (input: UpdateAdminInput) => {
+    const result = await updateAdminAccount({
+      id: input.id,
+      name: input.name,
+      email: input.email,
+      phone: input.phone ?? "",
+      position: input.position,
+      department: input.department,
+      status: input.status === "Inactive" ? "inactive" : "active",
+    });
+
+    return mapAuthUserToAdmin(result.user);
+  },
+
+  deleteAdmin: async (id: string) => {
+    await deactivateAdminAccount(id);
   },
 
   addEmployee: async (input: AddEmployeeInput) => {

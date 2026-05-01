@@ -14,7 +14,7 @@ import { getAppUrl, getSmtpConfig, isProduction, optionalEnv } from "./env";
 import { generateRandomToken, generateTemporaryPassword, hashPassword, hashSha256, verifyPassword } from "./security";
 import { ACCESS_TOKEN_TTL, REFRESH_TOKEN_TTL, signAccessToken, signMfaToken, signRefreshToken, verifyMfaToken, verifyRefreshToken } from "./jwt";
 import { sendMail } from "./mailer";
-import { clientPortalEmailTemplate, onboardingEmailTemplate, passwordResetEmailTemplate } from "./email-templates";
+import { clientPortalEmailTemplate, onboardingEmailTemplate, passwordResetEmailTemplate, tenantOwnerEmailTemplate } from "./email-templates";
 import { createWelcomeNotification } from "./notifications";
 import { logger } from "./logger";
 import { uploadProfilePhotoDataUrl } from "./storage";
@@ -105,6 +105,20 @@ export interface UpdateEmployeeInput {
   profilePhotoUrl?: string | null;
   department?: string | null;
   status?: "active" | "inactive";
+}
+
+export interface CreateAdminInput {
+  tenantId?: string;
+  name: string;
+  email: string;
+  phone: string;
+  position?: string | null;
+  department?: string | null;
+  status?: "active" | "inactive";
+}
+
+export interface UpdateAdminInput extends CreateAdminInput {
+  id: string;
 }
 
 export interface CreateClientInput {
@@ -699,6 +713,86 @@ export async function createEmployeeAccount(input: CreateEmployeeInput): Promise
   };
 }
 
+export async function createAdminAccount(
+  input: CreateAdminInput,
+): Promise<{ user: PublicUser; temporaryPassword: string; onboardingEmailSent: boolean }> {
+  const email = normalizeEmail(input.email);
+  const phone = normalizePhone(input.phone);
+  const tenantId = input.tenantId?.trim() || DEFAULT_TENANT_ID;
+  const existingEmail = await findUserByEmail(email);
+  if (existingEmail) {
+    throw new Error("Admin email already exists");
+  }
+  const existingPhone = await findUserByPhone(phone, tenantId);
+  if (existingPhone) {
+    throw new Error("Admin phone already exists in this workspace");
+  }
+
+  const temporaryPassword = generateTemporaryPassword();
+  const hashedPassword = await hashPassword(temporaryPassword);
+  const now = new Date();
+
+  let user: User;
+  try {
+    const rows = await db
+      .insert(usersTable)
+      .values({
+        tenantId,
+        name: input.name.trim(),
+        email,
+        phone,
+        role: "admin",
+        employeeId: null,
+        position: input.position?.trim() || "Administrator",
+        department: input.department?.trim() || "Operations",
+        salary: 0,
+        payType: "monthly",
+        hourlyRate: 0,
+        profilePhotoUrl: null,
+        clientInfo: {},
+        hashedPassword,
+        status: input.status ?? "active",
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
+    user = rows[0]!;
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      throw new Error("Admin email already exists or phone is already used in this workspace");
+    }
+
+    throw error;
+  }
+
+  const portalUrl = getAppUrl();
+  const onboarding = tenantOwnerEmailTemplate({
+    name: user.name,
+    loginEmail: user.email,
+    temporaryPassword,
+    portalUrl,
+  });
+
+  const onboardingEmailSent = Boolean(getSmtpConfig());
+  if (onboardingEmailSent) {
+    runAuthSideEffect(
+      sendMail({
+        to: user.email,
+        subject: onboarding.subject,
+        text: onboarding.text,
+        html: onboarding.html,
+      }),
+      `send tenant admin onboarding email to ${user.email}`,
+    );
+  }
+
+  return {
+    user: publicUser(user),
+    temporaryPassword,
+    onboardingEmailSent,
+  };
+}
+
 export async function createClientAccount(input: CreateClientInput): Promise<{ user: PublicUser; temporaryPassword: string; onboardingEmailSent: boolean }> {
   const email = normalizeEmail(input.email);
   const phone = normalizePhone(input.phone);
@@ -781,6 +875,58 @@ export async function createClientAccount(input: CreateClientInput): Promise<{ u
     temporaryPassword,
     onboardingEmailSent,
   };
+}
+
+export async function updateAdminAccount(input: UpdateAdminInput): Promise<{ user: PublicUser }> {
+  const id = input.id.trim();
+  const tenantId = input.tenantId?.trim() || DEFAULT_TENANT_ID;
+  const email = normalizeEmail(input.email);
+  const phone = normalizePhone(input.phone);
+  const now = new Date();
+  const existing = await findUserById(id, tenantId);
+
+  if (!existing || existing.role !== "admin") {
+    throw new Error("Admin not found");
+  }
+
+  const existingEmail = await findUserByEmail(email);
+  if (existingEmail && existingEmail.id !== existing.id) {
+    throw new Error("Admin email already exists");
+  }
+  const existingPhone = await findUserByPhone(phone, tenantId);
+  if (existingPhone && existingPhone.id !== existing.id) {
+    throw new Error("Admin phone already exists in this workspace");
+  }
+
+  let rows: User[];
+  try {
+    rows = await db
+      .update(usersTable)
+      .set({
+        name: input.name.trim(),
+        email,
+        phone,
+        position: input.position?.trim() || existing.position || "Administrator",
+        department: input.department?.trim() || existing.department || "Operations",
+        status: input.status ?? "active",
+        updatedAt: now,
+      })
+      .where(and(eq(usersTable.id, id), eq(usersTable.role, "admin"), eq(usersTable.tenantId, tenantId)))
+      .returning();
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      throw new Error("Admin email already exists or phone is already used in this workspace");
+    }
+
+    throw error;
+  }
+
+  const user = rows[0];
+  if (!user) {
+    throw new Error("Admin not found");
+  }
+
+  return { user: publicUser(user) };
 }
 
 export async function updateEmployeeAccount(input: UpdateEmployeeInput): Promise<{ user: PublicUser }> {
@@ -930,6 +1076,42 @@ export async function deactivateClientAccount(id: string, tenantId = DEFAULT_TEN
   return { user: publicUser(user) };
 }
 
+export async function deactivateAdminAccount(
+  id: string,
+  tenantId = DEFAULT_TENANT_ID,
+  actorUserId?: string,
+): Promise<{ user: PublicUser }> {
+  const targetId = id.trim();
+  if (actorUserId?.trim() === targetId) {
+    throw new Error("You cannot remove your own admin account.");
+  }
+
+  const admins = await db
+    .select()
+    .from(usersTable)
+    .where(and(eq(usersTable.role, "admin"), eq(usersTable.tenantId, tenantId)));
+
+  if (!admins.some((admin) => admin.id === targetId)) {
+    throw new Error("Admin not found");
+  }
+
+  if (admins.length <= 1) {
+    throw new Error("This workspace must always have at least one admin.");
+  }
+
+  const rows = await db
+    .delete(usersTable)
+    .where(and(eq(usersTable.id, targetId), eq(usersTable.role, "admin"), eq(usersTable.tenantId, tenantId)))
+    .returning();
+
+  const user = rows[0];
+  if (!user) {
+    throw new Error("Admin not found");
+  }
+
+  return { user: publicUser(user) };
+}
+
 export async function listEmployees(tenantId = DEFAULT_TENANT_ID) {
   const rows = await db
     .select()
@@ -945,6 +1127,16 @@ export async function listClients(tenantId = DEFAULT_TENANT_ID) {
     .select()
     .from(usersTable)
     .where(and(eq(usersTable.role, "client"), eq(usersTable.tenantId, tenantId)))
+    .orderBy(desc(usersTable.createdAt));
+
+  return rows.map(publicUser);
+}
+
+export async function listAdmins(tenantId = DEFAULT_TENANT_ID) {
+  const rows = await db
+    .select()
+    .from(usersTable)
+    .where(and(eq(usersTable.role, "admin"), eq(usersTable.tenantId, tenantId)))
     .orderBy(desc(usersTable.createdAt));
 
   return rows.map(publicUser);
