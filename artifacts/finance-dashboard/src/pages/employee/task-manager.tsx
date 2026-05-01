@@ -115,12 +115,22 @@ export default function EmployeeTaskManagerPage() {
           .map((task) => {
             const summaryTask = summaryProject?.tasks.find((item) => item.id === task.id);
             const allocatedHours = summaryTask?.maxHours ?? task.maxHours ?? 0;
+            const hourLimitScope = summaryTask?.hourLimitScope ?? task.hourLimitScope ?? "overall";
             const myLoggedHours = Number((taskUsageById.get(task.id) ?? 0).toFixed(2));
+            const overallUsedHours =
+              typeof summaryTask?.usedHours === "number"
+                ? Number(summaryTask.usedHours.toFixed(2))
+                : 0;
             const remainingHours =
               allocatedHours > 0
-                ? Math.max(0, Number((allocatedHours - myLoggedHours).toFixed(2)))
+                ? hourLimitScope === "per_employee"
+                  ? Math.max(0, Number((allocatedHours - myLoggedHours).toFixed(2)))
+                  : typeof summaryTask?.remainingHours === "number"
+                    ? Math.max(0, Number(summaryTask.remainingHours.toFixed(2)))
+                    : Math.max(0, Number((allocatedHours - overallUsedHours).toFixed(2)))
                 : undefined;
-            const progress = allocatedHours > 0 ? Math.min(100, Number(((myLoggedHours / allocatedHours) * 100).toFixed(1))) : 0;
+            const progressBase = hourLimitScope === "per_employee" ? myLoggedHours : overallUsedHours;
+            const progress = allocatedHours > 0 ? Math.min(100, Number(((progressBase / allocatedHours) * 100).toFixed(1))) : 0;
 
             return {
               id: task.id,
@@ -128,6 +138,7 @@ export default function EmployeeTaskManagerPage() {
               description: task.description ?? "",
               allocatedHours,
               myLoggedHours,
+              hourLimitScope,
               remainingHours,
               durationDays: summaryTask?.durationDays ?? task.durationDays,
               progress,
@@ -217,6 +228,9 @@ export default function EmployeeTaskManagerPage() {
                             <Badge variant="outline" className="rounded-full border-border/60 bg-background/50 font-normal">
                               Allocated {formatHours(task.allocatedHours)}
                             </Badge>
+                            <Badge variant="outline" className="rounded-full border-border/60 bg-background/50 font-normal">
+                              {task.hourLimitScope === "per_employee" ? "Per employee cap" : "Overall pool"}
+                            </Badge>
                             {task.durationDays ? (
                               <Badge variant="outline" className="rounded-full border-border/60 bg-background/50 font-normal">
                                 {task.durationDays} day window
@@ -237,12 +251,15 @@ export default function EmployeeTaskManagerPage() {
                           <div className="rounded-xl border border-border/60 bg-secondary/10 px-4 py-3">
                             <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Remaining</p>
                             <p className="mt-1 text-lg font-semibold text-foreground">{formatHours(task.remainingHours)}</p>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {task.hourLimitScope === "per_employee" ? "Your remaining hours" : "Team hours still available"}
+                            </p>
                           </div>
                         </div>
 
                         <div className="space-y-2">
                           <div className="flex items-center justify-between text-xs text-muted-foreground">
-                            <span>Progress used</span>
+                            <span>{task.hourLimitScope === "per_employee" ? "Progress used" : "Pool used"}</span>
                             <span>{task.progress}%</span>
                           </div>
                           <Progress value={task.progress} className="h-2.5" />

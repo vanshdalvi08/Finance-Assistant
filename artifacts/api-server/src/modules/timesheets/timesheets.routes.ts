@@ -28,6 +28,7 @@ import {
   submitTimesheetEntryFast,
   submitTimesheetFast,
   sumTimesheetHours,
+  TaskHourLimitError,
   updateStore,
 } from "../../lib/business-store";
 import { DEFAULT_TENANT_ID } from "../../lib/tenants";
@@ -105,6 +106,25 @@ function handleWorkflowStateError(error: unknown, response: Response) {
   }
 
   response.status(409).json({ message: error.message });
+  return true;
+}
+
+function handleTaskHourLimitError(error: unknown, response: Response) {
+  const taskHourLimitError =
+    error instanceof TaskHourLimitError
+      ? error
+      : error &&
+            typeof error === "object" &&
+            "code" in error &&
+            (error as { code?: unknown }).code === "task_hour_limit"
+        ? (error as { message?: string })
+        : null;
+
+  if (!taskHourLimitError) {
+    throw error;
+  }
+
+  response.status(400).json({ message: taskHourLimitError.message ?? "Task hour limit exceeded." });
   return true;
 }
 
@@ -857,6 +877,9 @@ router.post("/timesheets", requireTenantRole("admin", "employee"), async (reques
     if (idempotencyClaim?.created) {
       await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
     }
+    if (handleTaskHourLimitError(error, response)) {
+      return;
+    }
     if (handleWorkflowStateError(error, response)) {
       return;
     }
@@ -996,6 +1019,9 @@ router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (r
   } catch (error) {
     if (idempotencyClaim?.created) {
       await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    if (handleTaskHourLimitError(error, response)) {
+      return;
     }
     if (handleWorkflowStateError(error, response)) {
       return;
@@ -1143,6 +1169,9 @@ router.post("/timesheets/submit", requireTenantRole("admin", "employee"), async 
   } catch (error) {
     if (idempotencyClaim?.created) {
       await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    if (handleTaskHourLimitError(error, response)) {
+      return;
     }
     if (handleWorkflowStateError(error, response)) {
       return;

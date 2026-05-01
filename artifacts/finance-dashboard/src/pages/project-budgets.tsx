@@ -38,6 +38,7 @@ type TaskDraft = {
   description: string;
   maxHours: string;
   durationDays: string;
+  hourLimitScope: "overall" | "per_employee";
   subTasks: string;
   status: "active" | "archived";
 };
@@ -55,12 +56,17 @@ const EMPTY_TASK: TaskDraft = {
   description: "",
   maxHours: "",
   durationDays: "",
+  hourLimitScope: "overall",
   subTasks: "",
   status: "active",
 };
 
 function cloneEmptyTask(): TaskDraft {
   return { ...EMPTY_TASK };
+}
+
+function normalizeTaskHourLimitScope(value: string): TaskDraft["hourLimitScope"] {
+  return value === "per_employee" ? "per_employee" : "overall";
 }
 
 function formatCapacityHours(value: number | undefined) {
@@ -101,6 +107,7 @@ function toForm(project?: ProjectRecord | null): ProjectForm {
           description: task.description ?? "",
           maxHours: task.maxHours ? String(task.maxHours) : "",
           durationDays: task.durationDays ? String(task.durationDays) : "",
+          hourLimitScope: task.hourLimitScope === "per_employee" ? "per_employee" : "overall",
           subTasks: task.subTasks?.join("\n") ?? "",
           status: task.status === "archived" ? "archived" : "active",
         }))
@@ -228,6 +235,7 @@ export default function ProjectBudgetsPage() {
           description: task.description.trim(),
           maxHours: Math.max(0, Number(task.maxHours || 0)) || undefined,
           durationDays: Math.max(0, Number(task.durationDays || 0)) || undefined,
+          hourLimitScope: normalizeTaskHourLimitScope(task.hourLimitScope),
           subTasks: task.subTasks
             .split(/[\n,]/)
             .map((value) => value.trim())
@@ -465,18 +473,31 @@ export default function ProjectBudgetsPage() {
                         {projectTasks.map((task) => {
                           const summaryTask = summaryLookup.get(project.id)?.tasks.find((item) => item.id === task.id);
                           const maxHours = summaryTask?.maxHours ?? task.maxHours;
+                          const hourLimitScope = summaryTask?.hourLimitScope ?? task.hourLimitScope ?? "overall";
                           const allClaimedHours = taskUsageLookup.get(task.id)?.total ?? 0;
                           const employeeClaimedHours =
                             selectedEmployeeId === "all"
                               ? allClaimedHours
                               : taskUsageLookup.get(task.id)?.byEmployee.get(selectedEmployeeId) ?? 0;
                           const claimedHours = selectedEmployeeId === "all" ? allClaimedHours : employeeClaimedHours;
-                          const remainingHours =
+                          const overallRemainingHours =
                             typeof maxHours === "number"
-                              ? Math.max(0, Number((maxHours - claimedHours).toFixed(2)))
+                              ? Math.max(0, Number((maxHours - allClaimedHours).toFixed(2)))
                               : undefined;
+                          const perEmployeeRemainingHours =
+                            typeof maxHours === "number"
+                              ? Math.max(0, Number((maxHours - employeeClaimedHours).toFixed(2)))
+                              : undefined;
+                          const remainingHours =
+                            hourLimitScope === "per_employee"
+                              ? selectedEmployeeId === "all"
+                                ? undefined
+                                : perEmployeeRemainingHours
+                              : overallRemainingHours;
                           const initializedLabel = [
-                            typeof maxHours === "number" ? `${formatCapacityHours(maxHours)} max` : "No hour cap",
+                            typeof maxHours === "number"
+                              ? `${formatCapacityHours(maxHours)} max ${hourLimitScope === "per_employee" ? "per employee" : "overall"}`
+                              : "No hour cap",
                             task.durationDays ? `${task.durationDays}d window` : null,
                           ]
                             .filter(Boolean)
@@ -512,7 +533,13 @@ export default function ProjectBudgetsPage() {
                               <div className="text-sm text-muted-foreground">
                                 <div className="font-medium text-foreground">{formatCapacityHours(remainingHours)}</div>
                                 <div className="mt-1 text-xs text-muted-foreground">
-                                  {selectedEmployeeId === "all" ? "Available to team" : "Remaining for selected employee"}
+                                  {hourLimitScope === "per_employee"
+                                    ? selectedEmployeeId === "all"
+                                      ? "Select an employee to inspect remaining"
+                                      : "Remaining for selected employee"
+                                    : selectedEmployeeId === "all"
+                                      ? "Available to team"
+                                      : "Remaining overall pool"}
                                 </div>
                               </div>
                             </div>
@@ -740,7 +767,7 @@ export default function ProjectBudgetsPage() {
                       </div>
                     </div>
 
-                    <div className="grid gap-4 md:grid-cols-[minmax(0,1.6fr)_140px_140px]">
+                    <div className="grid gap-4 md:grid-cols-[minmax(0,1.6fr)_140px_140px_minmax(180px,0.9fr)]">
                       <div className="space-y-2">
                         <Label className="text-xs font-medium text-muted-foreground">Short description</Label>
                         <Input
@@ -772,6 +799,19 @@ export default function ProjectBudgetsPage() {
                           onChange={(event) => updateTask(index, "durationDays", event.target.value)}
                           placeholder="0"
                         />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-xs font-medium text-muted-foreground">Hour scope</Label>
+                        <Select value={task.hourLimitScope} onValueChange={(value) => updateTask(index, "hourLimitScope", value)}>
+                          <SelectTrigger className="rounded-xl">
+                            <SelectValue placeholder="Select scope" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="overall">Overall total</SelectItem>
+                            <SelectItem value="per_employee">Per employee</SelectItem>
+                          </SelectContent>
+                        </Select>
                       </div>
                     </div>
 

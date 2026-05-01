@@ -11,6 +11,7 @@ export type ExpenseGroup = "personal" | "office";
 export type ActorRole = "admin" | "employee" | "client" | "platform_super_admin" | "system";
 export type ProjectStatus = "active" | "archived";
 export type ProjectTaskStatus = "active" | "archived";
+export type ProjectTaskHourLimitScope = "overall" | "per_employee";
 export type PurchaseOrderStatus = "active" | "archived";
 export type PurchaseOrderTaskStatus = "pending" | "paid";
 export type PreApprovalStatus = "draft" | "submitted" | "changes_requested" | "approved";
@@ -49,6 +50,7 @@ export interface ProjectBudgetTaskRecord {
   description?: string;
   maxHours?: number;
   durationDays?: number;
+  hourLimitScope?: ProjectTaskHourLimitScope;
   subTasks?: string[];
   status: ProjectTaskStatus;
 }
@@ -535,6 +537,7 @@ export const projectTasksTable = pgTable(
     description: text("description").notNull().default(""),
     maxHours: real("max_hours"),
     durationDays: integer("duration_days"),
+    hourLimitScope: text("hour_limit_scope").$type<ProjectTaskHourLimitScope>().notNull().default("overall"),
     subTasks: jsonb("sub_tasks").$type<string[]>().notNull().default([]),
     status: projectTaskStatusEnum("status").notNull().default("active"),
     sortOrder: integer("sort_order").notNull().default(0),

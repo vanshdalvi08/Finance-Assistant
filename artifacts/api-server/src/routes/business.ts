@@ -2289,6 +2289,7 @@ router.get("/projects/summary", requireTenantRole("admin", "employee"), async (_
       description?: string;
       maxHours?: number;
       durationDays?: number;
+      hourLimitScope: "overall" | "per_employee";
       status: "active" | "archived";
       usedHours: number;
       remainingHours?: number;
@@ -2374,6 +2375,7 @@ router.get("/projects/summary", requireTenantRole("admin", "employee"), async (_
         description: task.description,
         maxHours: task.maxHours,
         durationDays: task.durationDays,
+        hourLimitScope: task.hourLimitScope === "per_employee" ? "per_employee" : "overall",
         status: task.status,
         usedHours,
         remainingHours,

@@ -231,6 +231,17 @@ export default function EmployeeTimesheetPage() {
     () => new Map(projectOptions.map((project) => [normalizeLookup(project.project), project])),
     [projectOptions],
   );
+  const summaryTaskLookup = useMemo(() => {
+    const lookup = new Map<string, (typeof projectBudgetSummary)[number]["tasks"][number]>();
+
+    for (const project of projectBudgetSummary) {
+      for (const task of project.tasks ?? []) {
+        lookup.set(task.id, task);
+      }
+    }
+
+    return lookup;
+  }, [projectBudgetSummary]);
 
   const current = useMemo(
     () => timesheets.find((entry) => sameWeek(entry.weekStart, selectedWeek)) ?? null,
@@ -405,12 +416,34 @@ export default function EmployeeTimesheetPage() {
     }, 0);
   }
 
+  const persistedEmployeeTaskHours = useMemo(() => {
+    const lookup = new Map<string, number>();
+
+    for (const entry of timesheets) {
+      if (entry.status === "rejected") {
+        continue;
+      }
+
+      for (const line of entry.lines) {
+        if (!line.projectTaskId) {
+          continue;
+        }
+
+        lookup.set(line.projectTaskId, (lookup.get(line.projectTaskId) ?? 0) + lineTotal(line));
+      }
+    }
+
+    return lookup;
+  }, [timesheets]);
+
   function getTaskCapacitySnapshot(task?: ProjectCatalogTask) {
     if (!task || Number(task.maxHours ?? 0) <= 0) {
       return null;
     }
 
     const maxHours = Number(task.maxHours ?? 0);
+    const summaryTask = summaryTaskLookup.get(task.id);
+    const hourLimitScope = summaryTask?.hourLimitScope ?? task.hourLimitScope ?? "overall";
     const persistedCurrentEntryTaskHours =
       current?.lines.reduce((sum, line) => {
         if (line.projectTaskId !== task.id) {
@@ -419,18 +452,21 @@ export default function EmployeeTimesheetPage() {
 
         return sum + lineTotal(line);
       }, 0) ?? 0;
-    const summaryUsed =
-      typeof task.usedHours === "number"
-        ? task.usedHours
-        : typeof task.remainingHours === "number"
-          ? Math.max(0, maxHours - task.remainingHours)
+    const overallUsed =
+      typeof summaryTask?.usedHours === "number"
+        ? summaryTask.usedHours
+        : typeof summaryTask?.remainingHours === "number"
+          ? Math.max(0, maxHours - summaryTask.remainingHours)
           : 0;
+    const employeeUsed = persistedEmployeeTaskHours.get(task.id) ?? 0;
     const currentDraftHours = getCurrentDraftTaskHours(task.id);
-    const used = Number((summaryUsed - persistedCurrentEntryTaskHours + currentDraftHours).toFixed(2));
+    const baselineUsed = hourLimitScope === "per_employee" ? employeeUsed : overallUsed;
+    const used = Number((baselineUsed - persistedCurrentEntryTaskHours + currentDraftHours).toFixed(2));
     const remaining = Math.max(0, Number((maxHours - used).toFixed(2)));
 
     return {
       maxHours,
+      hourLimitScope,
       used,
       remaining,
       currentDraftHours: Number(currentDraftHours.toFixed(2)),
@@ -818,6 +854,10 @@ export default function EmployeeTimesheetPage() {
                                         {" · "}
                                         <span>
                                           Being used: {formatHourValue(taskCapacity.currentDraftHours)}
+                                        </span>
+                                        {" · "}
+                                        <span>
+                                          {taskCapacity.hourLimitScope === "per_employee" ? "Per employee cap" : "Overall cap"}
                                         </span>
                                       </div>
                                     ) : null}

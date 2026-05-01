@@ -246,6 +246,7 @@ export interface ProjectBudgetTask {
   description?: string;
   maxHours?: number;
   durationDays?: number;
+  hourLimitScope?: "overall" | "per_employee";
   subTasks?: string[];
   status: "active" | "archived";
   usedHours?: number;
@@ -431,6 +432,7 @@ interface SaveProjectBudgetInput {
     description?: string;
     maxHours?: number;
     durationDays?: number;
+    hourLimitScope?: "overall" | "per_employee";
     subTasks?: string[];
     status?: "active" | "archived";
   }>;
