@@ -225,6 +225,13 @@
       "when": 1777597200000,
       "tag": "0030_task_date_window",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1777867200000,
+      "tag": "0031_timesheet_line_work_notes",
+      "breakpoints": true
     }
   ]
 }

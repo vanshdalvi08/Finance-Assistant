@@ -5,6 +5,7 @@ import { usersTable } from "./users";
 import { tenantsTable } from "./tenants";
 
 export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+export type TimesheetWorkNotes = Partial<Record<DayKey, string>>;
 export type ApprovalStatus = "draft" | "submitted" | "approved" | "rejected";
 export type SalaryStatus = "pending" | "paid";
 export type ExpenseGroup = "personal" | "office";
@@ -65,6 +66,7 @@ export interface TimesheetLineRecord {
   projectTaskId?: string;
   subTask?: string;
   notes?: string;
+  workNotes?: TimesheetWorkNotes;
   hours: TimesheetHours;
 }
 
@@ -587,6 +589,7 @@ export const timesheetLinesTable = pgTable(
     subTask: text("sub_task"),
     sortOrder: integer("sort_order").notNull().default(0),
     notes: text("notes").notNull().default(""),
+    workNotes: jsonb("work_notes").$type<TimesheetWorkNotes>().notNull().default({}),
     mon: real("mon").notNull().default(0),
     tue: real("tue").notNull().default(0),
     wed: real("wed").notNull().default(0),

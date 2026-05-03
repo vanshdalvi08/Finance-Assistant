@@ -1,8 +1,10 @@
 import { test, expect, type BrowserContext, type Page } from "@playwright/test";
 
-const weekStart = "2026-04-27T12:00:00.000Z";
+const weekStart = "2026-05-04T12:00:00.000Z";
 const workNoteText =
   "Completed API reconciliation, verified submission edge cases, and prepared the rollout notes.";
+const updatedWorkNoteText =
+  "Adjusted the reconciliation totals, updated the rollout summary, and validated the revised submission payload.";
 
 const employeeUser = {
   id: "emp-work-note-1",
@@ -64,6 +66,7 @@ function employeeDraft() {
         projectTaskId: undefined,
         subTask: "",
         notes: "",
+        workNotes: {},
         hours: { mon: 0, tue: 0, wed: 0, thu: 0, fri: 0, sat: 0, sun: 0 },
       },
     ],
@@ -152,13 +155,13 @@ function monthCalendar() {
       expenseSubmissions: 0,
     },
     days: [
-      { date: "2026-04-27T12:00:00.000Z", day: 27, isWeekend: false, worked: true, leave: false, holiday: false, hours: 1, expenseCount: 0 },
-      { date: "2026-04-28T12:00:00.000Z", day: 28, isWeekend: false, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
-      { date: "2026-04-29T12:00:00.000Z", day: 29, isWeekend: false, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
-      { date: "2026-04-30T12:00:00.000Z", day: 30, isWeekend: false, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
-      { date: "2026-05-01T12:00:00.000Z", day: 1, isWeekend: false, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
-      { date: "2026-05-02T12:00:00.000Z", day: 2, isWeekend: true, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
-      { date: "2026-05-03T12:00:00.000Z", day: 3, isWeekend: true, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
+      { date: "2026-05-04T12:00:00.000Z", day: 4, isWeekend: false, worked: true, leave: false, holiday: false, hours: 1, expenseCount: 0 },
+      { date: "2026-05-05T12:00:00.000Z", day: 5, isWeekend: false, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
+      { date: "2026-05-06T12:00:00.000Z", day: 6, isWeekend: false, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
+      { date: "2026-05-07T12:00:00.000Z", day: 7, isWeekend: false, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
+      { date: "2026-05-08T12:00:00.000Z", day: 8, isWeekend: false, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
+      { date: "2026-05-09T12:00:00.000Z", day: 9, isWeekend: true, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
+      { date: "2026-05-10T12:00:00.000Z", day: 10, isWeekend: true, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
     ],
   };
 }
@@ -231,7 +234,9 @@ function trackPageErrors(page: Page) {
 }
 
 test("employee can save a work note and admin can review it", async ({ browser }) => {
-  let submittedEntry = employeeDraft();
+  let currentEntry = employeeDraft();
+  let savedDraftPayload: Record<string, unknown> | null = null;
+  let submittedEntry: Record<string, unknown> | null = null;
 
   const employeeContext = await browser.newContext();
   await mockBaseSession(employeeContext, employeeUser);
@@ -244,7 +249,7 @@ test("employee can save a work note and admin can review it", async ({ browser }
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ timesheets: [submittedEntry] }),
+        body: JSON.stringify({ timesheets: [currentEntry] }),
       });
       return;
     }
@@ -277,11 +282,12 @@ test("employee can save a work note and admin can review it", async ({ browser }
     }
 
     if (path === "/api/business/timesheets" && route.request().method() === "POST") {
-      submittedEntry = JSON.parse(route.request().postData() ?? "{}");
+      savedDraftPayload = JSON.parse(route.request().postData() ?? "{}");
+      currentEntry = savedDraftPayload as typeof currentEntry;
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ timesheet: submittedEntry }),
+        body: JSON.stringify({ timesheet: currentEntry }),
       });
       return;
     }
@@ -314,25 +320,45 @@ test("employee can save a work note and admin can review it", async ({ browser }
   await expect(employeePage.getByRole("heading", { name: "My Timesheet" })).toBeVisible();
 
   const taskRow = employeePage.locator("tbody tr").first();
+  const mondayCell = taskRow.locator("td").nth(2);
   await taskRow.locator("select").nth(0).selectOption("Work Note Project");
   await expect(taskRow.locator("select").nth(1)).toBeVisible();
   await taskRow.locator("select").nth(1).selectOption("project-task-1");
-  await employeePage.getByRole("button", { name: "Work Note" }).first().click();
-  await expect(employeePage.getByRole("dialog")).toBeVisible();
+  await mondayCell.hover();
+  await employeePage.getByRole("button", { name: "Add work note for Mon" }).click();
+  const workNoteDialog = employeePage.getByRole("dialog");
+  await expect(workNoteDialog).toBeVisible();
 
+  await workNoteDialog.locator('input[inputmode="decimal"]').fill("1");
   await employeePage
     .getByPlaceholder("Describe the work completed, key update, or specific output for this task.")
     .fill(workNoteText);
   await employeePage.getByRole("button", { name: "Save" }).click();
 
   await expect(employeePage.getByRole("dialog")).not.toBeVisible();
-  await expect(employeePage.getByRole("button", { name: "Note Added" })).toBeVisible();
+  await expect(employeePage.getByRole("button", { name: "Edit work note for Mon" })).toBeVisible();
+  await mondayCell.locator("input").hover();
+  await expect(employeePage.getByText(workNoteText)).toBeVisible();
 
-  await employeePage.locator('input[type="number"]').first().fill("1");
+  await employeePage.getByRole("button", { name: "Save Draft" }).click();
+  await expect(employeePage.getByText("Draft saved", { exact: true }).first()).toBeVisible();
+  expect(savedDraftPayload).not.toBeNull();
+  expect((savedDraftPayload as { lines: Array<{ workNotes?: { mon?: string }; hours: { mon: number } }> }).lines[0]?.workNotes?.mon).toBe(workNoteText);
+  expect((savedDraftPayload as { lines: Array<{ workNotes?: { mon?: string }; hours: { mon: number } }> }).lines[0]?.hours.mon).toBe(1);
+
+  await employeePage.getByRole("button", { name: "Edit work note for Mon" }).click();
+  await expect(workNoteDialog).toBeVisible();
+  await workNoteDialog.locator('input[inputmode="decimal"]').fill("2");
+  await employeePage
+    .getByPlaceholder("Describe the work completed, key update, or specific output for this task.")
+    .fill(updatedWorkNoteText);
+  await employeePage.getByRole("button", { name: "Save" }).click();
+
   await employeePage.getByRole("button", { name: "Submit for Review" }).click();
   await expect(employeePage.getByText("Timesheet submitted", { exact: true }).first()).toBeVisible();
-  expect(submittedEntry.lines[0]?.notes).toBe(workNoteText);
-  expect(submittedEntry.lines[0]?.id).toBeTruthy();
+  expect(submittedEntry).not.toBeNull();
+  expect((submittedEntry as { lines: Array<{ workNotes?: { mon?: string }; hours: { mon: number } }> }).lines[0]?.workNotes?.mon).toBe(updatedWorkNoteText);
+  expect((submittedEntry as { lines: Array<{ workNotes?: { mon?: string }; hours: { mon: number } }> }).lines[0]?.hours.mon).toBe(2);
   expect(employeePageErrors).toEqual([]);
 
   await employeeContext.close();
@@ -400,7 +426,7 @@ test("employee can save a work note and admin can review it", async ({ browser }
   await expect(adminPage.getByRole("heading", { name: "Timesheets" })).toBeVisible();
 
   await adminPage.getByRole("button", { name: "Work Note" }).first().click();
-  await expect(adminPage.getByText(workNoteText)).toBeVisible();
+  await expect(adminPage.getByText(updatedWorkNoteText)).toBeVisible();
   expect(adminPageErrors).toEqual([]);
 
   await adminContext.close();

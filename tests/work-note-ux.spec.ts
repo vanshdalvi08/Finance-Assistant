@@ -1,6 +1,6 @@
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 
-const weekStart = "2026-04-27T12:00:00.000Z";
+const weekStart = "2026-05-04T12:00:00.000Z";
 
 const employeeUser = {
   id: "emp-work-note-ux",
@@ -62,6 +62,9 @@ function employeeDraft() {
         projectTaskId: "project-task-1",
         subTask: "",
         notes: "",
+        workNotes: {
+          mon: "Existing work note for the dialog chrome test.",
+        },
         hours: { mon: 2, tue: 1, wed: 0, thu: 0, fri: 0, sat: 0, sun: 0 },
       },
     ],
@@ -170,13 +173,13 @@ function monthCalendar() {
       expenseSubmissions: 0,
     },
     days: [
-      { date: "2026-04-27T12:00:00.000Z", day: 27, isWeekend: false, worked: true, leave: false, holiday: false, hours: 1, expenseCount: 0 },
-      { date: "2026-04-28T12:00:00.000Z", day: 28, isWeekend: false, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
-      { date: "2026-04-29T12:00:00.000Z", day: 29, isWeekend: false, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
-      { date: "2026-04-30T12:00:00.000Z", day: 30, isWeekend: false, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
-      { date: "2026-05-01T12:00:00.000Z", day: 1, isWeekend: false, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
-      { date: "2026-05-02T12:00:00.000Z", day: 2, isWeekend: true, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
-      { date: "2026-05-03T12:00:00.000Z", day: 3, isWeekend: true, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
+      { date: "2026-05-04T12:00:00.000Z", day: 4, isWeekend: false, worked: true, leave: false, holiday: false, hours: 1, expenseCount: 0 },
+      { date: "2026-05-05T12:00:00.000Z", day: 5, isWeekend: false, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
+      { date: "2026-05-06T12:00:00.000Z", day: 6, isWeekend: false, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
+      { date: "2026-05-07T12:00:00.000Z", day: 7, isWeekend: false, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
+      { date: "2026-05-08T12:00:00.000Z", day: 8, isWeekend: false, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
+      { date: "2026-05-09T12:00:00.000Z", day: 9, isWeekend: true, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
+      { date: "2026-05-10T12:00:00.000Z", day: 10, isWeekend: true, worked: false, leave: false, holiday: false, hours: 0, expenseCount: 0 },
     ],
   };
 }
@@ -233,7 +236,7 @@ test("employee work note dialog shows one close button", async ({ browser }) => 
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ projects: projectSummary() }) });
       return;
     }
-    if (path === "/api/business/employee-month-calendar") {
+    if (path === "/api/business/month-calendar" || path === "/api/business/employee-month-calendar") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(monthCalendar()) });
       return;
     }
@@ -244,9 +247,9 @@ test("employee work note dialog shows one close button", async ({ browser }) => 
   const pageErrors = trackPageErrors(page);
 
   await page.goto("/employee/timesheet");
-  await page.getByRole("button", { name: "Work Note" }).first().click();
+  await page.getByRole("button", { name: "Edit work note for Mon" }).click();
 
-  const dialog = page.getByRole("dialog", { name: "Work Note" });
+  const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("button").filter({ has: page.locator("svg") })).toHaveCount(1);
   expect(pageErrors).toEqual([]);
@@ -271,7 +274,7 @@ test("admin detail view shows work note inline without extra work-note action", 
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ projects: projectSummary() }) });
       return;
     }
-    if (path === "/api/business/employee-month-calendar") {
+    if (path === "/api/business/month-calendar" || path === "/api/business/employee-month-calendar") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(monthCalendar()) });
       return;
     }

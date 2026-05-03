@@ -9,7 +9,6 @@ import {
   ChevronRight,
   Copy,
   ClipboardCheck,
-  FileText,
   FilePenLine,
   Plus,
   Save,
@@ -17,10 +16,11 @@ import {
 } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { useAuthStore } from "@/store/auth";
-import { api, type DayKey, type MonthCalendarDay, type TimesheetEntry, type TimesheetTaskLine } from "@/lib/api";
+import { api, type DayKey, type TimesheetEntry, type TimesheetTaskLine, type TimesheetWorkNotes } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
@@ -64,6 +64,7 @@ function createLine(): TimesheetTaskLine {
     task: "",
     subTask: "",
     notes: "",
+    workNotes: {},
     hours: { mon: 0, tue: 0, wed: 0, thu: 0, fri: 0, sat: 0, sun: 0 },
   };
 }
@@ -187,6 +188,50 @@ function hourInputValue(value: number) {
   return value === 0 ? "" : String(value);
 }
 
+function isHourInputDraft(value: string) {
+  return /^\d{0,2}(\.\d{0,1})?$/.test(value.trim()) || value.trim() === "";
+}
+
+function normalizeWorkNotes(input?: TimesheetWorkNotes | null) {
+  const normalized = Object.fromEntries(
+    DAYS.map(({ key }) => [key, String(input?.[key] ?? "").trim()]).filter(([, value]) => value.length > 0),
+  ) as TimesheetWorkNotes;
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function summarizeWorkNotes(workNotes?: TimesheetWorkNotes | null) {
+  const normalized = normalizeWorkNotes(workNotes);
+  if (!normalized) {
+    return undefined;
+  }
+
+  return DAYS.map(({ key, label }) => {
+    const note = normalized[key]?.trim();
+    return note ? `${label}: ${note}` : null;
+  })
+    .filter((value): value is string => Boolean(value))
+    .join(" • ");
+}
+
+function updateLineDayWorkNote(line: TimesheetTaskLine, day: DayKey, note: string) {
+  const nextWorkNotes: TimesheetWorkNotes = { ...(line.workNotes ?? {}) };
+  const trimmedNote = note.trim();
+
+  if (trimmedNote) {
+    nextWorkNotes[day] = trimmedNote;
+  } else {
+    delete nextWorkNotes[day];
+  }
+
+  const normalized = normalizeWorkNotes(nextWorkNotes);
+  return {
+    ...line,
+    workNotes: normalized ?? {},
+    notes: summarizeWorkNotes(normalized),
+  };
+}
+
 function hasDraftContent(entry: TimesheetEntry | null) {
   if (!entry) {
     return false;
@@ -195,6 +240,7 @@ function hasDraftContent(entry: TimesheetEntry | null) {
   return entry.lines.some(
     (line) =>
       Boolean(line.project.trim() || line.task.trim() || line.notes?.trim()) ||
+      DAYS.some((day) => Boolean(line.workNotes?.[day.key]?.trim())) ||
       DAYS.some((day) => Number(line.hours[day.key] ?? 0) > 0),
   );
 }
@@ -206,9 +252,10 @@ export default function EmployeeTimesheetPage() {
   const [selectedWeek, setSelectedWeek] = useState(() => weekStartIso());
   const [draft, setDraft] = useState<TimesheetEntry | null>(null);
   const [hoveredRowId, setHoveredRowId] = useState<string | null>(null);
-  const [hoveredDay, setHoveredDay] = useState<DayKey | null>(null);
-  const [workNoteLineId, setWorkNoteLineId] = useState<string | null>(null);
-  const [workNoteDraft, setWorkNoteDraft] = useState("");
+  const [hoveredCell, setHoveredCell] = useState<{ lineId: string; day: DayKey } | null>(null);
+  const [activeNoteCell, setActiveNoteCell] = useState<{ lineId: string; day: DayKey } | null>(null);
+  const [cellWorkNoteDraft, setCellWorkNoteDraft] = useState("");
+  const [cellHoursDraft, setCellHoursDraft] = useState("");
 
   const { data: employee } = useQuery({
     queryKey: ["employee-profile", user?.id, user?.email],
@@ -539,7 +586,7 @@ export default function EmployeeTimesheetPage() {
   }
 
   const fieldControlClass =
-    "h-9 w-full appearance-none rounded-xl border border-border/55 bg-background/80 px-3 pr-10 text-sm shadow-none outline-none transition focus:border-primary/50 focus:ring-2 focus:ring-primary/10 disabled:cursor-not-allowed disabled:opacity-60";
+    "h-10 w-full appearance-none rounded-[18px] border border-slate-200 bg-white px-4 pr-10 text-[15px] font-medium text-slate-700 shadow-none outline-none transition focus:border-sky-300/80 focus:ring-2 focus:ring-sky-500/10 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-100 dark:focus:border-sky-400/70";
 
   useEffect(() => {
     if (current) {
@@ -642,35 +689,34 @@ export default function EmployeeTimesheetPage() {
   }
 
   const activeWorkNoteLine = useMemo(
-    () => draft?.lines.find((line) => line.id === workNoteLineId) ?? null,
-    [draft?.lines, workNoteLineId],
+    () => draft?.lines.find((line) => line.id === activeNoteCell?.lineId) ?? null,
+    [activeNoteCell?.lineId, draft?.lines],
   );
 
-  function openWorkNoteDialog(line: TimesheetTaskLine) {
-    setWorkNoteLineId(line.id);
-    setWorkNoteDraft(line.notes?.trim() ?? "");
+  const activeWorkNoteDay = useMemo(
+    () => weekDates.find((day) => day.key === activeNoteCell?.day) ?? null,
+    [activeNoteCell?.day, weekDates],
+  );
+
+  function openWorkNoteDialog(line: TimesheetTaskLine, day: DayKey) {
+    const hasDayScopedNotes = Boolean(normalizeWorkNotes(line.workNotes));
+    setActiveNoteCell({ lineId: line.id, day });
+    setCellHoursDraft(hourInputValue(Number(line.hours[day] ?? 0)));
+    setCellWorkNoteDraft(line.workNotes?.[day]?.trim() ?? (!hasDayScopedNotes ? line.notes?.trim() ?? "" : ""));
   }
 
   function closeWorkNoteDialog() {
-    setWorkNoteLineId(null);
-    setWorkNoteDraft("");
+    setActiveNoteCell(null);
+    setCellWorkNoteDraft("");
+    setCellHoursDraft("");
   }
 
-  function saveWorkNote() {
-    if (!activeWorkNoteLine) {
-      return;
-    }
-
-    updateLine(activeWorkNoteLine.id, (line) => ({
-      ...line,
-      notes: workNoteDraft.trim() || undefined,
-    }));
-    closeWorkNoteDialog();
-  }
-
-  function changeHour(lineId: string, day: DayKey, rawValue: string) {
+  function resolveHourValue(lineId: string, day: DayKey, rawValue: string, options?: { notify?: boolean }) {
     const requestedValue = rawValue === "" ? 0 : Math.max(0, Math.min(24, Number(rawValue || 0)));
     const targetLine = draft?.lines.find((line) => line.id === lineId);
+    if (!targetLine) {
+      return null;
+    }
     const currentValue = Number(targetLine?.hours[day] ?? 0);
     const selectedTask =
       targetLine?.projectTaskId && targetLine.project.trim()
@@ -678,23 +724,60 @@ export default function EmployeeTimesheetPage() {
         : undefined;
     const claimDate = weekDates.find((weekDay) => weekDay.key === day)?.date;
     if (requestedValue > 0 && claimDate && selectedTask && !isTaskWindowDay(selectedTask, claimDate)) {
-      toast({
-        title: "Task window closed for this day",
-        description: `${selectedTask.name} can only be claimed ${formatTaskWindowLabel(selectedTask) ?? "inside its allowed date window"}.`,
-        variant: "destructive",
-      });
-      return;
+      if (options?.notify !== false) {
+        toast({
+          title: "Task window closed for this day",
+          description: `${selectedTask.name} can only be claimed ${formatTaskWindowLabel(selectedTask) ?? "inside its allowed date window"}.`,
+          variant: "destructive",
+        });
+      }
+      return null;
     }
     const taskSnapshot = getTaskCapacitySnapshot(selectedTask);
     const maxAvailableForCell = taskSnapshot ? Math.max(0, Number((taskSnapshot.remaining + currentValue).toFixed(2))) : 24;
     const nextValue = Math.max(0, Math.min(requestedValue, maxAvailableForCell, 24));
 
-    if (requestedValue > nextValue && taskSnapshot) {
+    if (requestedValue > nextValue && taskSnapshot && options?.notify !== false) {
       toast({
         title: "Task hour limit reached",
         description: `${targetLine?.task || "This task"} has ${formatHourValue(taskSnapshot.remaining)} remaining in its allocation window.`,
         variant: "destructive",
       });
+    }
+
+    return nextValue;
+  }
+
+  function saveWorkNote() {
+    if (!activeWorkNoteLine || !activeNoteCell) {
+      return;
+    }
+
+    const nextValue = resolveHourValue(activeWorkNoteLine.id, activeNoteCell.day, cellHoursDraft);
+    if (nextValue === null) {
+      return;
+    }
+
+    updateLine(activeWorkNoteLine.id, (line) =>
+      updateLineDayWorkNote(
+        {
+          ...line,
+          hours: {
+            ...line.hours,
+            [activeNoteCell.day]: nextValue,
+          },
+        },
+        activeNoteCell.day,
+        cellWorkNoteDraft,
+      ),
+    );
+    closeWorkNoteDialog();
+  }
+
+  function changeHour(lineId: string, day: DayKey, rawValue: string) {
+    const nextValue = resolveHourValue(lineId, day, rawValue);
+    if (nextValue === null) {
+      return;
     }
 
     updateLine(lineId, (line) => ({
@@ -806,13 +889,13 @@ export default function EmployeeTimesheetPage() {
               <div className="py-16 text-center text-sm text-muted-foreground">Preparing your timesheet workspace...</div>
             ) : (
               <div className="timesheet-scroll overflow-x-auto">
-                <table className="w-full min-w-[1200px] table-fixed border-separate border-spacing-0">
+                <table className="w-full min-w-[1120px] table-fixed border-separate border-spacing-0">
                   <thead>
                     <tr className="bg-secondary/10 text-left text-sm text-muted-foreground">
-                      <th className="sticky left-0 z-30 w-[180px] min-w-[180px] border-b border-r border-border/50 bg-card px-4 py-3 font-medium text-foreground">
+                      <th className="sticky left-0 z-30 w-[206px] min-w-[206px] border-b border-r border-border/50 bg-card px-4 py-3 font-medium text-foreground">
                         Project
                       </th>
-                      <th className="sticky left-[180px] z-30 w-[300px] min-w-[300px] border-b border-r border-border/50 bg-card px-4 py-3 font-medium text-foreground">
+                      <th className="sticky left-[206px] z-30 w-[252px] min-w-[252px] border-b border-r border-border/50 bg-card px-4 py-3 font-medium text-foreground">
                         Task
                       </th>
                       {weekDates.map((day) => {
@@ -825,8 +908,7 @@ export default function EmployeeTimesheetPage() {
                           <th
                             key={day.key}
                               className={cn(
-                                "w-[78px] min-w-[78px] border-b border-r border-border/50 px-2 py-3 text-center font-medium last:border-r-0",
-                                hoveredDay === day.key && "bg-secondary/35 text-foreground",
+                                "w-[76px] min-w-[76px] border-b border-r border-border/50 px-2 py-3 text-center font-medium last:border-r-0",
                                 isHoliday && "bg-emerald-500/5",
                                 isLeave && "bg-amber-500/5",
                                 isPending && "bg-sky-500/5",
@@ -848,10 +930,10 @@ export default function EmployeeTimesheetPage() {
                           </th>
                         );
                       })}
-                      <th className="w-[92px] min-w-[92px] border-b border-r border-border/50 px-2 py-3 text-center font-medium text-foreground">
+                      <th className="w-[88px] min-w-[88px] border-b border-r border-border/50 px-2 py-3 text-center font-medium text-foreground">
                         Total
                       </th>
-                      <th className="w-[96px] min-w-[96px] border-b border-border/50 px-2 py-3 text-right font-medium text-foreground">
+                      <th className="w-[88px] min-w-[88px] border-b border-border/50 px-2 py-3 text-right font-medium text-foreground">
                         Actions
                       </th>
                     </tr>
@@ -904,7 +986,7 @@ export default function EmployeeTimesheetPage() {
                                   value={line.project}
                                   placeholder="Project name"
                                   disabled={readOnly}
-                                  className="h-9 rounded-xl border-border/55 bg-background/80 text-sm shadow-none"
+                                  className="h-10 rounded-[18px] border-slate-200 bg-white px-4 text-[15px] font-medium text-slate-700 shadow-none dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-100"
                                   onChange={(event) =>
                                     updateLine(line.id, (currentLine) => ({
                                       ...currentLine,
@@ -916,61 +998,44 @@ export default function EmployeeTimesheetPage() {
                               ) : null}
                             </div>
                           </td>
-                          <td className="sticky left-[180px] z-20 border-b border-r border-border/50 bg-card px-4 py-3 align-top">
+                          <td className="sticky left-[206px] z-20 border-b border-r border-border/50 bg-card px-4 py-3 align-top">
                             <div className="space-y-2">
                               {hasProjectValue ? (
                                 projectTaskOptions.length > 0 ? (
                                   <>
-                                    <div className="flex items-start gap-2">
-                                      <div className="min-w-0 flex-1 space-y-2">
-                                        <div className="relative">
-                                          <select
-                                            value={taskSelectionValue}
-                                            disabled={readOnly}
-                                            className={fieldControlClass}
-                                            onChange={(event) => setTaskChoice(line.id, event.target.value)}
-                                          >
-                                            <option value="">Select task</option>
-                                            {projectTaskOptions.map((task) => (
-                                              <option key={task.id} value={task.id}>
-                                                {formatTaskOptionLabel(task)}
-                                              </option>
-                                            ))}
-                                            <option value="__custom__">Custom task</option>
-                                          </select>
-                                          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                                        </div>
-                                        {showTaskInput ? (
-                                          <Input
-                                            value={line.task}
-                                            placeholder="Custom task name"
-                                            disabled={readOnly}
-                                            className="h-9 rounded-xl border-border/55 bg-background/80 text-sm shadow-none"
-                                            onChange={(event) =>
-                                              updateLine(line.id, (currentLine) => ({
-                                                ...currentLine,
-                                                task: event.target.value,
-                                                projectTaskId: undefined,
-                                              }))
-                                            }
-                                          />
-                                        ) : null}
+                                    <div className="min-w-0 flex-1 space-y-2">
+                                      <div className="relative">
+                                        <select
+                                          value={taskSelectionValue}
+                                          disabled={readOnly}
+                                          className={fieldControlClass}
+                                          onChange={(event) => setTaskChoice(line.id, event.target.value)}
+                                        >
+                                          <option value="">Select task</option>
+                                          {projectTaskOptions.map((task) => (
+                                            <option key={task.id} value={task.id}>
+                                              {formatTaskOptionLabel(task)}
+                                            </option>
+                                          ))}
+                                          <option value="__custom__">Custom task</option>
+                                        </select>
+                                        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                                       </div>
-                                      <Button
-                                        type="button"
-                                        variant="ghost"
-                                        size="sm"
-                                        className={cn(
-                                          "h-9 shrink-0 rounded-xl border border-border/45 px-3 text-xs",
-                                          line.notes?.trim()
-                                            ? "text-primary hover:bg-primary/10 hover:text-primary"
-                                            : "text-muted-foreground hover:bg-secondary/20 hover:text-foreground",
-                                        )}
-                                        onClick={() => openWorkNoteDialog(line)}
-                                      >
-                                        <FileText className="mr-1.5 h-3.5 w-3.5" />
-                                        {line.notes?.trim() ? "Note Added" : "Work Note"}
-                                      </Button>
+                                      {showTaskInput ? (
+                                        <Input
+                                          value={line.task}
+                                          placeholder="Custom task name"
+                                          disabled={readOnly}
+                                          className="h-10 rounded-[18px] border-slate-200 bg-white px-4 text-[15px] font-medium text-slate-700 shadow-none dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-100"
+                                          onChange={(event) =>
+                                            updateLine(line.id, (currentLine) => ({
+                                              ...currentLine,
+                                              task: event.target.value,
+                                              projectTaskId: undefined,
+                                            }))
+                                          }
+                                        />
+                                      ) : null}
                                     </div>
                                     {taskCapacity ? (
                                       <div className="rounded-xl border border-border/45 bg-background/55 px-3 py-2 text-xs text-muted-foreground">
@@ -1006,41 +1071,24 @@ export default function EmployeeTimesheetPage() {
                                     ) : null}
                                   </>
                               ) : (
-                                <div className="flex items-start gap-2">
-                                  <Input
-                                    value={line.task}
-                                    placeholder="Custom task name"
-                                    disabled={readOnly}
-                                    className="h-9 rounded-xl border-border/55 bg-background/80 text-sm shadow-none"
-                                    onChange={(event) =>
-                                      updateLine(line.id, (currentLine) => ({
-                                        ...currentLine,
-                                        task: event.target.value,
-                                        projectTaskId: undefined,
-                                      }))
-                                    }
-                                  />
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="sm"
-                                    className={cn(
-                                      "h-9 shrink-0 rounded-xl border border-border/45 px-3 text-xs",
-                                      line.notes?.trim()
-                                        ? "text-primary hover:bg-primary/10 hover:text-primary"
-                                        : "text-muted-foreground hover:bg-secondary/20 hover:text-foreground",
-                                    )}
-                                    onClick={() => openWorkNoteDialog(line)}
-                                  >
-                                    <FileText className="mr-1.5 h-3.5 w-3.5" />
-                                    {line.notes?.trim() ? "Note Added" : "Work Note"}
-                                  </Button>
-                                </div>
+                                <Input
+                                  value={line.task}
+                                  placeholder="Custom task name"
+                                  disabled={readOnly}
+                                          className="h-10 rounded-[18px] border-slate-200 bg-white px-4 text-[15px] font-medium text-slate-700 shadow-none dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-100"
+                                  onChange={(event) =>
+                                    updateLine(line.id, (currentLine) => ({
+                                      ...currentLine,
+                                      task: event.target.value,
+                                      projectTaskId: undefined,
+                                    }))
+                                  }
+                                />
                               )
                               ) : (
-                                <div className="flex h-9 items-center rounded-xl border border-dashed border-border/50 bg-background/50 px-3 text-xs text-muted-foreground">
-                                  Choose a project first
-                                </div>
+                                        <div className="flex h-10 items-center rounded-[18px] border border-dashed border-slate-200 bg-slate-50 px-4 text-[15px] font-medium text-slate-500 dark:border-slate-700/90 dark:bg-slate-950/90 dark:text-slate-400">
+                                          Choose a project first
+                                        </div>
                               )}
                             </div>
                           </td>
@@ -1050,6 +1098,7 @@ export default function EmployeeTimesheetPage() {
                           const isOffDay = Boolean(calendarDay?.holiday || calendarDay?.leave || calendarDay?.leaveStatus === "pending");
                           const outsideTaskWindow = selectedTask ? !isTaskWindowDay(selectedTask, day.date) : false;
                           const hasExistingHours = Number(line.hours[day.key] ?? 0) > 0;
+                          const workNotePreview = line.workNotes?.[day.key]?.trim() ?? "";
                           const blockTaskWindowDay = outsideTaskWindow && !hasExistingHours;
                           const placeholder = calendarDay?.holiday
                             ? calendarDay.holidayName ?? "Holiday"
@@ -1065,25 +1114,95 @@ export default function EmployeeTimesheetPage() {
                               key={day.key}
                               className={cn(
                                 "border-b border-r border-border/50 px-3 py-3 align-top transition-colors",
-                                hoveredDay === day.key && "bg-secondary/15",
                                 day.key === "sat" || day.key === "sun" ? "bg-secondary/5" : "",
                                 isOffDay && "bg-secondary/10",
                                 outsideTaskWindow && "bg-secondary/10",
                               )}
-                              onMouseEnter={() => setHoveredDay(day.key)}
-                              onMouseLeave={() => setHoveredDay((currentDay) => (currentDay === day.key ? null : currentDay))}
+                              onMouseEnter={() => setHoveredCell({ lineId: line.id, day: day.key })}
+                              onMouseLeave={() =>
+                                setHoveredCell((currentCell) =>
+                                  currentCell?.lineId === line.id && currentCell.day === day.key ? null : currentCell,
+                                )
+                              }
                             >
-                              <Input
-                                type="number"
-                                min={0}
-                                max={24}
-                                step={0.5}
-                                disabled={readOnly || isOffDay || blockTaskWindowDay}
-                                className="h-9 rounded-xl border-border/55 bg-background/80 px-2 text-center text-sm shadow-none"
-                                placeholder={placeholder}
-                                value={hourInputValue(line.hours[day.key])}
-                                onChange={(event) => changeHour(line.id, day.key, event.target.value)}
-                              />
+                              <div className="mx-auto flex h-[40px] w-full items-center justify-center">
+                                {workNotePreview ? (
+                                  <HoverCard openDelay={120} closeDelay={80}>
+                                    <HoverCardTrigger asChild>
+                                      <div className="relative">
+                                        <Input
+                                          type="text"
+                                          inputMode="decimal"
+                                          disabled={readOnly || isOffDay || blockTaskWindowDay}
+                                          className={cn(
+                                            "h-[40px] w-[58px] rounded-[16px] border border-slate-200/90 bg-white px-2 pb-[5px] pt-0 text-center text-[0.95rem] font-medium leading-none text-slate-700 shadow-none transition focus-visible:border-sky-400/50 focus-visible:ring-4 focus-visible:ring-sky-500/10 dark:border-[#1a1f2e] dark:bg-slate-950/90 dark:text-slate-100 dark:focus-visible:border-sky-400/70",
+                                            (readOnly || isOffDay || blockTaskWindowDay) && "bg-slate-50 text-slate-400 dark:bg-slate-900 dark:text-slate-500",
+                                            workNotePreview && "border-sky-200 dark:border-sky-500/40",
+                                          )}
+                                          placeholder={placeholder}
+                                          value={hourInputValue(line.hours[day.key])}
+                                          onChange={(event) => {
+                                            if (!isHourInputDraft(event.target.value)) {
+                                              return;
+                                            }
+                                            changeHour(line.id, day.key, event.target.value);
+                                          }}
+                                        />
+                                        <button
+                                          type="button"
+                                          className="absolute inset-x-0 bottom-[4px] flex h-3 items-center justify-center"
+                                          onClick={() => openWorkNoteDialog(line, day.key)}
+                                          aria-label={`Edit work note for ${day.label}`}
+                                          disabled={readOnly}
+                                        >
+                                          <span className="block aspect-square h-[6px] rounded-full bg-[#2F80FF]" />
+                                        </button>
+                                      </div>
+                                    </HoverCardTrigger>
+                                    <HoverCardContent
+                                      side="bottom"
+                                      sideOffset={10}
+                                      className="pointer-events-none relative w-[248px] rounded-[18px] border border-slate-800/90 bg-slate-900 px-4 py-3 text-white shadow-[0_18px_36px_rgba(15,23,42,0.35)]"
+                                    >
+                                      <span className="absolute -top-[5px] left-1/2 h-[10px] w-[10px] -translate-x-1/2 rotate-45 border-l border-t border-slate-800/90 bg-slate-900" />
+                                      <p className="text-[13px] font-semibold tracking-[0.01em] text-white">Work Note</p>
+                                      <p className="mt-2 whitespace-pre-line text-[13px] leading-5 text-slate-200">
+                                        {workNotePreview}
+                                      </p>
+                                    </HoverCardContent>
+                                  </HoverCard>
+                                ) : (
+                                  <div className="relative">
+                                    <Input
+                                      type="text"
+                                      inputMode="decimal"
+                                      disabled={readOnly || isOffDay || blockTaskWindowDay}
+                                      className={cn(
+                                        "h-[40px] w-[58px] rounded-[16px] border border-slate-200/90 bg-white px-2 pb-[5px] pt-0 text-center text-[0.95rem] font-medium leading-none text-slate-700 shadow-none transition focus-visible:border-sky-400/50 focus-visible:ring-4 focus-visible:ring-sky-500/10 dark:border-[#1a1f2e] dark:bg-slate-950/90 dark:text-slate-100 dark:focus-visible:border-sky-400/70",
+                                        (readOnly || isOffDay || blockTaskWindowDay) && "bg-slate-50 text-slate-400 dark:bg-slate-900 dark:text-slate-500",
+                                      )}
+                                      placeholder={placeholder}
+                                      value={hourInputValue(line.hours[day.key])}
+                                      onChange={(event) => {
+                                        if (!isHourInputDraft(event.target.value)) {
+                                          return;
+                                        }
+                                        changeHour(line.id, day.key, event.target.value);
+                                      }}
+                                    />
+                                    {hoveredCell?.lineId === line.id && hoveredCell.day === day.key && !readOnly && !isOffDay && !blockTaskWindowDay ? (
+                                      <button
+                                        type="button"
+                                        className="absolute inset-x-0 bottom-[4px] flex h-3 items-center justify-center text-slate-200 transition hover:text-slate-400"
+                                        onClick={() => openWorkNoteDialog(line, day.key)}
+                                        aria-label={`Add work note for ${day.label}`}
+                                      >
+                                        <Plus className="h-2.5 w-2.5" />
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                )}
+                              </div>
                             </td>
                               );
                             })()
@@ -1148,10 +1267,7 @@ export default function EmployeeTimesheetPage() {
                       {dayTotals.map((day) => (
                         <td
                           key={day.key}
-                          className={cn(
-                            "border-r border-border/50 px-3 py-4 text-center text-sm font-medium text-foreground",
-                            hoveredDay === day.key && "bg-secondary/20",
-                          )}
+                          className="border-r border-border/50 px-3 py-4 text-center text-sm font-medium text-foreground"
                         >
                           {formatHourValue(day.total)}
                         </td>
@@ -1275,48 +1391,94 @@ export default function EmployeeTimesheetPage() {
         </div>
       </div>
 
-      <Dialog open={Boolean(workNoteLineId)} onOpenChange={(open) => !open && closeWorkNoteDialog()}>
-        <DialogContent className="max-w-[420px] rounded-[26px] border border-slate-200/90 bg-white/95 p-0 shadow-[0_24px_70px_rgba(15,23,42,0.18)] [&>button]:hidden">
-          <div className="space-y-4 p-5">
+      <Dialog open={Boolean(activeNoteCell)} onOpenChange={(open) => !open && closeWorkNoteDialog()}>
+        <DialogContent
+          overlayClassName="bg-slate-950/24 data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0"
+          className="max-w-[456px] rounded-[24px] border border-slate-200 bg-white p-0 shadow-[0_22px_58px_rgba(15,23,42,0.14)] [&>button]:hidden"
+        >
+          <div className="space-y-5 p-6 sm:p-7">
             <DialogHeader className="space-y-0 text-left">
               <div className="flex items-start justify-between gap-4">
-                <div className="space-y-1.5">
-                  <DialogTitle className="text-[1.45rem] font-semibold tracking-tight text-slate-900">Work Note</DialogTitle>
-                  <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">
-                    Task
-                  </p>
-                  <p className="max-w-[280px] truncate text-sm font-medium text-slate-600">
-                    {activeWorkNoteLine?.task?.trim() || "Custom task"}
-                    {activeWorkNoteLine?.subTask ? (
-                      <span className="font-normal text-slate-400"> - {activeWorkNoteLine.subTask}</span>
-                    ) : null}
-                  </p>
+                <div className="flex min-w-0 items-start gap-4">
+                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[16px] bg-sky-50 text-[#2F80FF]">
+                    <CalendarDays className="h-6 w-6" />
+                  </div>
+                  <div className="space-y-3 pt-0.5">
+                    <DialogTitle className="text-[1.25rem] font-semibold leading-tight tracking-tight text-slate-900 sm:text-[1.45rem]">
+                      {activeWorkNoteDay ? format(activeWorkNoteDay.date, "EEE, dd MMM yyyy") : "Work Note"}
+                    </DialogTitle>
+                    <div className="grid gap-x-4 gap-y-1.5 text-[15px] text-slate-700 sm:grid-cols-[64px_minmax(0,1fr)]">
+                      <span className="font-medium text-slate-500">Project</span>
+                      <span className="truncate font-semibold text-slate-800">{activeWorkNoteLine?.project?.trim() || "Custom project"}</span>
+                      <span className="font-medium text-slate-500">Task</span>
+                      <span className="font-semibold text-slate-800">
+                        {activeWorkNoteLine?.task?.trim() || "Custom task"}
+                        {activeWorkNoteLine?.subTask ? ` - ${activeWorkNoteLine.subTask}` : ""}
+                      </span>
+                    </div>
+                  </div>
                 </div>
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="h-9 w-9 shrink-0 rounded-full border border-slate-200 text-slate-400 hover:bg-slate-50 hover:text-slate-700"
+                  className="h-9 w-9 shrink-0 rounded-full text-slate-400 hover:bg-slate-50 hover:text-slate-700"
                   onClick={closeWorkNoteDialog}
                 >
-                  <X className="h-4 w-4" />
+                  <X className="h-5 w-5" />
                   <span className="sr-only">Close work note</span>
                 </Button>
               </div>
             </DialogHeader>
 
-            <Textarea
-              value={workNoteDraft}
-              onChange={(event) => setWorkNoteDraft(event.target.value)}
-              placeholder="Describe the work completed, key update, or specific output for this task."
-              className="min-h-[165px] rounded-[20px] border-slate-200 bg-slate-50/80 px-4 py-3 text-sm text-slate-700 shadow-none placeholder:text-slate-400 focus:border-primary/35 focus:ring-2 focus:ring-primary/10"
-              disabled={readOnly}
-            />
+            <div className="space-y-2.5">
+              <label className="text-[15px] font-semibold text-slate-700">
+                Hours <span className="text-rose-400">*</span>
+              </label>
+              <div className="relative">
+                <Input
+                  type="text"
+                  inputMode="decimal"
+                  value={cellHoursDraft}
+                  onChange={(event) => {
+                    if (!isHourInputDraft(event.target.value)) {
+                      return;
+                    }
+                    setCellHoursDraft(event.target.value);
+                  }}
+                  disabled={readOnly}
+                  className="h-11 rounded-[16px] border-slate-200 bg-white pr-11 text-[15px] font-medium text-slate-800 shadow-none focus-visible:border-sky-400/50 focus-visible:ring-4 focus-visible:ring-sky-500/10"
+                />
+                <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-base font-medium text-slate-400">h</span>
+              </div>
+            </div>
 
-            <DialogFooter className="flex-row justify-end space-x-0">
+            <div className="space-y-2.5">
+              <label className="text-[15px] font-semibold text-slate-700">
+                Work Note <span className="text-rose-400">*</span>
+              </label>
+              <Textarea
+                value={cellWorkNoteDraft}
+                onChange={(event) => setCellWorkNoteDraft(event.target.value.slice(0, 500))}
+                placeholder="Describe the work completed, key update, or specific output for this task."
+                className="min-h-[136px] rounded-[16px] border-slate-200 bg-white px-4 py-3 text-[15px] leading-7 text-slate-700 shadow-none placeholder:text-slate-400 focus-visible:border-sky-400/50 focus-visible:ring-4 focus-visible:ring-sky-500/10"
+                disabled={readOnly}
+              />
+              <p className="text-right text-sm font-medium text-slate-400">{cellWorkNoteDraft.length} / 500</p>
+            </div>
+
+            <DialogFooter className="flex-row justify-end gap-3 pt-1 space-x-0">
               <Button
                 type="button"
-                className="rounded-2xl border border-primary/15 bg-[linear-gradient(135deg,#60a5fa_0%,#3b82f6_45%,#2563eb_100%)] px-5 text-primary-foreground shadow-[0_10px_24px_rgba(37,99,235,0.24)] hover:brightness-[1.03]"
+                variant="outline"
+                className="h-11 min-w-[132px] rounded-[16px] border-slate-200 bg-white px-6 text-base font-semibold text-slate-700 shadow-none hover:bg-slate-50"
+                onClick={closeWorkNoteDialog}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                className="h-11 min-w-[164px] rounded-[16px] border border-[#1667ff]/10 bg-[linear-gradient(135deg,#2f80ff_0%,#1667ff_100%)] px-6 text-base font-semibold text-white shadow-[0_14px_26px_rgba(22,103,255,0.24)] hover:brightness-[1.02]"
                 onClick={saveWorkNote}
                 disabled={readOnly}
               >

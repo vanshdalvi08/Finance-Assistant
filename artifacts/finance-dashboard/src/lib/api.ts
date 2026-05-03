@@ -17,6 +17,7 @@ import type { AuthUser } from "@/auth/types";
 
 export type ApprovalStatus = "draft" | "submitted" | "approved" | "rejected";
 export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+export type TimesheetWorkNotes = Partial<Record<DayKey, string>>;
 type TimeOffKind = "leave" | "holiday";
 
 const DAY_KEYS: DayKey[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -131,6 +132,7 @@ export interface TimesheetTaskLine {
   projectTaskId?: string;
   subTask?: string;
   notes?: string;
+  workNotes?: TimesheetWorkNotes;
   hours: Record<DayKey, number>;
 }
 
@@ -887,11 +889,14 @@ function normalizeTimesheet(entry: TimesheetEntry): TimesheetEntry {
   return {
     ...entry,
     weekStart: normalizeWeekStart(entry.weekStart),
-    lines: (entry.lines.length ? entry.lines : [{ id: createId("line"), project: "", task: "", subTask: "", notes: "", hours: blankHours() }]).map((line) => ({
+    lines: (entry.lines.length ? entry.lines : [{ id: createId("line"), project: "", task: "", subTask: "", notes: "", workNotes: {}, hours: blankHours() }]).map((line) => ({
       ...line,
       id: line.id || createId("line"),
       notes: line.notes ?? "",
       subTask: line.subTask ?? "",
+      workNotes: Object.fromEntries(
+        Object.entries(line.workNotes ?? {}).filter(([, value]) => typeof value === "string" && value.trim().length > 0),
+      ) as TimesheetWorkNotes,
       hours: { ...blankHours(), ...line.hours },
     })),
   };
@@ -1709,7 +1714,9 @@ export const api = {
           task: "",
           projectBudgetId: undefined,
           projectTaskId: undefined,
+          subTask: "",
           notes: "",
+          workNotes: {},
           hours: blankHours(),
         },
       ],

@@ -61,6 +61,17 @@ const timesheetLineSchema = z.object({
   projectTaskId: businessIdSchema.optional(),
   subTask: z.string().trim().optional(),
   notes: z.string().trim().optional(),
+  workNotes: z
+    .object({
+      mon: z.string().trim().max(500).optional(),
+      tue: z.string().trim().max(500).optional(),
+      wed: z.string().trim().max(500).optional(),
+      thu: z.string().trim().max(500).optional(),
+      fri: z.string().trim().max(500).optional(),
+      sat: z.string().trim().max(500).optional(),
+      sun: z.string().trim().max(500).optional(),
+    })
+    .optional(),
   hours: z.object({
     mon: z.coerce.number().min(0).optional(),
     tue: z.coerce.number().min(0).optional(),
@@ -244,6 +255,7 @@ function requestHashForTimesheetMutation(input: {
     project?: string;
     task?: string;
     notes?: string;
+    workNotes?: Partial<Record<DayKey, string>>;
     projectBudgetId?: string;
     projectTaskId?: string;
     hours: Partial<Record<DayKey, number>>;
@@ -254,6 +266,9 @@ function requestHashForTimesheetMutation(input: {
     project: line.project?.trim() ?? "",
     task: line.task?.trim() ?? "",
     notes: line.notes?.trim() ?? "",
+    workNotes: Object.fromEntries(
+      DAY_KEYS.map((day) => [day, line.workNotes?.[day]?.trim() ?? ""]).filter(([, value]) => value.length > 0),
+    ),
     projectBudgetId: line.projectBudgetId?.trim() ?? "",
     projectTaskId: line.projectTaskId?.trim() ?? "",
     hours: {
@@ -297,6 +312,7 @@ function requestHashForTimesheetSubmit(input: {
     project?: string;
     task?: string;
     notes?: string;
+    workNotes?: Partial<Record<DayKey, string>>;
     projectBudgetId?: string;
     projectTaskId?: string;
     hours: Partial<Record<DayKey, number>>;
@@ -306,6 +322,9 @@ function requestHashForTimesheetSubmit(input: {
     project: line.project?.trim() ?? "",
     task: line.task?.trim() ?? "",
     notes: line.notes?.trim() ?? "",
+    workNotes: Object.fromEntries(
+      DAY_KEYS.map((day) => [day, line.workNotes?.[day]?.trim() ?? ""]).filter(([, value]) => value.length > 0),
+    ),
     projectBudgetId: line.projectBudgetId?.trim() ?? "",
     projectTaskId: line.projectTaskId?.trim() ?? "",
     hours: {
@@ -338,7 +357,9 @@ function scopedEmployeeId(request: Request, fallback?: string) {
 
 function timesheetHasContent(entry: TimesheetEntry) {
   return entry.lines.some((line) => {
-    const hasText = Boolean(line.project.trim() || line.task.trim() || line.notes?.trim());
+    const hasText =
+      Boolean(line.project.trim() || line.task.trim() || line.notes?.trim()) ||
+      DAY_KEYS.some((day) => Boolean(line.workNotes?.[day]?.trim()));
     const hasHours = DAY_KEYS.some((day) => Number(line.hours[day] ?? 0) > 0);
     return hasText || hasHours;
   });
@@ -827,7 +848,11 @@ router.post("/timesheets", requireTenantRole("admin", "employee"), async (reques
     task: line.task?.trim() || "",
     projectBudgetId: line.projectBudgetId?.trim() || undefined,
     projectTaskId: line.projectTaskId?.trim() || undefined,
+    subTask: line.subTask?.trim() || undefined,
     notes: line.notes?.trim() || undefined,
+    workNotes: Object.fromEntries(
+      DAY_KEYS.map((day) => [day, line.workNotes?.[day]?.trim() ?? ""]).filter(([, value]) => value.length > 0),
+    ),
     hours: { ...blankHours(), ...line.hours },
   }));
 
@@ -1015,7 +1040,11 @@ router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (r
       task: line.task?.trim() || "",
       projectBudgetId: line.projectBudgetId?.trim() || undefined,
       projectTaskId: line.projectTaskId?.trim() || undefined,
+      subTask: line.subTask?.trim() || undefined,
       notes: line.notes?.trim() || undefined,
+      workNotes: Object.fromEntries(
+        DAY_KEYS.map((day) => [day, line.workNotes?.[day]?.trim() ?? ""]).filter(([, value]) => value.length > 0),
+      ),
       hours: { ...blankHours(), ...line.hours },
     })),
     updatedAt: nowIso(),
@@ -1134,7 +1163,11 @@ router.post("/timesheets/submit", requireTenantRole("admin", "employee"), async 
     task: line.task?.trim() || "",
     projectBudgetId: line.projectBudgetId?.trim() || undefined,
     projectTaskId: line.projectTaskId?.trim() || undefined,
+    subTask: line.subTask?.trim() || undefined,
     notes: line.notes?.trim() || undefined,
+    workNotes: Object.fromEntries(
+      DAY_KEYS.map((day) => [day, line.workNotes?.[day]?.trim() ?? ""]).filter(([, value]) => value.length > 0),
+    ),
     hours: { ...blankHours(), ...line.hours },
   }));
 

@@ -33,6 +33,7 @@ import { assertWorkflowTransition } from "./workflow-state";
 
 export type ApprovalStatus = "draft" | "submitted" | "approved" | "rejected";
 export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+export type TimesheetWorkNotes = Partial<Record<DayKey, string>>;
 export type ActorRole = "admin" | "employee" | "client" | "platform_super_admin" | "system";
 export type LeaveRequestStatus = "pending" | "approved" | "rejected";
 export type LeaveRequestKind = "leave" | "holiday";
@@ -141,6 +142,7 @@ export interface TimesheetTaskLine {
   projectTaskId?: string;
   subTask?: string;
   notes?: string;
+  workNotes?: TimesheetWorkNotes;
   hours: Record<DayKey, number>;
 }
 
@@ -466,6 +468,19 @@ export function monthKey(date: string): string {
 
 export function blankHours(): Record<DayKey, number> {
   return { mon: 0, tue: 0, wed: 0, thu: 0, fri: 0, sat: 0, sun: 0 };
+}
+
+function normalizeWorkNotes(input?: Partial<Record<DayKey, string>> | null): TimesheetWorkNotes | undefined {
+  if (!input) {
+    return undefined;
+  }
+
+  const normalized = Object.fromEntries(
+    DAY_KEYS.map((day) => [day, String(input[day] ?? "").trim()])
+      .filter(([, value]) => value.length > 0),
+  ) as TimesheetWorkNotes;
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
 export function sumTimesheetHours(entry: TimesheetEntry): number {
@@ -963,9 +978,10 @@ function timesheetFromRow(row: DbTimesheet): TimesheetEntry {
         projectTaskId: line.projectTaskId?.trim() || undefined,
         subTask: line.subTask?.trim() || undefined,
         notes: line.notes?.trim() || undefined,
+        workNotes: normalizeWorkNotes(line.workNotes),
         hours: { ...blankHours(), ...(line.hours ?? {}) },
       }))
-      : [{ id: createId("line"), project: "", task: "", subTask: "", notes: "", hours: blankHours() }],
+      : [{ id: createId("line"), project: "", task: "", subTask: "", notes: "", workNotes: {}, hours: blankHours() }],
     createdAt: toIso(row.createdAt),
     updatedAt: toIso(row.updatedAt),
   };
@@ -1014,6 +1030,7 @@ function timesheetFromNormalizedRow(
           projectTaskId: line.projectTaskId ?? undefined,
           subTask: line.subTask?.trim() || undefined,
           notes: line.notes?.trim() || undefined,
+          workNotes: normalizeWorkNotes(line.workNotes),
           hours: {
             mon: Number(line.mon ?? 0),
             tue: Number(line.tue ?? 0),
@@ -1081,6 +1098,7 @@ function timesheetToRow(entry: TimesheetEntry) {
       projectTaskId: line.projectTaskId?.trim() || undefined,
       subTask: line.subTask?.trim() || undefined,
       notes: line.notes?.trim() || undefined,
+      workNotes: normalizeWorkNotes(line.workNotes),
       hours: { ...blankHours(), ...(line.hours ?? {}) },
     })),
     createdAt: toDate(entry.createdAt),
@@ -1152,6 +1170,7 @@ function timesheetLinesToRows(
       subTask: line.subTask?.trim() || null,
       sortOrder: index,
       notes: line.notes?.trim() || "",
+      workNotes: normalizeWorkNotes(line.workNotes) ?? {},
       mon: Number(line.hours.mon ?? 0),
       tue: Number(line.hours.tue ?? 0),
       wed: Number(line.hours.wed ?? 0),
@@ -1356,10 +1375,12 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
         task: String(line.task ?? "").trim(),
         projectBudgetId: line.projectBudgetId?.trim() || undefined,
         projectTaskId: line.projectTaskId?.trim() || undefined,
+        subTask: line.subTask?.trim() || undefined,
         notes: line.notes?.trim() || undefined,
+        workNotes: normalizeWorkNotes(line.workNotes),
         hours: { ...blankHours(), ...(line.hours ?? {}) },
       })) : [
-        { id: createId("line"), project: "", task: "", notes: "", hours: blankHours() },
+        { id: createId("line"), project: "", task: "", subTask: "", notes: "", workNotes: {}, hours: blankHours() },
       ],
       createdAt: normalizeDate(String(entry.createdAt ?? nowIso())),
       updatedAt: normalizeDate(String(entry.updatedAt ?? entry.createdAt ?? nowIso())),
@@ -1921,7 +1942,10 @@ async function persistStoreUnsafe(previousStore: BusinessStore | null, store: Bu
 
 function hasPersistedTimesheetContent(entry: TimesheetEntry): boolean {
   return entry.lines.some((line) => {
-    const hasText = Boolean(line.project.trim() || line.task.trim() || line.notes?.trim());
+    const normalizedWorkNotes = normalizeWorkNotes(line.workNotes);
+    const hasText =
+      Boolean(line.project.trim() || line.task.trim() || line.notes?.trim()) ||
+      Boolean(normalizedWorkNotes && Object.keys(normalizedWorkNotes).length > 0);
     const hasHours = DAY_KEYS.some((day) => Number(line.hours[day] ?? 0) > 0);
     return hasText || hasHours;
   });
