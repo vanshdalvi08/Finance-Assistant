@@ -116,6 +116,7 @@ export interface PreApprovalProjectInfoRecord {
 }
 
 export interface CompanySettingsRecord extends PreApprovalPartyInfoRecord {
+  googleSheetsEnabled?: boolean;
   leavePolicy?: {
     annualLimit: number;
     period?: LeavePolicyPeriod;

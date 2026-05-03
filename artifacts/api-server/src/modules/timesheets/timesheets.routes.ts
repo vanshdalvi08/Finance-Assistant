@@ -38,6 +38,7 @@ import { logger } from "../../lib/logger";
 import { assertTenantEmployeeAccess } from "../../lib/policies";
 import { hashSha256 } from "../../lib/security";
 import { WorkflowStateError } from "../../lib/workflow-state";
+import { appEvents } from "../../lib/events";
 import { rateLimit } from "../../middlewares/rate-limit";
 
 const router: IRouter = Router();
@@ -1453,6 +1454,15 @@ router.post("/timesheets/:id/approve", requireTenantRole("admin"), timesheetRevi
 
   {
     const actor = notificationActor(request);
+    appEvents.emit("timesheet_approved", {
+      tenantId,
+      timesheet: reviewResult.timesheet,
+      employee,
+      approvedBy: {
+        userId: request.auth?.user.id,
+        name: request.auth?.user.name ?? "Admin",
+      },
+    });
     await deliverNotification(
       notifyUsersByIds(
         actor.id ? [actor.id] : [],

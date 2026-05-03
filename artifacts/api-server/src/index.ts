@@ -1,4 +1,5 @@
 import "./lib/env";
+import "./integrations/googleSheets/sheets.listener";
 import app from "./app";
 import type { Server } from "node:http";
 import { pool } from "@workspace/db";
