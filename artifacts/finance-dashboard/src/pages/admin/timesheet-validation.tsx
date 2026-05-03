@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addDays, format } from "date-fns";
-import { CalendarDays, CheckCircle2, ClipboardList, Eye, RefreshCcw } from "lucide-react";
+import { CalendarDays, CheckCircle2, ClipboardList, Eye, FileText, RefreshCcw, X } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -24,6 +24,11 @@ function lineTotal(line: { hours: Partial<Record<(typeof DAYS)[number], number>>
 function weekLabel(weekStart: string) {
   const start = new Date(weekStart);
   return `${format(start, "dd MMM")} - ${format(addDays(start, 6), "dd MMM yyyy")}`;
+}
+
+function taskLineLabel(line: { task?: string; subTask?: string }) {
+  const task = line.task?.trim() || "Custom task";
+  return line.subTask ? `${task} - ${line.subTask}` : task;
 }
 
 function calendarCardClass(day: {
@@ -49,6 +54,7 @@ export default function AdminTimesheetValidationPage() {
   const [reviewNote, setReviewNote] = useState("");
   const [showReviewedHistory, setShowReviewedHistory] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [workNoteLineId, setWorkNoteLineId] = useState<string | null>(null);
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
   const { data: timesheets = [] } = useQuery({ queryKey: ["timesheets"], queryFn: () => api.getTimesheets() });
@@ -158,6 +164,11 @@ export default function AdminTimesheetValidationPage() {
       };
     });
   }, [selectedTimesheet]);
+
+  const activeWorkNoteLine = useMemo(
+    () => selectedTimesheet?.lines.find((line) => line.id === workNoteLineId) ?? null,
+    [selectedTimesheet, workNoteLineId],
+  );
 
 
   return (
@@ -299,10 +310,31 @@ export default function AdminTimesheetValidationPage() {
                             <p className="truncate text-sm font-medium text-foreground">{line.project || "Custom project"}</p>
                           </div>
                           <div className="min-w-0">
-                            <p className="truncate text-sm text-foreground">
-                              {line.task || "Custom task"}
-                               {line.subTask ? <span className="font-medium text-muted-foreground"> - {line.subTask}</span> : null}
-                            </p>
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0 flex-1 space-y-2">
+                                <p className="truncate pr-2 text-sm text-foreground">{taskLineLabel(line)}</p>
+                                {line.notes?.trim() ? (
+                                  <div className="rounded-xl border border-border/45 bg-background/70 px-3 py-2 text-xs leading-5 text-muted-foreground">
+                                    {line.notes.trim()}
+                                  </div>
+                                ) : null}
+                              </div>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className={cn(
+                                  "h-8 shrink-0 rounded-full border border-border/60 bg-background/70 px-3 text-[11px] shadow-none",
+                                  line.notes?.trim()
+                                    ? "border-primary/20 text-primary hover:bg-primary/10 hover:text-primary"
+                                    : "text-muted-foreground hover:bg-secondary/20 hover:text-foreground",
+                                )}
+                                onClick={() => setDetailOpen(true)}
+                              >
+                                <FileText className="mr-1.5 h-3.5 w-3.5" />
+                                Work Note
+                              </Button>
+                            </div>
                           </div>
                           <div className="text-right text-sm font-semibold text-foreground">{total.toFixed(1)}h</div>
                         </div>
@@ -530,76 +562,55 @@ export default function AdminTimesheetValidationPage() {
                   ))}
                 </div>
 
-                <div className="overflow-hidden rounded-xl border border-border/60">
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full border-collapse">
-                      <thead>
-                        <tr className="border-b border-border/50 bg-secondary/10 text-left text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
-                          <th className="px-4 py-3">Project</th>
-                          <th className="px-4 py-3">Task</th>
+                <div className="space-y-3">
+                  {selectedTimesheet.lines.map((line) => {
+                    const total = lineTotal(line);
+                    return (
+                      <div key={line.id} className="rounded-2xl border border-border/60 bg-background/70 p-4">
+                        <div className="flex flex-col gap-3 border-b border-border/50 pb-4 lg:flex-row lg:items-start lg:justify-between">
+                          <div className="min-w-0 space-y-3">
+                            <div className="space-y-1">
+                              <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Project</p>
+                              <p className="text-sm font-medium text-foreground">{line.project || "Custom project"}</p>
+                            </div>
+                            <div className="space-y-1">
+                              <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Task</p>
+                              <p className="text-sm text-foreground">{taskLineLabel(line)}</p>
+                            </div>
+                            <div className="space-y-1.5">
+                              <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Work note</p>
+                              <div className="rounded-2xl border border-border/50 bg-background/90 px-4 py-3 text-sm leading-6 text-foreground">
+                                {line.notes?.trim() || (
+                                  <span className="text-muted-foreground">No work note was added for this task.</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 self-start lg:pl-4">
+                            <div className="rounded-full border border-border/60 bg-card/80 px-3 py-1.5 text-sm font-semibold text-foreground">
+                              {total.toFixed(1)}h
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-7">
                           {detailDays.map((day) => (
-                            <th key={day.key} className="px-4 py-3 text-center">
-                              {day.shortLabel}
-                            </th>
+                            <div key={day.key} className="rounded-xl border border-border/50 bg-background/90 px-3 py-2.5">
+                              <p className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">{day.shortLabel}</p>
+                              <p className="mt-1 text-sm font-medium text-foreground">{Number(line.hours[day.key] ?? 0).toFixed(1)}h</p>
+                            </div>
                           ))}
-                          <th className="px-4 py-3 text-right">Total</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {selectedTimesheet.lines.map((line, index) => {
-                          const total = lineTotal(line);
-                          return (
-                            <tr key={line.id} className={cn(index !== 0 && "border-t border-border/40")}>
-                              <td className="px-4 py-4 align-top">
-                                <p className="text-sm font-medium text-foreground">{line.project || "Custom project"}</p>
-                                {line.notes?.trim() ? (
-                                  <p className="mt-1 max-w-[240px] text-xs text-muted-foreground">{line.notes.trim()}</p>
-                                ) : null}
-                              </td>
-                              <td className="px-4 py-4 align-top">
-                                <p className="text-sm text-foreground">{line.task || "Custom task"}</p>
-                                {line.subTask ? (
-                                  <p className="mt-1 text-xs text-muted-foreground">Sub task: {line.subTask}</p>
-                                ) : null}
-                              </td>
-                              {detailDays.map((day) => (
-                                <td key={day.key} className="px-4 py-4 text-center text-sm text-foreground">
-                                  {Number(line.hours[day.key] ?? 0).toFixed(1)}h
-                                </td>
-                              ))}
-                              <td className="px-4 py-4 text-right text-sm font-semibold text-foreground">{total.toFixed(1)}h</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
 
-                <div className="grid gap-4 md:grid-cols-[minmax(0,1.2fr)_minmax(280px,0.8fr)]">
-                  <div className="rounded-xl border border-border/60 bg-background/70 p-4">
-                    <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Submitted line notes</p>
-                    <div className="mt-3 space-y-3">
-                      {selectedTimesheet.lines.some((line) => line.notes?.trim()) ? (
-                        selectedTimesheet.lines
-                          .filter((line) => line.notes?.trim())
-                          .map((line) => (
-                            <div key={`${line.id}-note`} className="rounded-lg border border-border/50 bg-background/80 px-3 py-3">
-                              <p className="text-sm font-medium text-foreground">
-                                {line.project || "Custom project"} / {line.task || "Custom task"}
-                              </p>
-                              <p className="mt-1 text-sm text-muted-foreground">{line.notes?.trim()}</p>
-                            </div>
-                          ))
-                      ) : (
-                        <p className="text-sm text-muted-foreground">No extra notes were submitted for this week.</p>
-                      )}
-                    </div>
-                  </div>
-
+                <div className="grid gap-4">
                   <div className="rounded-xl border border-border/60 bg-background/70 p-4">
                     <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Review summary</p>
-                    <div className="mt-3 space-y-3">
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
                       <div className="flex items-center justify-between rounded-lg border border-border/50 bg-background/80 px-3 py-2.5">
                         <span className="text-sm text-muted-foreground">Lines submitted</span>
                         <span className="text-sm font-semibold text-foreground">{selectedTimesheet.lines.length}</span>
@@ -608,12 +619,12 @@ export default function AdminTimesheetValidationPage() {
                         <span className="text-sm text-muted-foreground">Total hours</span>
                         <span className="text-sm font-semibold text-foreground">{selectedHours.toFixed(1)}h</span>
                       </div>
-                      <div className="rounded-lg border border-border/50 bg-background/80 px-3 py-3">
-                        <p className="text-sm text-muted-foreground">Current review note</p>
-                        <p className="mt-1 text-sm text-foreground">
-                          {reviewNote.trim() || "No review note has been written yet for this submission."}
-                        </p>
-                      </div>
+                    </div>
+                    <div className="mt-3 rounded-lg border border-border/50 bg-background/80 px-3 py-3">
+                      <p className="text-sm text-muted-foreground">Current review note</p>
+                      <p className="mt-1 text-sm text-foreground">
+                        {reviewNote.trim() || "No review note has been written yet for this submission."}
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -622,6 +633,78 @@ export default function AdminTimesheetValidationPage() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {workNoteLineId ? (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-background/35 p-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Work Note"
+            className="relative w-full max-w-md rounded-[28px] border border-border/60 bg-card/95 p-6 shadow-2xl"
+          >
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="absolute right-3 top-3 h-8 w-8 rounded-full text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+              onClick={() => setWorkNoteLineId(null)}
+            >
+              <X className="h-4 w-4" />
+              <span className="sr-only">Close work note</span>
+            </Button>
+
+            <div className="space-y-4 pr-8">
+              <div className="space-y-1 text-left">
+                <h2 className="text-lg font-semibold tracking-tight text-foreground">Work Note</h2>
+              </div>
+
+              <div className="space-y-2.5">
+                <div className="space-y-1">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Task</p>
+                  <p className="text-sm font-medium text-foreground">{taskLineLabel(activeWorkNoteLine ?? {})}</p>
+                </div>
+                <div className="rounded-2xl border border-border/60 bg-background/70 px-4 py-3 text-sm leading-6 text-foreground">
+                  {activeWorkNoteLine?.notes?.trim() || (
+                    <span className="text-muted-foreground">No work note was added for this task.</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {false ? (
+      <Dialog open={Boolean(workNoteLineId)} onOpenChange={(open) => !open && setWorkNoteLineId(null)}>
+        <DialogContent className="max-w-md rounded-2xl border-border/60 bg-card/95 p-0 shadow-2xl">
+          <div className="space-y-5 p-5">
+            <DialogHeader className="space-y-1 text-left">
+              <DialogTitle className="text-lg font-semibold tracking-tight">Work Note</DialogTitle>
+              <DialogDescription>
+                Review the employee’s submitted work summary for this task.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-3 rounded-2xl border border-border/60 bg-background/60 p-4">
+              <div className="space-y-1">
+                <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Task</p>
+                <p className="text-sm font-medium text-foreground">
+                  {activeWorkNoteLine?.task?.trim() || "Custom task"}
+                  {activeWorkNoteLine?.subTask ? (
+                    <span className="font-normal text-muted-foreground"> - {activeWorkNoteLine?.subTask}</span>
+                  ) : null}
+                </p>
+              </div>
+              <div className="min-h-[150px] rounded-xl border border-border/60 bg-background/80 px-4 py-3 text-sm leading-6 text-foreground">
+                {activeWorkNoteLine?.notes?.trim() || (
+                  <span className="text-muted-foreground">No work note was added for this task.</span>
+                )}
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+      ) : null}
     </DashboardLayout>
   );
 }

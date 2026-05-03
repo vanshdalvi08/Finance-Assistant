@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Copy,
   ClipboardCheck,
+  FileText,
   FilePenLine,
   Plus,
   Save,
@@ -19,8 +20,10 @@ import { useAuthStore } from "@/store/auth";
 import { api, type DayKey, type MonthCalendarDay, type TimesheetEntry, type TimesheetTaskLine } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 
@@ -204,6 +207,8 @@ export default function EmployeeTimesheetPage() {
   const [draft, setDraft] = useState<TimesheetEntry | null>(null);
   const [hoveredRowId, setHoveredRowId] = useState<string | null>(null);
   const [hoveredDay, setHoveredDay] = useState<DayKey | null>(null);
+  const [workNoteLineId, setWorkNoteLineId] = useState<string | null>(null);
+  const [workNoteDraft, setWorkNoteDraft] = useState("");
 
   const { data: employee } = useQuery({
     queryKey: ["employee-profile", user?.id, user?.email],
@@ -636,6 +641,33 @@ export default function EmployeeTimesheetPage() {
     );
   }
 
+  const activeWorkNoteLine = useMemo(
+    () => draft?.lines.find((line) => line.id === workNoteLineId) ?? null,
+    [draft?.lines, workNoteLineId],
+  );
+
+  function openWorkNoteDialog(line: TimesheetTaskLine) {
+    setWorkNoteLineId(line.id);
+    setWorkNoteDraft(line.notes?.trim() ?? "");
+  }
+
+  function closeWorkNoteDialog() {
+    setWorkNoteLineId(null);
+    setWorkNoteDraft("");
+  }
+
+  function saveWorkNote() {
+    if (!activeWorkNoteLine) {
+      return;
+    }
+
+    updateLine(activeWorkNoteLine.id, (line) => ({
+      ...line,
+      notes: workNoteDraft.trim() || undefined,
+    }));
+    closeWorkNoteDialog();
+  }
+
   function changeHour(lineId: string, day: DayKey, rawValue: string) {
     const requestedValue = rawValue === "" ? 0 : Math.max(0, Math.min(24, Number(rawValue || 0)));
     const targetLine = draft?.lines.find((line) => line.id === lineId);
@@ -889,38 +921,57 @@ export default function EmployeeTimesheetPage() {
                               {hasProjectValue ? (
                                 projectTaskOptions.length > 0 ? (
                                   <>
-                                    <div className="relative">
-                                      <select
-                                        value={taskSelectionValue}
-                                        disabled={readOnly}
-                                        className={fieldControlClass}
-                                        onChange={(event) => setTaskChoice(line.id, event.target.value)}
+                                    <div className="flex items-start gap-2">
+                                      <div className="min-w-0 flex-1 space-y-2">
+                                        <div className="relative">
+                                          <select
+                                            value={taskSelectionValue}
+                                            disabled={readOnly}
+                                            className={fieldControlClass}
+                                            onChange={(event) => setTaskChoice(line.id, event.target.value)}
+                                          >
+                                            <option value="">Select task</option>
+                                            {projectTaskOptions.map((task) => (
+                                              <option key={task.id} value={task.id}>
+                                                {formatTaskOptionLabel(task)}
+                                              </option>
+                                            ))}
+                                            <option value="__custom__">Custom task</option>
+                                          </select>
+                                          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                                        </div>
+                                        {showTaskInput ? (
+                                          <Input
+                                            value={line.task}
+                                            placeholder="Custom task name"
+                                            disabled={readOnly}
+                                            className="h-9 rounded-xl border-border/55 bg-background/80 text-sm shadow-none"
+                                            onChange={(event) =>
+                                              updateLine(line.id, (currentLine) => ({
+                                                ...currentLine,
+                                                task: event.target.value,
+                                                projectTaskId: undefined,
+                                              }))
+                                            }
+                                          />
+                                        ) : null}
+                                      </div>
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        className={cn(
+                                          "h-9 shrink-0 rounded-xl border border-border/45 px-3 text-xs",
+                                          line.notes?.trim()
+                                            ? "text-primary hover:bg-primary/10 hover:text-primary"
+                                            : "text-muted-foreground hover:bg-secondary/20 hover:text-foreground",
+                                        )}
+                                        onClick={() => openWorkNoteDialog(line)}
                                       >
-                                        <option value="">Select task</option>
-                                        {projectTaskOptions.map((task) => (
-                                          <option key={task.id} value={task.id}>
-                                            {formatTaskOptionLabel(task)}
-                                          </option>
-                                        ))}
-                                        <option value="__custom__">Custom task</option>
-                                      </select>
-                                      <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                                        <FileText className="mr-1.5 h-3.5 w-3.5" />
+                                        {line.notes?.trim() ? "Note Added" : "Work Note"}
+                                      </Button>
                                     </div>
-                                    {showTaskInput ? (
-                                      <Input
-                                        value={line.task}
-                                        placeholder="Custom task name"
-                                        disabled={readOnly}
-                                        className="h-9 rounded-xl border-border/55 bg-background/80 text-sm shadow-none"
-                                        onChange={(event) =>
-                                          updateLine(line.id, (currentLine) => ({
-                                            ...currentLine,
-                                            task: event.target.value,
-                                            projectTaskId: undefined,
-                                          }))
-                                        }
-                                      />
-                                    ) : null}
                                     {taskCapacity ? (
                                       <div className="rounded-xl border border-border/45 bg-background/55 px-3 py-2 text-xs text-muted-foreground">
                                         <span className="font-medium text-foreground">
@@ -955,20 +1006,37 @@ export default function EmployeeTimesheetPage() {
                                     ) : null}
                                   </>
                               ) : (
-                                <Input
-                                  value={line.task}
-                                  placeholder="Custom task name"
-                                  disabled={readOnly}
-                                  className="h-9 rounded-xl border-border/55 bg-background/80 text-sm shadow-none"
-                                  onChange={(event) =>
-                                    updateLine(line.id, (currentLine) => ({
+                                <div className="flex items-start gap-2">
+                                  <Input
+                                    value={line.task}
+                                    placeholder="Custom task name"
+                                    disabled={readOnly}
+                                    className="h-9 rounded-xl border-border/55 bg-background/80 text-sm shadow-none"
+                                    onChange={(event) =>
+                                      updateLine(line.id, (currentLine) => ({
                                         ...currentLine,
                                         task: event.target.value,
                                         projectTaskId: undefined,
                                       }))
                                     }
                                   />
-                                )
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    className={cn(
+                                      "h-9 shrink-0 rounded-xl border border-border/45 px-3 text-xs",
+                                      line.notes?.trim()
+                                        ? "text-primary hover:bg-primary/10 hover:text-primary"
+                                        : "text-muted-foreground hover:bg-secondary/20 hover:text-foreground",
+                                    )}
+                                    onClick={() => openWorkNoteDialog(line)}
+                                  >
+                                    <FileText className="mr-1.5 h-3.5 w-3.5" />
+                                    {line.notes?.trim() ? "Note Added" : "Work Note"}
+                                  </Button>
+                                </div>
+                              )
                               ) : (
                                 <div className="flex h-9 items-center rounded-xl border border-dashed border-border/50 bg-background/50 px-3 text-xs text-muted-foreground">
                                   Choose a project first
@@ -1206,6 +1274,58 @@ export default function EmployeeTimesheetPage() {
           </Card>
         </div>
       </div>
+
+      <Dialog open={Boolean(workNoteLineId)} onOpenChange={(open) => !open && closeWorkNoteDialog()}>
+        <DialogContent className="max-w-[420px] rounded-[26px] border border-slate-200/90 bg-white/95 p-0 shadow-[0_24px_70px_rgba(15,23,42,0.18)] [&>button]:hidden">
+          <div className="space-y-4 p-5">
+            <DialogHeader className="space-y-0 text-left">
+              <div className="flex items-start justify-between gap-4">
+                <div className="space-y-1.5">
+                  <DialogTitle className="text-[1.45rem] font-semibold tracking-tight text-slate-900">Work Note</DialogTitle>
+                  <p className="text-xs font-medium uppercase tracking-[0.18em] text-slate-400">
+                    Task
+                  </p>
+                  <p className="max-w-[280px] truncate text-sm font-medium text-slate-600">
+                    {activeWorkNoteLine?.task?.trim() || "Custom task"}
+                    {activeWorkNoteLine?.subTask ? (
+                      <span className="font-normal text-slate-400"> - {activeWorkNoteLine.subTask}</span>
+                    ) : null}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-9 w-9 shrink-0 rounded-full border border-slate-200 text-slate-400 hover:bg-slate-50 hover:text-slate-700"
+                  onClick={closeWorkNoteDialog}
+                >
+                  <X className="h-4 w-4" />
+                  <span className="sr-only">Close work note</span>
+                </Button>
+              </div>
+            </DialogHeader>
+
+            <Textarea
+              value={workNoteDraft}
+              onChange={(event) => setWorkNoteDraft(event.target.value)}
+              placeholder="Describe the work completed, key update, or specific output for this task."
+              className="min-h-[165px] rounded-[20px] border-slate-200 bg-slate-50/80 px-4 py-3 text-sm text-slate-700 shadow-none placeholder:text-slate-400 focus:border-primary/35 focus:ring-2 focus:ring-primary/10"
+              disabled={readOnly}
+            />
+
+            <DialogFooter className="flex-row justify-end space-x-0">
+              <Button
+                type="button"
+                className="rounded-2xl border border-primary/15 bg-[linear-gradient(135deg,#60a5fa_0%,#3b82f6_45%,#2563eb_100%)] px-5 text-primary-foreground shadow-[0_10px_24px_rgba(37,99,235,0.24)] hover:brightness-[1.03]"
+                onClick={saveWorkNote}
+                disabled={readOnly}
+              >
+                Save
+              </Button>
+            </DialogFooter>
+          </div>
+        </DialogContent>
+      </Dialog>
     </DashboardLayout>
   );
 }
