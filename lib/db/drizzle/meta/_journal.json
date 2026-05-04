@@ -232,6 +232,13 @@
       "when": 1777867200000,
       "tag": "0031_timesheet_line_work_notes",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1777878000000,
+      "tag": "0032_timesheet_daily_review_status",
+      "breakpoints": true
     }
   ]
 }

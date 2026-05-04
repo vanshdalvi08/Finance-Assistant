@@ -6,6 +6,7 @@ import { tenantsTable } from "./tenants";
 
 export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type TimesheetWorkNotes = Partial<Record<DayKey, string>>;
+export type TimesheetDailyReviewStatus = Partial<Record<DayKey, "reviewed">>;
 export type ApprovalStatus = "draft" | "submitted" | "approved" | "rejected";
 export type SalaryStatus = "pending" | "paid";
 export type ExpenseGroup = "personal" | "office";
@@ -349,6 +350,7 @@ export const timesheetsTable = pgTable(
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
     reviewedBy: text("reviewed_by"),
     reviewNotes: text("review_notes"),
+    dailyReviewStatus: jsonb("daily_review_status").$type<TimesheetDailyReviewStatus>().notNull().default({}),
     lines: jsonb("lines").$type<TimesheetLineRecord[]>().notNull().default(sql`'[]'::jsonb`),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

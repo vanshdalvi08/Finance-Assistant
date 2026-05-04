@@ -25,6 +25,7 @@ import {
   type PurchaseOrder as DbPurchaseOrder,
   type InsertPurchaseOrder as DbInsertPurchaseOrder,
   type Salary as DbSalary,
+  type TimesheetDailyReviewStatus,
   type Timesheet as DbTimesheet,
   type TimesheetLine as DbTimesheetLine,
 } from "@workspace/db/schema";
@@ -156,6 +157,7 @@ export interface TimesheetEntry {
   reviewedAt?: string;
   reviewedBy?: string;
   reviewNotes?: string;
+  dailyReviewStatus?: TimesheetDailyReviewStatus;
   lines: TimesheetTaskLine[];
   createdAt: string;
   updatedAt: string;
@@ -481,6 +483,49 @@ function normalizeWorkNotes(input?: Partial<Record<DayKey, string>> | null): Tim
   ) as TimesheetWorkNotes;
 
   return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function normalizeDailyReviewStatus(input?: Partial<Record<DayKey, string>> | null): TimesheetDailyReviewStatus | undefined {
+  if (!input) {
+    return undefined;
+  }
+
+  const normalized = Object.fromEntries(
+    DAY_KEYS.map((day) => [day, input[day] === "reviewed" ? "reviewed" : ""]).filter(([, value]) => value === "reviewed"),
+  ) as TimesheetDailyReviewStatus;
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function dayContentSignature(lines: TimesheetTaskLine[], day: DayKey) {
+  return JSON.stringify(
+    lines
+      .map((line) => ({
+        hours: Number(line.hours?.[day] ?? 0),
+        workNote: line.workNotes?.[day]?.trim() ?? "",
+      }))
+      .filter((item) => item.hours > 0 || item.workNote.length > 0),
+  );
+}
+
+export function reconcileDailyReviewStatus(
+  currentStatus: Partial<Record<DayKey, string>> | null | undefined,
+  previousLines: TimesheetTaskLine[],
+  nextLines: TimesheetTaskLine[],
+): TimesheetDailyReviewStatus | undefined {
+  const nextStatus = { ...(normalizeDailyReviewStatus(currentStatus) ?? {}) };
+
+  for (const day of DAY_KEYS) {
+    if (nextStatus[day] !== "reviewed") {
+      continue;
+    }
+
+    if (dayContentSignature(previousLines, day) !== dayContentSignature(nextLines, day)) {
+      delete nextStatus[day];
+    }
+  }
+
+  return normalizeDailyReviewStatus(nextStatus);
 }
 
 export function sumTimesheetHours(entry: TimesheetEntry): number {
@@ -969,6 +1014,7 @@ function timesheetFromRow(row: DbTimesheet): TimesheetEntry {
     reviewedAt: row.reviewedAt ? toIso(row.reviewedAt) : undefined,
     reviewedBy: row.reviewedBy?.trim() || undefined,
     reviewNotes: row.reviewNotes?.trim() || undefined,
+    dailyReviewStatus: normalizeDailyReviewStatus(row.dailyReviewStatus),
     lines: Array.isArray(row.lines) && row.lines.length > 0
       ? row.lines.map((line) => ({
           id: line.id ?? createId("line"),
@@ -1009,6 +1055,7 @@ function timesheetFromNormalizedRow(
     reviewedAt: row.reviewedAt ? toIso(row.reviewedAt) : undefined,
     reviewedBy: row.reviewedBy?.trim() || undefined,
     reviewNotes: row.reviewNotes?.trim() || undefined,
+    dailyReviewStatus: normalizeDailyReviewStatus(row.dailyReviewStatus),
     lines: lines
       .filter((line) => line.timesheetId === row.id)
       .sort((left, right) => {
@@ -1090,6 +1137,7 @@ function timesheetToRow(entry: TimesheetEntry) {
     reviewedAt: entry.reviewedAt ? toDate(entry.reviewedAt) : null,
     reviewedBy: entry.reviewedBy?.trim() || null,
     reviewNotes: entry.reviewNotes?.trim() || null,
+    dailyReviewStatus: normalizeDailyReviewStatus(entry.dailyReviewStatus) ?? {},
     lines: (entry.lines ?? []).map((line) => ({
       id: line.id ?? createId("line"),
       project: line.project?.trim() || "",
@@ -1369,6 +1417,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
       reviewedAt: entry.reviewedAt ? normalizeDate(String(entry.reviewedAt)) : undefined,
       reviewedBy: entry.reviewedBy?.trim() || undefined,
       reviewNotes: entry.reviewNotes?.trim() || undefined,
+      dailyReviewStatus: normalizeDailyReviewStatus(entry.dailyReviewStatus),
       lines: Array.isArray(entry.lines) && entry.lines.length > 0 ? entry.lines.map((line) => ({
         id: line.id ?? createId("line"),
         project: String(line.project ?? "").trim(),
@@ -2299,6 +2348,78 @@ export async function saveTimesheetFast(input: {
     });
     cacheStore(nextStore);
     return structuredClone(normalizedEntry);
+  });
+}
+
+export async function setTimesheetDayReviewStatusFast(input: {
+  id: string;
+  day: DayKey;
+  reviewed: boolean;
+  tenantId: string;
+  actorName: string;
+  actorRole: ActorRole;
+  requestId?: string;
+}): Promise<TimesheetEntry | null> {
+  await ensureSchema();
+  return withStoreWriteLock(async () => {
+    storeReadPromise = null;
+    const current = storeCache ?? await readStore({ fresh: true });
+    const existing = current.timesheets.find((timesheet) => timesheet.id === input.id);
+
+    if (!existing) {
+      return null;
+    }
+
+    const nextDailyReviewStatus = { ...(existing.dailyReviewStatus ?? {}) };
+    if (input.reviewed) {
+      nextDailyReviewStatus[input.day] = "reviewed";
+    } else {
+      delete nextDailyReviewStatus[input.day];
+    }
+
+    const updatedEntry = normalizeStore({
+      timesheets: [
+        {
+          ...existing,
+          dailyReviewStatus: nextDailyReviewStatus,
+          updatedAt: nowIso(),
+        },
+      ],
+    }).timesheets[0];
+
+    const auditEntry = createAuditEntry({
+      tenantId: input.tenantId,
+      actorName: input.actorName,
+      actorRole: input.actorRole,
+      action: "reviewed",
+      entityType: "timesheet",
+      entityId: existing.id,
+      summary: `${input.reviewed ? "Marked" : "Cleared"} ${input.day.toUpperCase()} as reviewed for a timesheet.`,
+      requestId: input.requestId,
+      details: {
+        entityLabel: existing.employeeNameSnapshot,
+        requestId: input.requestId,
+        changedFields: ["dailyReviewStatus"],
+        before: { dailyReviewStatus: existing.dailyReviewStatus ?? {} },
+        after: { dailyReviewStatus: updatedEntry.dailyReviewStatus ?? {} },
+        context: { operation: input.reviewed ? "timesheet_day_review_mark" : "timesheet_day_review_clear", day: input.day },
+      },
+    });
+
+    const nextStore = normalizeStore({
+      ...current,
+      timesheets: current.timesheets.map((timesheet) => (timesheet.id === existing.id ? updatedEntry : timesheet)),
+      auditTrail: [auditEntry, ...current.auditTrail].slice(0, 250),
+    });
+
+    await persistTargetedTimesheetUnsafe({
+      currentStore: current,
+      nextStore,
+      entry: updatedEntry,
+      auditEntry,
+    });
+    cacheStore(nextStore);
+    return structuredClone(updatedEntry);
   });
 }
 

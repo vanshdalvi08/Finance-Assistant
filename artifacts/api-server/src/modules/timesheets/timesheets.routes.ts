@@ -22,9 +22,11 @@ import {
   normalizeWeekStart,
   nowIso,
   pushAuditEvent,
+  reconcileDailyReviewStatus,
   readStore,
   reviewTimesheetFast,
   saveTimesheetFast,
+  setTimesheetDayReviewStatusFast,
   submitTimesheetEntryFast,
   submitTimesheetFast,
   sumTimesheetHours,
@@ -52,6 +54,7 @@ const timesheetReviewLimiter = rateLimit({
 const dateSchema = z.string().min(1);
 const businessIdSchema = z.string().trim().min(1);
 const approvalStatusSchema = z.enum(["draft", "submitted", "approved", "rejected"]);
+const dayKeySchema = z.enum(["mon", "tue", "wed", "thu", "fri", "sat", "sun"]);
 
 const timesheetLineSchema = z.object({
   id: businessIdSchema.optional(),
@@ -93,6 +96,17 @@ const timesheetSchema = z.object({
   reviewedAt: dateSchema.optional(),
   reviewedBy: z.string().trim().optional(),
   reviewNotes: z.string().trim().optional(),
+  dailyReviewStatus: z
+    .object({
+      mon: z.literal("reviewed").optional(),
+      tue: z.literal("reviewed").optional(),
+      wed: z.literal("reviewed").optional(),
+      thu: z.literal("reviewed").optional(),
+      fri: z.literal("reviewed").optional(),
+      sat: z.literal("reviewed").optional(),
+      sun: z.literal("reviewed").optional(),
+    })
+    .optional(),
   lines: z.array(timesheetLineSchema).min(1),
 });
 
@@ -869,6 +883,7 @@ router.post("/timesheets", requireTenantRole("admin", "employee"), async (reques
     reviewedAt: existing?.reviewedAt,
     reviewedBy: existing?.reviewedBy,
     reviewNotes: existing?.reviewNotes,
+    dailyReviewStatus: reconcileDailyReviewStatus(existing?.dailyReviewStatus, existing?.lines ?? [], lines),
     lines,
     createdAt: existing?.createdAt ?? nowIso(),
     updatedAt: nowIso(),
@@ -1021,6 +1036,20 @@ router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (r
     return;
   }
 
+  const lines = parsed.data.lines.map((line) => ({
+    id: line.id ?? createId("line"),
+    project: line.project?.trim() || "",
+    task: line.task?.trim() || "",
+    projectBudgetId: line.projectBudgetId?.trim() || undefined,
+    projectTaskId: line.projectTaskId?.trim() || undefined,
+    subTask: line.subTask?.trim() || undefined,
+    notes: line.notes?.trim() || undefined,
+    workNotes: Object.fromEntries(
+      DAY_KEYS.map((day) => [day, line.workNotes?.[day]?.trim() ?? ""]).filter(([, value]) => value.length > 0),
+    ),
+    hours: { ...blankHours(), ...line.hours },
+  }));
+
   const entry: TimesheetEntry = {
     ...existing,
     employeeId,
@@ -1034,19 +1063,8 @@ router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (r
     reviewedAt: existing.reviewedAt,
     reviewedBy: existing.reviewedBy,
     reviewNotes: existing.reviewNotes,
-    lines: parsed.data.lines.map((line) => ({
-      id: line.id ?? createId("line"),
-      project: line.project?.trim() || "",
-      task: line.task?.trim() || "",
-      projectBudgetId: line.projectBudgetId?.trim() || undefined,
-      projectTaskId: line.projectTaskId?.trim() || undefined,
-      subTask: line.subTask?.trim() || undefined,
-      notes: line.notes?.trim() || undefined,
-      workNotes: Object.fromEntries(
-        DAY_KEYS.map((day) => [day, line.workNotes?.[day]?.trim() ?? ""]).filter(([, value]) => value.length > 0),
-      ),
-      hours: { ...blankHours(), ...line.hours },
-    })),
+    dailyReviewStatus: reconcileDailyReviewStatus(existing.dailyReviewStatus, existing.lines, lines),
+    lines,
     updatedAt: nowIso(),
   };
 
@@ -1087,6 +1105,49 @@ router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (r
   }
 
   response.json({ timesheet: savedEntry ?? entry, duplicate: false });
+});
+
+router.patch("/timesheets/:id/daily-review/:day", requireTenantRole("admin"), async (request, response) => {
+  const day = dayKeySchema.safeParse(routeParam(request.params.day));
+  const body = z.object({ reviewed: z.boolean() }).safeParse(request.body);
+  if (!day.success || !body.success) {
+    response.status(400).json({ message: "Invalid daily review payload" });
+    return;
+  }
+
+  const store = await readStore();
+  const existing = store.timesheets.find((entry) => entry.id === request.params.id);
+  if (!existing) {
+    respondNotFound(response, "Timesheet not found");
+    return;
+  }
+
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const tenantEmployees = await loadEmployees(tenantId);
+  const tenantEmployeeIds = new Set(tenantEmployees.map((employee) => employee.id));
+  try {
+    assertTenantEmployeeAccess(existing.employeeId, tenantEmployeeIds, request.auth?.user.role, request.auth?.user.id, () => new Error("Forbidden"));
+  } catch {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
+  const updated = await setTimesheetDayReviewStatusFast({
+    id: existing.id,
+    day: day.data,
+    reviewed: body.data.reviewed,
+    tenantId,
+    actorName: request.auth?.user.name ?? "Admin",
+    actorRole: request.auth?.user.role ?? "admin",
+    requestId: String(request.id),
+  });
+
+  if (!updated) {
+    respondNotFound(response, "Timesheet not found");
+    return;
+  }
+
+  response.json({ timesheet: updated });
 });
 
 router.post("/timesheets/submit", requireTenantRole("admin", "employee"), async (request, response) => {
@@ -1184,6 +1245,7 @@ router.post("/timesheets/submit", requireTenantRole("admin", "employee"), async 
     reviewedAt: undefined,
     reviewedBy: undefined,
     reviewNotes: undefined,
+    dailyReviewStatus: reconcileDailyReviewStatus(existing?.dailyReviewStatus, existing?.lines ?? [], lines),
     lines,
     createdAt: existing?.createdAt ?? nowIso(),
     updatedAt: nowIso(),

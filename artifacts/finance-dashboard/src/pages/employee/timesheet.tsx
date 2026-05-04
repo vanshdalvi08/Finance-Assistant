@@ -4,6 +4,7 @@ import { addDays, format } from "date-fns";
 import {
   AlertTriangle,
   CalendarDays,
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -16,7 +17,7 @@ import {
 } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { useAuthStore } from "@/store/auth";
-import { api, type DayKey, type TimesheetEntry, type TimesheetTaskLine, type TimesheetWorkNotes } from "@/lib/api";
+import { api, type DayKey, type TimesheetDailyReviewStatus, type TimesheetEntry, type TimesheetTaskLine, type TimesheetWorkNotes } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -197,6 +198,19 @@ function normalizeWorkNotes(input?: TimesheetWorkNotes | null) {
     DAYS.map(({ key }) => [key, String(input?.[key] ?? "").trim()]).filter(([, value]) => value.length > 0),
   ) as TimesheetWorkNotes;
 
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function normalizeDailyReviewStatus(input?: TimesheetDailyReviewStatus | null) {
+  return Object.fromEntries(
+    DAYS.map(({ key }) => [key, input?.[key] === "reviewed" ? "reviewed" : ""]).filter(([, value]) => value === "reviewed"),
+  ) as TimesheetDailyReviewStatus;
+}
+
+function clearReviewedDayStatus(status: TimesheetDailyReviewStatus | undefined, day: DayKey) {
+  const next = { ...(status ?? {}) };
+  delete next[day];
+  const normalized = normalizeDailyReviewStatus(next);
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
@@ -677,11 +691,18 @@ export default function EmployeeTimesheetPage() {
     setSelectedWeek(weekStartIso(date));
   }
 
-  function updateLine(lineId: string, updater: (line: TimesheetTaskLine) => TimesheetTaskLine) {
+  function updateLine(
+    lineId: string,
+    updater: (line: TimesheetTaskLine) => TimesheetTaskLine,
+    options?: { resetReviewedDay?: DayKey },
+  ) {
     setDraft((currentEntry) =>
       currentEntry
         ? {
             ...currentEntry,
+            dailyReviewStatus: options?.resetReviewedDay
+              ? clearReviewedDayStatus(currentEntry.dailyReviewStatus, options.resetReviewedDay)
+              : currentEntry.dailyReviewStatus,
             lines: currentEntry.lines.map((line) => (line.id === lineId ? updater(line) : line)),
           }
         : currentEntry,
@@ -758,18 +779,21 @@ export default function EmployeeTimesheetPage() {
       return;
     }
 
-    updateLine(activeWorkNoteLine.id, (line) =>
-      updateLineDayWorkNote(
-        {
-          ...line,
-          hours: {
-            ...line.hours,
-            [activeNoteCell.day]: nextValue,
+    updateLine(
+      activeWorkNoteLine.id,
+      (line) =>
+        updateLineDayWorkNote(
+          {
+            ...line,
+            hours: {
+              ...line.hours,
+              [activeNoteCell.day]: nextValue,
+            },
           },
-        },
-        activeNoteCell.day,
-        cellWorkNoteDraft,
-      ),
+          activeNoteCell.day,
+          cellWorkNoteDraft,
+        ),
+      { resetReviewedDay: activeNoteCell.day },
     );
     closeWorkNoteDialog();
   }
@@ -786,7 +810,7 @@ export default function EmployeeTimesheetPage() {
         ...line.hours,
         [day]: nextValue,
       },
-    }));
+    }), { resetReviewedDay: day });
   }
 
   return (
@@ -903,18 +927,27 @@ export default function EmployeeTimesheetPage() {
                         const isHoliday = Boolean(calendarDay?.holiday);
                         const isLeave = Boolean(calendarDay?.leave);
                         const isPending = calendarDay?.leaveStatus === "pending";
+                        const isDayReviewed = draft?.dailyReviewStatus?.[day.key] === "reviewed";
 
                         return (
                           <th
                             key={day.key}
                               className={cn(
-                                "w-[76px] min-w-[76px] border-b border-r border-border/50 px-2 py-3 text-center font-medium last:border-r-0",
+                                "relative w-[76px] min-w-[76px] border-b border-r border-border/50 px-2 py-3 text-center font-medium last:border-r-0",
                                 isHoliday && "bg-emerald-500/5",
                                 isLeave && "bg-amber-500/5",
                                 isPending && "bg-sky-500/5",
                               )}
                           >
+                            {isDayReviewed ? <span className="absolute inset-x-0 top-0 h-1 bg-emerald-400/80" /> : null}
                             <div className="space-y-1">
+                              {isDayReviewed ? (
+                                <div className="flex justify-center">
+                                  <span className="flex h-5 w-5 items-center justify-center rounded-full border border-emerald-200 bg-emerald-50 text-emerald-600 dark:border-emerald-500/25 dark:bg-emerald-500/10 dark:text-emerald-300">
+                                    <Check className="h-3 w-3" />
+                                  </span>
+                                </div>
+                              ) : null}
                               <p>{day.label}</p>
                               <p className="text-[11px] font-normal text-muted-foreground">{format(day.date, "dd MMM")}</p>
                               {isHoliday ? (

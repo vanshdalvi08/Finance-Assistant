@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addDays, format } from "date-fns";
-import { CalendarDays, CheckCircle2, ClipboardList, Eye, FileText, RefreshCcw, X } from "lucide-react";
+import { CalendarDays, Check, CheckCircle2, ClipboardList, Eye, FileText, RefreshCcw, RotateCcw, X } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
-import { api } from "@/lib/api";
+import { api, type DayKey, type Employee, type TimesheetEntry, type TimesheetTaskLine } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -15,7 +16,19 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
-
+const DAY_LABELS: Record<(typeof DAYS)[number], string> = {
+  mon: "Mon",
+  tue: "Tue",
+  wed: "Wed",
+  thu: "Thu",
+  fri: "Fri",
+  sat: "Sat",
+  sun: "Sun",
+};
+const READONLY_FIELD_CLASS =
+  "flex h-10 items-center rounded-[18px] border border-slate-200 bg-white px-4 text-[15px] font-medium text-slate-700 shadow-none dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-100";
+const READONLY_PLACEHOLDER_CLASS =
+  "flex h-10 items-center rounded-[18px] border border-dashed border-slate-200 bg-slate-50 px-4 text-[15px] font-medium text-slate-500 dark:border-slate-700/90 dark:bg-slate-950/90 dark:text-slate-400";
 
 function lineTotal(line: { hours: Partial<Record<(typeof DAYS)[number], number>> }) {
   return DAYS.reduce((sum, day) => sum + Number(line.hours[day] ?? 0), 0);
@@ -29,6 +42,100 @@ function weekLabel(weekStart: string) {
 function taskLineLabel(line: { task?: string; subTask?: string }) {
   const task = line.task?.trim() || "Custom task";
   return line.subTask ? `${task} - ${line.subTask}` : task;
+}
+
+function formatHourValue(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0h";
+  }
+
+  return `${Number(value.toFixed(1)).toString()}h`;
+}
+
+function formatHourCellValue(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0";
+  }
+
+  return Number(value.toFixed(1)).toString();
+}
+
+function normalizeText(value: string | undefined | null) {
+  return (value ?? "").trim().toLowerCase();
+}
+
+function lineWorkNoteSummary(line: TimesheetTaskLine) {
+  const inlineNote = line.notes?.trim();
+  if (inlineNote) {
+    return inlineNote;
+  }
+
+  const perDayNotes = DAYS.map((day) => {
+    const note = line.workNotes?.[day]?.trim();
+    return note ? `${DAY_LABELS[day]}: ${note}` : null;
+  }).filter((value): value is string => Boolean(value));
+
+  return perDayNotes.join(" | ");
+}
+
+function dayWorkNote(line: TimesheetTaskLine, day: DayKey) {
+  return line.workNotes?.[day]?.trim() ?? "";
+}
+
+function lineHasContent(line: TimesheetTaskLine) {
+  return Boolean(
+    line.project.trim() ||
+      line.task.trim() ||
+      lineWorkNoteSummary(line) ||
+      DAYS.some((day) => Number(line.hours[day] ?? 0) > 0),
+  );
+}
+
+function timesheetHasDisplayContent(entry: TimesheetEntry) {
+  return entry.lines.some((line) => lineHasContent(line));
+}
+
+function includesDateInWeek(weekStart: string, selectedDate: string) {
+  const start = format(new Date(weekStart), "yyyy-MM-dd");
+  const end = format(addDays(new Date(weekStart), 6), "yyyy-MM-dd");
+  return selectedDate >= start && selectedDate <= end;
+}
+
+function statusBadgeTone(status: TimesheetEntry["status"]) {
+  if (status === "approved") {
+    return "border-emerald-500/20 bg-emerald-500/10 text-emerald-300";
+  }
+
+  if (status === "submitted") {
+    return "border-sky-500/20 bg-sky-500/10 text-sky-300";
+  }
+
+  if (status === "rejected") {
+    return "border-amber-500/20 bg-amber-500/10 text-amber-300";
+  }
+
+  return "border-border/60 bg-secondary/40 text-muted-foreground";
+}
+
+function statusLabel(status: TimesheetEntry["status"]) {
+  if (status === "approved") return "Approved";
+  if (status === "submitted") return "Submitted";
+  if (status === "rejected") return "Returned";
+  return "Draft";
+}
+
+function initialsFromName(name: string) {
+  const parts = name
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2);
+
+  if (parts.length === 0) {
+    return "EM";
+  }
+
+  return parts.map((part) => part[0]?.toUpperCase() ?? "").join("");
 }
 
 function calendarCardClass(day: {
@@ -45,12 +152,238 @@ function calendarCardClass(day: {
   return day.isWeekend ? "border-border/40 bg-background/60" : "border-border/60 bg-background/80";
 }
 
+function AdminReadonlyTimesheetCard({
+  entry,
+  employee,
+  selectedDate,
+  pendingReviewKey,
+  onToggleDayReview,
+}: {
+  entry: TimesheetEntry;
+  employee?: Employee;
+  selectedDate: string;
+  pendingReviewKey?: string | null;
+  onToggleDayReview: (day: DayKey, reviewed: boolean) => void;
+}) {
+  const weekDays = DAYS.map((day, index) => {
+    const date = addDays(new Date(entry.weekStart), index);
+    return {
+      key: day,
+      label: DAY_LABELS[day],
+      date,
+    };
+  });
+  const selectedDayKey = weekDays.find((day) => format(day.date, "yyyy-MM-dd") === selectedDate)?.key ?? null;
+  const displayLines = entry.lines.filter((line) => lineHasContent(line));
+  const dayTotals = DAYS.map((day) => ({
+    key: day,
+    total: displayLines.reduce((sum, line) => sum + Number(line.hours[day] ?? 0), 0),
+  }));
+  const totalHours = displayLines.reduce((sum, line) => sum + lineTotal(line), 0);
+
+  return (
+    <Card className="overflow-hidden border-border/60 bg-card/80 shadow-sm">
+      <CardHeader className="border-b border-border/50 pb-4">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div className="flex items-start gap-3">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-sky-100 text-sm font-semibold text-sky-700 dark:bg-sky-500/15 dark:text-sky-200">
+              {initialsFromName(entry.employeeNameSnapshot)}
+            </div>
+            <div className="space-y-1">
+              <CardTitle className="text-[1.05rem] font-medium tracking-[-0.01em] text-foreground">
+                {entry.employeeNameSnapshot}
+              </CardTitle>
+              <CardDescription className="text-[0.95rem] text-muted-foreground">
+                {employee?.department?.trim() || "General"} <span className="px-1.5">-</span> {weekLabel(entry.weekStart)}
+              </CardDescription>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 md:justify-end">
+            <Badge className={cn("rounded-full border px-3 py-1 text-[11px] font-medium shadow-none", statusBadgeTone(entry.status))}>
+              {statusLabel(entry.status)}
+            </Badge>
+            <Badge className="rounded-full border border-border/60 bg-background/70 px-3 py-1 text-[11px] font-medium text-foreground shadow-none">
+              {formatHourValue(totalHours)}
+            </Badge>
+          </div>
+        </div>
+      </CardHeader>
+
+      <CardContent className="p-0">
+        {displayLines.length === 0 ? (
+          <div className="px-5 py-12 text-center text-sm text-muted-foreground">No saved timesheet content for this employee on the selected date.</div>
+        ) : (
+          <div className="timesheet-scroll overflow-x-auto">
+            <table className="w-full min-w-[1030px] table-fixed border-separate border-spacing-0">
+              <thead>
+                <tr className="bg-secondary/10 text-left text-sm text-muted-foreground">
+                  <th className="sticky left-0 z-20 w-[222px] min-w-[222px] border-b border-r border-border/50 bg-card px-4 py-3 font-medium text-foreground">
+                    Project
+                  </th>
+                  <th className="sticky left-[222px] z-20 w-[230px] min-w-[230px] border-b border-r border-border/50 bg-card px-4 py-3 font-medium text-foreground">
+                    Task
+                  </th>
+                  {weekDays.map((day) => {
+                    const isReviewed = entry.dailyReviewStatus?.[day.key] === "reviewed";
+                    const toggleKey = `${entry.id}:${day.key}`;
+                    const isPending = pendingReviewKey === toggleKey;
+                    const fullDayName = format(day.date, "EEEE");
+
+                    return (
+                      <th
+                        key={day.key}
+                        className={cn(
+                          "group relative w-[76px] min-w-[76px] border-b border-r border-border/50 px-2 py-3 text-center font-medium last:border-r-0",
+                          day.key === selectedDayKey && "bg-sky-500/5",
+                        )}
+                      >
+                        {isReviewed ? <span className="absolute inset-x-0 top-0 h-1 bg-emerald-400/85" /> : null}
+                        <div className="absolute right-1 top-3">
+                          <HoverCard openDelay={120} closeDelay={80}>
+                            <HoverCardTrigger asChild>
+                              <button
+                                type="button"
+                                onClick={() => onToggleDayReview(day.key, !isReviewed)}
+                                disabled={isPending}
+                                aria-label={isReviewed ? "Undo review" : `Mark ${fullDayName} as reviewed`}
+                                className={cn(
+                                  "flex h-5 w-5 items-center justify-center rounded-full border transition-colors",
+                                  isReviewed
+                                    ? "border-emerald-200 bg-emerald-50 text-emerald-600 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300"
+                                    : "border-slate-200/90 bg-white/90 text-slate-300 hover:border-sky-200 hover:bg-sky-50 hover:text-sky-500 dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-600 dark:hover:border-sky-500/30 dark:hover:bg-sky-500/10 dark:hover:text-sky-300",
+                                  isPending && "opacity-60",
+                                )}
+                              >
+                                {isReviewed ? (
+                                  <>
+                                    <Check className="h-3 w-3 group-hover:hidden" />
+                                    <RotateCcw className="hidden h-3 w-3 group-hover:block" />
+                                  </>
+                                ) : (
+                                  <Check className="h-3 w-3 opacity-0 group-hover:opacity-100" />
+                                )}
+                              </button>
+                            </HoverCardTrigger>
+                            <HoverCardContent side="top" sideOffset={8} className="w-auto rounded-xl px-3 py-2 text-xs">
+                              {isReviewed ? "Undo review" : `Mark ${fullDayName} as reviewed`}
+                            </HoverCardContent>
+                          </HoverCard>
+                        </div>
+                        <div className="space-y-1">
+                          <p>{day.label}</p>
+                          <p className="text-[11px] font-normal text-muted-foreground">{format(day.date, "dd MMM")}</p>
+                          <p className="text-[10px] font-medium text-muted-foreground">Work</p>
+                        </div>
+                      </th>
+                    );
+                  })}
+                  <th className="w-[88px] min-w-[88px] border-b border-border/50 px-2 py-3 text-center font-medium text-foreground">
+                    Total
+                  </th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {displayLines.map((line) => (
+                  <tr key={line.id}>
+                    <td className="sticky left-0 z-10 border-b border-r border-border/50 bg-card px-4 py-3 align-top">
+                      <div className={line.project.trim() ? READONLY_FIELD_CLASS : READONLY_PLACEHOLDER_CLASS}>
+                        {line.project.trim() || "Custom project"}
+                      </div>
+                    </td>
+                    <td className="sticky left-[222px] z-10 border-b border-r border-border/50 bg-card px-4 py-3 align-top">
+                      <div className={taskLineLabel(line).trim() ? READONLY_FIELD_CLASS : READONLY_PLACEHOLDER_CLASS}>{taskLineLabel(line)}</div>
+                    </td>
+                    {weekDays.map((day) => {
+                      const workNotePreview = dayWorkNote(line, day.key);
+                      const cellContent = (
+                        <div
+                          className={cn(
+                            "relative flex h-[40px] w-[58px] items-center justify-center rounded-[16px] border border-slate-200/90 bg-white px-2 text-center text-[0.95rem] font-medium leading-none text-slate-700 shadow-none dark:border-[#1a1f2e] dark:bg-slate-950/90 dark:text-slate-100",
+                            workNotePreview && "border-sky-200 dark:border-sky-500/40",
+                          )}
+                        >
+                          <span className="translate-y-[-1px]">{formatHourCellValue(Number(line.hours[day.key] ?? 0))}</span>
+                          {workNotePreview ? (
+                            <span className="absolute inset-x-0 bottom-[2px] flex h-3 items-center justify-center">
+                              <span className="block aspect-square h-[6px] rounded-full bg-[#2F80FF]" />
+                            </span>
+                          ) : null}
+                        </div>
+                      );
+
+                      return (
+                        <td
+                          key={day.key}
+                          className={cn(
+                            "border-b border-r border-border/50 px-3 py-3 align-top",
+                            day.key === "sat" || day.key === "sun" ? "bg-secondary/5" : "",
+                            day.key === selectedDayKey && "bg-sky-500/5",
+                          )}
+                        >
+                          <div className="mx-auto flex h-[40px] w-full items-center justify-center">
+                            {workNotePreview ? (
+                              <HoverCard openDelay={120} closeDelay={80}>
+                                <HoverCardTrigger asChild>{cellContent}</HoverCardTrigger>
+                                <HoverCardContent
+                                  side="bottom"
+                                  sideOffset={10}
+                                  className="pointer-events-none relative w-[248px] rounded-[18px] border border-slate-800/90 bg-slate-900 px-4 py-3 text-white shadow-[0_18px_36px_rgba(15,23,42,0.35)]"
+                                >
+                                  <span className="absolute -top-[5px] left-1/2 h-[10px] w-[10px] -translate-x-1/2 rotate-45 border-l border-t border-slate-800/90 bg-slate-900" />
+                                  <p className="text-[13px] font-semibold tracking-[0.01em] text-white">Work Note</p>
+                                  <p className="mt-2 whitespace-pre-line text-[13px] leading-5 text-slate-200">{workNotePreview}</p>
+                                </HoverCardContent>
+                              </HoverCard>
+                            ) : (
+                              cellContent
+                            )}
+                          </div>
+                        </td>
+                      );
+                    })}
+                    <td className="border-b border-border/50 px-3 py-3 text-center align-middle font-medium text-foreground">
+                      {formatHourValue(lineTotal(line))}
+                    </td>
+                  </tr>
+                ))}
+
+                <tr className="bg-secondary/10">
+                  <td className="sticky left-0 z-10 border-r border-border/50 bg-card px-4 py-4 text-sm font-medium text-foreground">Day Totals</td>
+                  <td className="sticky left-[222px] z-10 border-r border-border/50 bg-card px-4 py-4 text-sm text-muted-foreground">Read-only employee view</td>
+                  {dayTotals.map((day) => (
+                    <td
+                      key={day.key}
+                      className={cn(
+                        "border-r border-border/50 px-3 py-4 text-center text-sm font-medium text-foreground",
+                        day.key === selectedDayKey && "bg-sky-500/5",
+                      )}
+                    >
+                      {formatHourValue(day.total)}
+                    </td>
+                  ))}
+                  <td className="px-3 py-4 text-center text-sm font-semibold text-foreground">{formatHourValue(totalHours)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function AdminTimesheetValidationPage() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const [reviewMode, setReviewMode] = useState<"weekly" | "daily">("weekly");
   const [selectedTimesheetId, setSelectedTimesheetId] = useState("");
   const [selectedEmployeeId, setSelectedEmployeeId] = useState("");
   const [selectedMonth, setSelectedMonth] = useState(() => format(new Date(), "yyyy-MM"));
+  const [selectedReviewDate, setSelectedReviewDate] = useState(() => format(new Date(), "yyyy-MM-dd"));
+  const [selectedDepartmentFilter, setSelectedDepartmentFilter] = useState("all");
+  const [selectedReviewEmployeeId, setSelectedReviewEmployeeId] = useState("all");
+  const [pendingReviewKey, setPendingReviewKey] = useState<string | null>(null);
   const [reviewNote, setReviewNote] = useState("");
   const [showReviewedHistory, setShowReviewedHistory] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -65,6 +398,27 @@ export default function AdminTimesheetValidationPage() {
       setSelectedEmployeeId(employees[0].id);
     }
   }, [employees, selectedEmployeeId]);
+
+  const employeeLookup = useMemo(() => new Map(employees.map((employee) => [employee.id, employee])), [employees]);
+  const departmentOptions = useMemo(
+    () =>
+      [...new Set(employees.map((employee) => employee.department?.trim()).filter((department): department is string => Boolean(department)))]
+        .sort((left, right) => left.localeCompare(right)),
+    [employees],
+  );
+  const departmentEmployees = useMemo(
+    () =>
+      selectedDepartmentFilter === "all"
+        ? employees
+        : employees.filter((employee) => normalizeText(employee.department) === normalizeText(selectedDepartmentFilter)),
+    [employees, selectedDepartmentFilter],
+  );
+
+  useEffect(() => {
+    if (selectedReviewEmployeeId !== "all" && !departmentEmployees.some((employee) => employee.id === selectedReviewEmployeeId)) {
+      setSelectedReviewEmployeeId("all");
+    }
+  }, [departmentEmployees, selectedReviewEmployeeId]);
 
   const pendingTimesheets = useMemo(
     () => timesheets.filter((entry) => entry.status === "submitted").sort((a, b) => new Date(b.weekStart).getTime() - new Date(a.weekStart).getTime()),
@@ -130,6 +484,33 @@ export default function AdminTimesheetValidationPage() {
     },
   });
 
+  const dayReviewMutation = useMutation({
+    mutationFn: ({ id, day, reviewed }: { id: string; day: DayKey; reviewed: boolean }) =>
+      api.setTimesheetDayReviewStatus(id, day, reviewed),
+    onMutate: ({ id, day }) => {
+      setPendingReviewKey(`${id}:${day}`);
+    },
+    onSuccess: (updatedEntry) => {
+      queryClient.setQueryData<TimesheetEntry[]>(["timesheets"], (currentEntries = []) =>
+        currentEntries.map((entry) => (entry.id === updatedEntry.id ? updatedEntry : entry)),
+      );
+      toast({
+        title: "Day review updated",
+        description: "The daily review marker has been saved.",
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "Could not update day review",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    },
+    onSettled: () => {
+      setPendingReviewKey(null);
+    },
+  });
+
   const selectedHours = useMemo(() => {
     if (!selectedTimesheet) {
       return 0;
@@ -169,6 +550,42 @@ export default function AdminTimesheetValidationPage() {
     () => selectedTimesheet?.lines.find((line) => line.id === workNoteLineId) ?? null,
     [selectedTimesheet, workNoteLineId],
   );
+  const activeWorkNoteSummary = useMemo(() => (activeWorkNoteLine ? lineWorkNoteSummary(activeWorkNoteLine) : ""), [activeWorkNoteLine]);
+  const dailyReviewEntries = useMemo(
+    () =>
+      timesheets
+        .filter((entry) => includesDateInWeek(entry.weekStart, selectedReviewDate))
+        .filter((entry) => timesheetHasDisplayContent(entry))
+        .filter((entry) => {
+          const employee = employeeLookup.get(entry.employeeId);
+          if (selectedDepartmentFilter !== "all" && normalizeText(employee?.department) !== normalizeText(selectedDepartmentFilter)) {
+            return false;
+          }
+
+          if (selectedReviewEmployeeId !== "all" && entry.employeeId !== selectedReviewEmployeeId) {
+            return false;
+          }
+
+          return true;
+        })
+        .sort((left, right) => {
+          const nameCompare = left.employeeNameSnapshot.localeCompare(right.employeeNameSnapshot);
+          if (nameCompare !== 0) {
+            return nameCompare;
+          }
+
+          return new Date(right.submittedAt ?? right.reviewedAt ?? right.weekStart).getTime() - new Date(left.submittedAt ?? left.reviewedAt ?? left.weekStart).getTime();
+        }),
+    [employeeLookup, selectedDepartmentFilter, selectedReviewDate, selectedReviewEmployeeId, timesheets],
+  );
+  const dailyReviewSummary = useMemo(
+    () => ({
+      employees: new Set(dailyReviewEntries.map((entry) => entry.employeeId)).size,
+      drafts: dailyReviewEntries.filter((entry) => entry.status === "draft").length,
+      submitted: dailyReviewEntries.filter((entry) => entry.status === "submitted").length,
+    }),
+    [dailyReviewEntries],
+  );
 
 
   return (
@@ -178,44 +595,74 @@ export default function AdminTimesheetValidationPage() {
           <div className="space-y-1">
             <h1 className="text-2xl font-semibold tracking-tight">Timesheets</h1>
             <p className="text-sm text-muted-foreground">
-              Review submitted work weeks, keep payroll moving, and use the month calendar for context only.
+              Switch between weekly approvals and a read-only daily review of saved employee work.
             </p>
           </div>
-          <Input type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} className="w-[220px] rounded-xl" />
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <div className="inline-flex rounded-2xl border border-border/60 bg-card/80 p-1 shadow-sm">
+              <button
+                type="button"
+                onClick={() => setReviewMode("weekly")}
+                className={cn(
+                  "rounded-xl px-4 py-2 text-sm font-medium transition-colors",
+                  reviewMode === "weekly" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                Weekly Timesheet
+              </button>
+              <button
+                type="button"
+                onClick={() => setReviewMode("daily")}
+                className={cn(
+                  "rounded-xl px-4 py-2 text-sm font-medium transition-colors",
+                  reviewMode === "daily" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                Daily Review
+              </button>
+            </div>
+            {reviewMode === "weekly" ? (
+              <Input type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} className="w-[220px] rounded-xl" />
+            ) : (
+              <Input type="date" value={selectedReviewDate} onChange={(event) => setSelectedReviewDate(event.target.value)} className="w-[220px] rounded-xl" />
+            )}
+          </div>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-3">
-          <Card className="border-border/60 bg-card/80 shadow-sm">
-            <CardContent className="p-4">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <ClipboardList className="h-4 w-4" />
-                <p className="text-[11px] uppercase tracking-[0.16em]">Pending Sheets</p>
-              </div>
-              <p className="mt-2 text-2xl font-semibold text-foreground">{pendingTimesheets.length}</p>
-            </CardContent>
-          </Card>
-          <Card className="border-border/60 bg-card/80 shadow-sm">
-            <CardContent className="p-4">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <CheckCircle2 className="h-4 w-4" />
-                <p className="text-[11px] uppercase tracking-[0.16em]">Approved This Month</p>
-              </div>
-              <p className="mt-2 text-2xl font-semibold text-foreground">
-                {timesheets.filter((entry) => entry.status === "approved" && entry.weekStart.slice(0, 7) === selectedMonth).length}
-              </p>
-            </CardContent>
-          </Card>
-          <Card className="border-border/60 bg-card/80 shadow-sm">
-            <CardContent className="p-4">
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <CalendarDays className="h-4 w-4" />
-                <p className="text-[11px] uppercase tracking-[0.16em]">Calendar Context</p>
-              </div>
-              <p className="mt-2 text-2xl font-semibold text-foreground">{monthCalendar?.summary.leaveDays ?? 0} leave</p>
-              <p className="mt-1 text-xs text-muted-foreground">{monthCalendar?.summary.holidayDays ?? 0} holidays this month</p>
-            </CardContent>
-          </Card>
-        </div>
+        {reviewMode === "weekly" ? (
+          <>
+            <div className="grid gap-4 md:grid-cols-3">
+              <Card className="border-border/60 bg-card/80 shadow-sm">
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <ClipboardList className="h-4 w-4" />
+                    <p className="text-[11px] uppercase tracking-[0.16em]">Pending Sheets</p>
+                  </div>
+                  <p className="mt-2 text-2xl font-semibold text-foreground">{pendingTimesheets.length}</p>
+                </CardContent>
+              </Card>
+              <Card className="border-border/60 bg-card/80 shadow-sm">
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <CheckCircle2 className="h-4 w-4" />
+                    <p className="text-[11px] uppercase tracking-[0.16em]">Approved This Month</p>
+                  </div>
+                  <p className="mt-2 text-2xl font-semibold text-foreground">
+                    {timesheets.filter((entry) => entry.status === "approved" && entry.weekStart.slice(0, 7) === selectedMonth).length}
+                  </p>
+                </CardContent>
+              </Card>
+              <Card className="border-border/60 bg-card/80 shadow-sm">
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <CalendarDays className="h-4 w-4" />
+                    <p className="text-[11px] uppercase tracking-[0.16em]">Calendar Context</p>
+                  </div>
+                  <p className="mt-2 text-2xl font-semibold text-foreground">{monthCalendar?.summary.leaveDays ?? 0} leave</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{monthCalendar?.summary.holidayDays ?? 0} holidays this month</p>
+                </CardContent>
+              </Card>
+            </div>
 
         <div className="grid items-start gap-6 xl:grid-cols-[340px_minmax(0,1fr)]">
           <Card className="self-start border-border/60 bg-card/80 shadow-sm">
@@ -298,6 +745,7 @@ export default function AdminTimesheetValidationPage() {
                     </div>
                     {selectedTimesheet.lines.map((line, index) => {
                       const total = DAYS.reduce((sum, day) => sum + Number(line.hours[day] ?? 0), 0);
+                      const workNoteSummary = lineWorkNoteSummary(line);
                       return (
                         <div
                           key={line.id}
@@ -313,9 +761,9 @@ export default function AdminTimesheetValidationPage() {
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0 flex-1 space-y-2">
                                 <p className="truncate pr-2 text-sm text-foreground">{taskLineLabel(line)}</p>
-                                {line.notes?.trim() ? (
+                                {workNoteSummary ? (
                                   <div className="rounded-xl border border-border/45 bg-background/70 px-3 py-2 text-xs leading-5 text-muted-foreground">
-                                    {line.notes.trim()}
+                                    {workNoteSummary}
                                   </div>
                                 ) : null}
                               </div>
@@ -325,11 +773,11 @@ export default function AdminTimesheetValidationPage() {
                                 size="sm"
                                 className={cn(
                                   "h-8 shrink-0 rounded-full border border-border/60 bg-background/70 px-3 text-[11px] shadow-none",
-                                  line.notes?.trim()
+                                  workNoteSummary
                                     ? "border-primary/20 text-primary hover:bg-primary/10 hover:text-primary"
                                     : "text-muted-foreground hover:bg-secondary/20 hover:text-foreground",
                                 )}
-                                onClick={() => setDetailOpen(true)}
+                                onClick={() => setWorkNoteLineId(line.id)}
                               >
                                 <FileText className="mr-1.5 h-3.5 w-3.5" />
                                 Work Note
@@ -515,6 +963,108 @@ export default function AdminTimesheetValidationPage() {
             </CardContent>
           </Card>
         ) : null}
+          </>
+        ) : (
+          <>
+            <div className="grid gap-4 md:grid-cols-3">
+              <Card className="border-border/60 bg-card/80 shadow-sm">
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <ClipboardList className="h-4 w-4" />
+                    <p className="text-[11px] uppercase tracking-[0.16em]">Employees Visible</p>
+                  </div>
+                  <p className="mt-2 text-2xl font-semibold text-foreground">{dailyReviewSummary.employees}</p>
+                </CardContent>
+              </Card>
+              <Card className="border-border/60 bg-card/80 shadow-sm">
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <FileText className="h-4 w-4" />
+                    <p className="text-[11px] uppercase tracking-[0.16em]">Draft Sheets</p>
+                  </div>
+                  <p className="mt-2 text-2xl font-semibold text-foreground">{dailyReviewSummary.drafts}</p>
+                </CardContent>
+              </Card>
+              <Card className="border-border/60 bg-card/80 shadow-sm">
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <CheckCircle2 className="h-4 w-4" />
+                    <p className="text-[11px] uppercase tracking-[0.16em]">Submitted Sheets</p>
+                  </div>
+                  <p className="mt-2 text-2xl font-semibold text-foreground">{dailyReviewSummary.submitted}</p>
+                </CardContent>
+              </Card>
+            </div>
+
+            <Card className="border-border/60 bg-card/80 shadow-sm">
+              <CardHeader>
+                <CardTitle className="text-base font-medium">Daily Review Filters</CardTitle>
+                <CardDescription>
+                  Review saved employee work by date, department, and employee. This view mirrors the employee weekly grid without any editing controls.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="grid gap-4 md:grid-cols-3">
+                <div className="space-y-1.5">
+                  <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Date</p>
+                  <Input type="date" value={selectedReviewDate} onChange={(event) => setSelectedReviewDate(event.target.value)} className="rounded-xl" />
+                </div>
+                <div className="space-y-1.5">
+                  <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Department</p>
+                  <Select value={selectedDepartmentFilter} onValueChange={setSelectedDepartmentFilter}>
+                    <SelectTrigger className="rounded-xl">
+                      <SelectValue placeholder="All departments" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All departments</SelectItem>
+                      {departmentOptions.map((department) => (
+                        <SelectItem key={department} value={department}>
+                          {department}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Employee</p>
+                  <Select value={selectedReviewEmployeeId} onValueChange={setSelectedReviewEmployeeId}>
+                    <SelectTrigger className="rounded-xl">
+                      <SelectValue placeholder="All employees" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All employees</SelectItem>
+                      {departmentEmployees.map((employee) => (
+                        <SelectItem key={employee.id} value={employee.id}>
+                          {employee.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </CardContent>
+            </Card>
+
+            <div className="space-y-4">
+              {dailyReviewEntries.length === 0 ? (
+                <Card className="border-border/60 bg-card/80 shadow-sm">
+                  <CardContent className="px-5 py-12 text-center text-sm text-muted-foreground">
+                    No saved employee timesheets match the selected date and filters yet.
+                  </CardContent>
+                </Card>
+              ) : (
+                dailyReviewEntries.map((entry) => (
+                  <AdminReadonlyTimesheetCard
+                    key={entry.id}
+                    entry={entry}
+                    employee={employeeLookup.get(entry.employeeId)}
+                    selectedDate={selectedReviewDate}
+                    pendingReviewKey={pendingReviewKey}
+                    onToggleDayReview={(day, reviewed) => dayReviewMutation.mutate({ id: entry.id, day, reviewed })}
+                  />
+                ))
+              )}
+            </div>
+          </>
+        )}
       </div>
 
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
@@ -580,7 +1130,7 @@ export default function AdminTimesheetValidationPage() {
                             <div className="space-y-1.5">
                               <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Work note</p>
                               <div className="rounded-2xl border border-border/50 bg-background/90 px-4 py-3 text-sm leading-6 text-foreground">
-                                {line.notes?.trim() || (
+                                {lineWorkNoteSummary(line) || (
                                   <span className="text-muted-foreground">No work note was added for this task.</span>
                                 )}
                               </div>
@@ -658,17 +1208,17 @@ export default function AdminTimesheetValidationPage() {
                 <h2 className="text-lg font-semibold tracking-tight text-foreground">Work Note</h2>
               </div>
 
-              <div className="space-y-2.5">
-                <div className="space-y-1">
-                  <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Task</p>
-                  <p className="text-sm font-medium text-foreground">{taskLineLabel(activeWorkNoteLine ?? {})}</p>
+                <div className="space-y-2.5">
+                  <div className="space-y-1">
+                    <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Task</p>
+                    <p className="text-sm font-medium text-foreground">{taskLineLabel(activeWorkNoteLine ?? {})}</p>
+                  </div>
+                  <div className="rounded-2xl border border-border/60 bg-background/70 px-4 py-3 text-sm leading-6 text-foreground">
+                    {activeWorkNoteSummary || (
+                      <span className="text-muted-foreground">No work note was added for this task.</span>
+                    )}
+                  </div>
                 </div>
-                <div className="rounded-2xl border border-border/60 bg-background/70 px-4 py-3 text-sm leading-6 text-foreground">
-                  {activeWorkNoteLine?.notes?.trim() || (
-                    <span className="text-muted-foreground">No work note was added for this task.</span>
-                  )}
-                </div>
-              </div>
             </div>
           </div>
         </div>
@@ -696,7 +1246,7 @@ export default function AdminTimesheetValidationPage() {
                 </p>
               </div>
               <div className="min-h-[150px] rounded-xl border border-border/60 bg-background/80 px-4 py-3 text-sm leading-6 text-foreground">
-                {activeWorkNoteLine?.notes?.trim() || (
+                {activeWorkNoteSummary || (
                   <span className="text-muted-foreground">No work note was added for this task.</span>
                 )}
               </div>

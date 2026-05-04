@@ -18,6 +18,7 @@ import type { AuthUser } from "@/auth/types";
 export type ApprovalStatus = "draft" | "submitted" | "approved" | "rejected";
 export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type TimesheetWorkNotes = Partial<Record<DayKey, string>>;
+export type TimesheetDailyReviewStatus = Partial<Record<DayKey, "reviewed">>;
 type TimeOffKind = "leave" | "holiday";
 
 const DAY_KEYS: DayKey[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -146,6 +147,7 @@ export interface TimesheetEntry {
   reviewedAt?: string;
   reviewedBy?: string;
   reviewNotes?: string;
+  dailyReviewStatus?: TimesheetDailyReviewStatus;
   lines: TimesheetTaskLine[];
 }
 
@@ -889,6 +891,9 @@ function normalizeTimesheet(entry: TimesheetEntry): TimesheetEntry {
   return {
     ...entry,
     weekStart: normalizeWeekStart(entry.weekStart),
+    dailyReviewStatus: Object.fromEntries(
+      Object.entries(entry.dailyReviewStatus ?? {}).filter(([, value]) => value === "reviewed"),
+    ) as TimesheetDailyReviewStatus,
     lines: (entry.lines.length ? entry.lines : [{ id: createId("line"), project: "", task: "", subTask: "", notes: "", workNotes: {}, hours: blankHours() }]).map((line) => ({
       ...line,
       id: line.id || createId("line"),
@@ -1725,6 +1730,11 @@ export const api = {
 
   saveTimesheet: async (entry: TimesheetEntry) =>
     normalizeTimesheet((await businessPost<{ timesheet: TimesheetEntry }>("/timesheets", normalizeTimesheet(entry))).timesheet),
+
+  setTimesheetDayReviewStatus: async (id: string, day: DayKey, reviewed: boolean) =>
+    normalizeTimesheet(
+      (await businessPost<{ timesheet: TimesheetEntry }>(`/timesheets/${id}/daily-review/${day}`, { reviewed }, "PATCH")).timesheet,
+    ),
 
   submitTimesheetEntry: async (entry: TimesheetEntry) =>
     normalizeTimesheet(
