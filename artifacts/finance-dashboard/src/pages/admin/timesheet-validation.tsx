@@ -827,7 +827,7 @@ export default function AdminTimesheetValidationPage() {
                         <div
                           key={line.id}
                           className={cn(
-                            "grid grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_96px] gap-3 px-4 py-3",
+                            "grid grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)_96px] gap-4 px-4 py-3",
                             index !== 0 && "border-t border-border/40",
                           )}
                         >
@@ -837,19 +837,21 @@ export default function AdminTimesheetValidationPage() {
                           <div className="min-w-0">
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0 flex-1 space-y-2">
-                                <p className="truncate pr-2 text-sm text-foreground">{taskLineLabel(line)}</p>
+                                <p className="truncate text-sm text-foreground">{taskLineLabel(line)}</p>
                                 {workNoteSummary ? (
-                                  <div className="rounded-xl border border-border/45 bg-background/70 px-3 py-2 text-xs leading-5 text-muted-foreground">
+                                  <div className="rounded-xl border border-border/45 bg-background/70 px-3 py-2 text-xs leading-5 text-muted-foreground shadow-sm">
                                     {workNoteSummary}
                                   </div>
-                                ) : null}
+                                ) : (
+                                  <div className="min-h-[40px]" />
+                                )}
                               </div>
                               <Button
                                 type="button"
                                 variant="ghost"
                                 size="sm"
                                 className={cn(
-                                  "h-8 shrink-0 rounded-full border border-border/60 bg-background/70 px-3 text-[11px] shadow-none",
+                                  "mt-0.5 h-8 shrink-0 rounded-full border border-border/60 bg-background/70 px-3 text-[11px] shadow-none",
                                   workNoteSummary
                                     ? "border-primary/20 text-primary hover:bg-primary/10 hover:text-primary"
                                     : "text-muted-foreground hover:bg-secondary/20 hover:text-foreground",

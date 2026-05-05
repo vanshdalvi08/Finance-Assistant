@@ -967,6 +967,12 @@ export default function EmployeeTimesheetPage() {
                         const dayReviewNote = draft?.dailyReviewNotes?.[day.key]?.trim() ?? "";
                         const isDayReviewed = dayReviewState === "reviewed";
                         const isDayReverted = dayReviewState === "reverted";
+                        const dayStatus = isDayReviewed ? "Verify" : isDayReverted ? "Reverted" : "Work";
+                        const dayStatusClass = isDayReviewed
+                          ? "text-emerald-400"
+                          : isDayReverted
+                            ? "text-rose-300/80"
+                            : "text-muted-foreground";
 
                         return (
                           <th
@@ -980,42 +986,37 @@ export default function EmployeeTimesheetPage() {
                           >
                             {isDayReviewed ? <span className="absolute inset-x-0 top-0 h-1 bg-emerald-400/80" /> : null}
                             {isDayReverted ? <span className="absolute inset-x-0 top-0 h-1 bg-rose-400/70" /> : null}
-                            {isDayReviewed ? (
+                            {isDayReviewed || isDayReverted ? (
                               <HoverCard openDelay={120} closeDelay={80}>
                                 <HoverCardTrigger asChild>
                                   <div className="space-y-0.5 pt-0.5">
                                     <p className="text-[15px] font-medium leading-tight">{day.label}</p>
                                     <p className="text-[11px] font-normal leading-tight text-muted-foreground">{format(day.date, "dd MMM")}</p>
-                                    <p className="text-[10px] font-medium text-emerald-400">Verify</p>
+                                    <p className={cn("text-[10px] font-medium", dayStatusClass)}>{dayStatus}</p>
                                   </div>
                                 </HoverCardTrigger>
                                 <HoverCardContent
                                   side="top"
                                   sideOffset={8}
-                                  className="w-[240px] rounded-xl border border-emerald-200/70 bg-emerald-50 px-3 py-2 text-left text-xs text-emerald-900 shadow-sm dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-100"
+                                  className={cn(
+                                    "w-[240px] rounded-xl border px-3 py-2 text-left text-xs shadow-sm",
+                                    isDayReviewed
+                                      ? "border-emerald-200/70 bg-emerald-50 text-emerald-900 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-100"
+                                      : "border-rose-200/50 bg-background/95 text-foreground dark:border-rose-500/15 dark:bg-slate-950/95 dark:text-slate-100",
+                                  )}
                                 >
-                                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-600 dark:text-emerald-300">
-                                    Day verified by admin
+                                  <p
+                                    className={cn(
+                                      "text-[11px] font-semibold uppercase tracking-[0.16em]",
+                                      isDayReviewed ? "text-emerald-600 dark:text-emerald-300" : "text-rose-500 dark:text-rose-300",
+                                    )}
+                                  >
+                                    {isDayReviewed ? "Day verified by admin" : "Returned for changes"}
                                   </p>
-                                  <p className="mt-1 whitespace-pre-line leading-5">
-                                    This day was verified by the admin and is ready for the employee to continue working from.
-                                  </p>
-                                </HoverCardContent>
-                              </HoverCard>
-                            ) : null}
-                            {isDayReverted ? (
-                              <HoverCard openDelay={120} closeDelay={80}>
-                                <HoverCardTrigger asChild>
-                                  <div className="space-y-0.5 pt-0.5">
-                                    <p className="text-[15px] font-medium leading-tight">{day.label}</p>
-                                    <p className="text-[11px] font-normal leading-tight text-muted-foreground">{format(day.date, "dd MMM")}</p>
-                                    <p className="text-[10px] font-medium text-rose-300/80">Reverted</p>
-                                  </div>
-                                </HoverCardTrigger>
-                                <HoverCardContent side="top" sideOffset={8} className="w-[240px] rounded-xl border border-rose-200/50 bg-background/95 px-3 py-2 text-left text-xs text-foreground shadow-sm dark:border-rose-500/15 dark:bg-slate-950/95 dark:text-slate-100">
-                                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-rose-500 dark:text-rose-300">Returned for changes</p>
                                   <p className="mt-1 whitespace-pre-line leading-5 text-muted-foreground dark:text-slate-300">
-                                    {dayReviewNote || "The admin returned this day for changes."}
+                                    {isDayReviewed
+                                      ? "This day was verified by the admin and is ready for the employee to continue working from."
+                                      : dayReviewNote || "The admin returned this day for changes."}
                                   </p>
                                 </HoverCardContent>
                               </HoverCard>

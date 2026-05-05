@@ -881,6 +881,7 @@ router.post("/timesheets", requireTenantRole("admin", "employee"), async (reques
     hours: { ...blankHours(), ...line.hours },
   }));
   const dailyReviewState = reconcileDailyReviewState(existing?.dailyReviewStatus, existing?.dailyReviewNotes, existing?.lines ?? [], lines);
+  const shouldResetDailyReviewState = request.auth?.user.role === "employee";
 
   const entry: TimesheetEntry = {
     id: parsed.data.id ?? existing?.id ?? createId("ts"),
@@ -895,8 +896,8 @@ router.post("/timesheets", requireTenantRole("admin", "employee"), async (reques
     reviewedAt: existing?.reviewedAt,
     reviewedBy: existing?.reviewedBy,
     reviewNotes: existing?.reviewNotes,
-    dailyReviewStatus: dailyReviewState.status,
-    dailyReviewNotes: dailyReviewState.notes,
+    dailyReviewStatus: shouldResetDailyReviewState ? undefined : dailyReviewState.status,
+    dailyReviewNotes: shouldResetDailyReviewState ? undefined : dailyReviewState.notes,
     lines,
     createdAt: existing?.createdAt ?? nowIso(),
     updatedAt: nowIso(),
@@ -1063,6 +1064,7 @@ router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (r
     hours: { ...blankHours(), ...line.hours },
   }));
   const dailyReviewState = reconcileDailyReviewState(existing.dailyReviewStatus, existing.dailyReviewNotes, existing.lines, lines);
+  const shouldResetDailyReviewState = request.auth?.user.role === "employee";
 
   const entry: TimesheetEntry = {
     ...existing,
@@ -1077,8 +1079,8 @@ router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (r
     reviewedAt: existing.reviewedAt,
     reviewedBy: existing.reviewedBy,
     reviewNotes: existing.reviewNotes,
-    dailyReviewStatus: dailyReviewState.status,
-    dailyReviewNotes: dailyReviewState.notes,
+    dailyReviewStatus: shouldResetDailyReviewState ? undefined : dailyReviewState.status,
+    dailyReviewNotes: shouldResetDailyReviewState ? undefined : dailyReviewState.notes,
     lines,
     updatedAt: nowIso(),
   };

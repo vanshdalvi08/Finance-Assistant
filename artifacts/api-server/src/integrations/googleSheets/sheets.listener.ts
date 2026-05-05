@@ -34,6 +34,18 @@ function hasApprovedWork(event: TimesheetApprovedEvent) {
   return event.timesheet.lines.some((line) => DAY_KEYS.some((day) => Number(line.hours[day] ?? 0) > 0));
 }
 
+function summarizeDayWorkNotes(lines: TimesheetTaskLine[], day: DayKey) {
+  const notes = lines
+    .map((line) => line.workNotes?.[day]?.trim())
+    .filter((note): note is string => Boolean(note));
+
+  if (notes.length === 0) {
+    return "";
+  }
+
+  return Array.from(new Set(notes)).join("\n");
+}
+
 async function handleTimesheetApproved(event: TimesheetApprovedEvent) {
   if (event.timesheet.status !== "approved") {
     return;
@@ -73,7 +85,6 @@ async function handleTimesheetApproved(event: TimesheetApprovedEvent) {
     for (const line of event.timesheet.lines) {
       const project = line.project?.trim() || "";
       const task = line.task?.trim() || "";
-      const workNote = line.notes?.trim() || "";
       const totalHours = lineHours(line);
 
       if (!project || !task || totalHours <= 0) {
@@ -85,7 +96,7 @@ async function handleTimesheetApproved(event: TimesheetApprovedEvent) {
         department,
         project,
         task,
-        workNote,
+        workNote: "",
         week,
         totalHours,
         approvedBy,
@@ -117,6 +128,7 @@ async function handleTimesheetDailyReviewVerified(event: TimesheetDailyReviewVer
   const dayLabel = DAY_LABELS[event.day];
   const verifiedAt = event.timesheet.reviewedAt?.trim() || new Date().toISOString();
   const totalHours = event.timesheet.lines.reduce((sum, line) => sum + Number(line.hours[event.day] ?? 0), 0);
+  const workNote = summarizeDayWorkNotes(event.timesheet.lines, event.day);
 
   if (!employeeName || !verifiedBy || !week || !dayLabel || !verifiedAt) {
     logger.warn(
@@ -140,7 +152,7 @@ async function handleTimesheetDailyReviewVerified(event: TimesheetDailyReviewVer
       department,
       project: "Daily Review",
       task: `${dayLabel} verification`,
-      workNote: "Day verified by admin",
+      workNote,
       week,
       totalHours,
       approvedBy: verifiedBy,
