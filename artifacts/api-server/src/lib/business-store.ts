@@ -26,6 +26,7 @@ import {
   type InsertPurchaseOrder as DbInsertPurchaseOrder,
   type Salary as DbSalary,
   type TimesheetDailyReviewStatus,
+  type TimesheetDailyReviewNotes,
   type Timesheet as DbTimesheet,
   type TimesheetLine as DbTimesheetLine,
 } from "@workspace/db/schema";
@@ -158,6 +159,7 @@ export interface TimesheetEntry {
   reviewedBy?: string;
   reviewNotes?: string;
   dailyReviewStatus?: TimesheetDailyReviewStatus;
+  dailyReviewNotes?: TimesheetDailyReviewNotes;
   lines: TimesheetTaskLine[];
   createdAt: string;
   updatedAt: string;
@@ -491,8 +493,20 @@ function normalizeDailyReviewStatus(input?: Partial<Record<DayKey, string>> | nu
   }
 
   const normalized = Object.fromEntries(
-    DAY_KEYS.map((day) => [day, input[day] === "reviewed" ? "reviewed" : ""]).filter(([, value]) => value === "reviewed"),
+    DAY_KEYS.map((day) => [day, input[day] === "reviewed" || input[day] === "reverted" ? input[day] : ""]).filter(([, value]) => value === "reviewed" || value === "reverted"),
   ) as TimesheetDailyReviewStatus;
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function normalizeDailyReviewNotes(input?: Partial<Record<DayKey, string>> | null): TimesheetDailyReviewNotes | undefined {
+  if (!input) {
+    return undefined;
+  }
+
+  const normalized = Object.fromEntries(
+    DAY_KEYS.map((day) => [day, input[day]?.trim() ?? ""]).filter(([, value]) => value.length > 0),
+  ) as TimesheetDailyReviewNotes;
 
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
@@ -508,24 +522,38 @@ function dayContentSignature(lines: TimesheetTaskLine[], day: DayKey) {
   );
 }
 
-export function reconcileDailyReviewStatus(
+export function reconcileDailyReviewState(
   currentStatus: Partial<Record<DayKey, string>> | null | undefined,
+  currentNotes: Partial<Record<DayKey, string>> | null | undefined,
   previousLines: TimesheetTaskLine[],
   nextLines: TimesheetTaskLine[],
-): TimesheetDailyReviewStatus | undefined {
+): { status?: TimesheetDailyReviewStatus; notes?: TimesheetDailyReviewNotes } {
   const nextStatus = { ...(normalizeDailyReviewStatus(currentStatus) ?? {}) };
+  const nextNotes = { ...(normalizeDailyReviewNotes(currentNotes) ?? {}) };
 
   for (const day of DAY_KEYS) {
-    if (nextStatus[day] !== "reviewed") {
+    if (nextStatus[day] !== "reviewed" && nextStatus[day] !== "reverted") {
       continue;
     }
 
     if (dayContentSignature(previousLines, day) !== dayContentSignature(nextLines, day)) {
       delete nextStatus[day];
+      delete nextNotes[day];
     }
   }
 
-  return normalizeDailyReviewStatus(nextStatus);
+  return {
+    status: normalizeDailyReviewStatus(nextStatus),
+    notes: normalizeDailyReviewNotes(nextNotes),
+  };
+}
+
+export function reconcileDailyReviewStatus(
+  currentStatus: Partial<Record<DayKey, string>> | null | undefined,
+  previousLines: TimesheetTaskLine[],
+  nextLines: TimesheetTaskLine[],
+): TimesheetDailyReviewStatus | undefined {
+  return reconcileDailyReviewState(currentStatus, undefined, previousLines, nextLines).status;
 }
 
 export function sumTimesheetHours(entry: TimesheetEntry): number {
@@ -1015,6 +1043,7 @@ function timesheetFromRow(row: DbTimesheet): TimesheetEntry {
     reviewedBy: row.reviewedBy?.trim() || undefined,
     reviewNotes: row.reviewNotes?.trim() || undefined,
     dailyReviewStatus: normalizeDailyReviewStatus(row.dailyReviewStatus),
+    dailyReviewNotes: normalizeDailyReviewNotes(row.dailyReviewNotes),
     lines: Array.isArray(row.lines) && row.lines.length > 0
       ? row.lines.map((line) => ({
           id: line.id ?? createId("line"),
@@ -1056,6 +1085,7 @@ function timesheetFromNormalizedRow(
     reviewedBy: row.reviewedBy?.trim() || undefined,
     reviewNotes: row.reviewNotes?.trim() || undefined,
     dailyReviewStatus: normalizeDailyReviewStatus(row.dailyReviewStatus),
+    dailyReviewNotes: normalizeDailyReviewNotes(row.dailyReviewNotes),
     lines: lines
       .filter((line) => line.timesheetId === row.id)
       .sort((left, right) => {
@@ -1138,6 +1168,7 @@ function timesheetToRow(entry: TimesheetEntry) {
     reviewedBy: entry.reviewedBy?.trim() || null,
     reviewNotes: entry.reviewNotes?.trim() || null,
     dailyReviewStatus: normalizeDailyReviewStatus(entry.dailyReviewStatus) ?? {},
+    dailyReviewNotes: normalizeDailyReviewNotes(entry.dailyReviewNotes) ?? {},
     lines: (entry.lines ?? []).map((line) => ({
       id: line.id ?? createId("line"),
       project: line.project?.trim() || "",
@@ -1418,6 +1449,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
       reviewedBy: entry.reviewedBy?.trim() || undefined,
       reviewNotes: entry.reviewNotes?.trim() || undefined,
       dailyReviewStatus: normalizeDailyReviewStatus(entry.dailyReviewStatus),
+      dailyReviewNotes: normalizeDailyReviewNotes(entry.dailyReviewNotes),
       lines: Array.isArray(entry.lines) && entry.lines.length > 0 ? entry.lines.map((line) => ({
         id: line.id ?? createId("line"),
         project: String(line.project ?? "").trim(),
@@ -2355,6 +2387,7 @@ export async function setTimesheetDayReviewStatusFast(input: {
   id: string;
   day: DayKey;
   reviewed: boolean;
+  note?: string;
   tenantId: string;
   actorName: string;
   actorRole: ActorRole;
@@ -2371,10 +2404,19 @@ export async function setTimesheetDayReviewStatusFast(input: {
     }
 
     const nextDailyReviewStatus = { ...(existing.dailyReviewStatus ?? {}) };
+    const nextDailyReviewNotes = { ...(existing.dailyReviewNotes ?? {}) };
     if (input.reviewed) {
       nextDailyReviewStatus[input.day] = "reviewed";
+      delete nextDailyReviewNotes[input.day];
     } else {
-      delete nextDailyReviewStatus[input.day];
+      const note = input.note?.trim();
+      if (note) {
+        nextDailyReviewStatus[input.day] = "reverted";
+        nextDailyReviewNotes[input.day] = note;
+      } else {
+        delete nextDailyReviewStatus[input.day];
+        delete nextDailyReviewNotes[input.day];
+      }
     }
 
     const updatedEntry = normalizeStore({
@@ -2382,6 +2424,7 @@ export async function setTimesheetDayReviewStatusFast(input: {
         {
           ...existing,
           dailyReviewStatus: nextDailyReviewStatus,
+          dailyReviewNotes: nextDailyReviewNotes,
           updatedAt: nowIso(),
         },
       ],
@@ -2394,17 +2437,34 @@ export async function setTimesheetDayReviewStatusFast(input: {
       action: "reviewed",
       entityType: "timesheet",
       entityId: existing.id,
-      summary: `${input.reviewed ? "Marked" : "Cleared"} ${input.day.toUpperCase()} as reviewed for a timesheet.`,
+      summary: input.reviewed
+        ? `Marked ${input.day.toUpperCase()} for a timesheet.`
+        : input.note?.trim()
+          ? `Reverted ${input.day.toUpperCase()} for a timesheet.`
+          : `Removed review mark for ${input.day.toUpperCase()} on a timesheet.`,
       requestId: input.requestId,
       details: {
         entityLabel: existing.employeeNameSnapshot,
         requestId: input.requestId,
-        changedFields: ["dailyReviewStatus"],
-        before: { dailyReviewStatus: existing.dailyReviewStatus ?? {} },
-        after: { dailyReviewStatus: updatedEntry.dailyReviewStatus ?? {} },
-        context: { operation: input.reviewed ? "timesheet_day_review_mark" : "timesheet_day_review_clear", day: input.day },
-      },
-    });
+        changedFields: ["dailyReviewStatus", "dailyReviewNotes"],
+        before: {
+          dailyReviewStatus: existing.dailyReviewStatus ?? {},
+          dailyReviewNotes: existing.dailyReviewNotes ?? {},
+        },
+        after: {
+          dailyReviewStatus: updatedEntry.dailyReviewStatus ?? {},
+          dailyReviewNotes: updatedEntry.dailyReviewNotes ?? {},
+        },
+          context: {
+            operation: input.reviewed
+              ? "timesheet_day_review_mark"
+              : input.note?.trim()
+                ? "timesheet_day_review_revert"
+                : "timesheet_day_review_undo",
+            day: input.day,
+          },
+        },
+      });
 
     const nextStore = normalizeStore({
       ...current,

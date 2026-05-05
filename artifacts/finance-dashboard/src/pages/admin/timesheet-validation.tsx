@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addDays, format } from "date-fns";
-import { CalendarDays, Check, CheckCircle2, ClipboardList, Eye, FileText, RefreshCcw, RotateCcw, X } from "lucide-react";
+import { CalendarDays, Check, CheckCircle2, ClipboardList, Eye, FileText, RefreshCcw, X } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { api, type DayKey, type Employee, type TimesheetEntry, type TimesheetTaskLine } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -157,13 +157,17 @@ function AdminReadonlyTimesheetCard({
   employee,
   selectedDate,
   pendingReviewKey,
-  onToggleDayReview,
+  onMarkDayReviewed,
+  onRequestDayUnverify,
+  onRequestDayRevert,
 }: {
   entry: TimesheetEntry;
   employee?: Employee;
   selectedDate: string;
   pendingReviewKey?: string | null;
-  onToggleDayReview: (day: DayKey, reviewed: boolean) => void;
+  onMarkDayReviewed: (day: DayKey) => void;
+  onRequestDayUnverify: (day: DayKey) => void;
+  onRequestDayRevert: (day: DayKey) => void;
 }) {
   const weekDays = DAYS.map((day, index) => {
     const date = addDays(new Date(entry.weekStart), index);
@@ -224,7 +228,10 @@ function AdminReadonlyTimesheetCard({
                     Task
                   </th>
                   {weekDays.map((day) => {
-                    const isReviewed = entry.dailyReviewStatus?.[day.key] === "reviewed";
+                    const dayReviewState = entry.dailyReviewStatus?.[day.key];
+                    const dayReviewNote = entry.dailyReviewNotes?.[day.key]?.trim() ?? "";
+                    const isReviewed = dayReviewState === "reviewed";
+                    const isReverted = dayReviewState === "reverted";
                     const toggleKey = `${entry.id}:${day.key}`;
                     const isPending = pendingReviewKey === toggleKey;
                     const fullDayName = format(day.date, "EEEE");
@@ -235,44 +242,94 @@ function AdminReadonlyTimesheetCard({
                         className={cn(
                           "group relative w-[76px] min-w-[76px] border-b border-r border-border/50 px-2 py-3 text-center font-medium last:border-r-0",
                           day.key === selectedDayKey && "bg-sky-500/5",
-                        )}
+                        )} 
                       >
                         {isReviewed ? <span className="absolute inset-x-0 top-0 h-1 bg-emerald-400/85" /> : null}
-                        <div className="absolute right-1 top-3">
-                          <HoverCard openDelay={120} closeDelay={80}>
-                            <HoverCardTrigger asChild>
-                              <button
-                                type="button"
-                                onClick={() => onToggleDayReview(day.key, !isReviewed)}
-                                disabled={isPending}
-                                aria-label={isReviewed ? "Undo review" : `Mark ${fullDayName} as reviewed`}
+                        {isReverted ? <span className="absolute inset-x-0 top-0 h-1 bg-rose-400/70" /> : null}
+                        <div className="space-y-1">
+                          <div className="flex justify-center gap-1.5">
+                            <HoverCard openDelay={120} closeDelay={80}>
+                              <HoverCardTrigger asChild>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (isReviewed) {
+                                      onRequestDayUnverify(day.key);
+                                      return;
+                                    }
+
+                                    if (!isReviewed) {
+                                      onMarkDayReviewed(day.key);
+                                    }
+                                  }}
+                                  disabled={isPending}
+                                  aria-label={isReviewed ? "Undo review" : `Mark ${fullDayName} as reviewed`}
+                                  className={cn(
+                                    "group flex h-5 w-5 items-center justify-center rounded-full border transition-all duration-200 ease-out motion-safe:transform-gpu will-change-transform hover:-translate-y-0.5 active:translate-y-0 active:scale-95",
+                                    isReviewed
+                                      ? "border-emerald-200 bg-emerald-50 text-emerald-600 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300"
+                                      : "border-slate-200/90 bg-white/90 text-slate-300 hover:border-sky-200 hover:bg-sky-50 hover:text-sky-500 dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-600 dark:hover:border-sky-500/30 dark:hover:bg-sky-500/10 dark:hover:text-sky-300",
+                                    isPending && "opacity-60",
+                                  )}
+                                >
+                                  <Check className="h-3 w-3" />
+                                </button>
+                              </HoverCardTrigger>
+                              <HoverCardContent
+                                side="top"
+                                sideOffset={8}
                                 className={cn(
-                                  "flex h-5 w-5 items-center justify-center rounded-full border transition-colors",
+                                  "w-auto rounded-xl px-3 py-2 text-xs",
                                   isReviewed
-                                    ? "border-emerald-200 bg-emerald-50 text-emerald-600 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300"
-                                    : "border-slate-200/90 bg-white/90 text-slate-300 hover:border-sky-200 hover:bg-sky-50 hover:text-sky-500 dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-600 dark:hover:border-sky-500/30 dark:hover:bg-sky-500/10 dark:hover:text-sky-300",
-                                  isPending && "opacity-60",
+                                    ? "border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-100"
+                                    : "",
                                 )}
                               >
-                                {isReviewed ? (
-                                  <>
-                                    <Check className="h-3 w-3 group-hover:hidden" />
-                                    <RotateCcw className="hidden h-3 w-3 group-hover:block" />
-                                  </>
-                                ) : (
-                                  <Check className="h-3 w-3 opacity-0 group-hover:opacity-100" />
+                                {isReviewed ? "Undo review" : `Mark ${fullDayName} as reviewed`}
+                              </HoverCardContent>
+                            </HoverCard>
+
+                            <HoverCard openDelay={120} closeDelay={80}>
+                              <HoverCardTrigger asChild>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    onRequestDayRevert(day.key);
+                                  }}
+                                  disabled={isPending}
+                                  aria-label="Return to employee with note"
+                                  className={cn(
+                                    "group flex h-5 w-5 items-center justify-center rounded-full border transition-all duration-200 ease-out motion-safe:transform-gpu will-change-transform hover:-translate-y-0.5 active:translate-y-0 active:scale-95",
+                                    isReviewed || isReverted
+                                      ? "border-rose-100 bg-rose-50/55 text-rose-400 hover:border-rose-200 hover:bg-rose-50/80 hover:text-rose-500 dark:border-rose-500/15 dark:bg-rose-500/8 dark:text-rose-300 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/12 dark:hover:text-rose-200"
+                                      : "border-slate-200/90 bg-white/90 text-slate-300 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-500 dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-600 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-300",
+                                    isPending && "opacity-60",
+                                  )}
+                                >
+                                  <X className="h-3 w-3" />
+                                </button>
+                              </HoverCardTrigger>
+                              <HoverCardContent
+                                side="top"
+                                sideOffset={8}
+                                className={cn(
+                                  "w-auto rounded-xl px-3 py-2 text-xs",
+                                  isReviewed || isReverted
+                                    ? "border-rose-200 bg-rose-50 text-rose-900 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-100"
+                                    : "",
                                 )}
-                              </button>
-                            </HoverCardTrigger>
-                            <HoverCardContent side="top" sideOffset={8} className="w-auto rounded-xl px-3 py-2 text-xs">
-                              {isReviewed ? "Undo review" : `Mark ${fullDayName} as reviewed`}
-                            </HoverCardContent>
-                          </HoverCard>
-                        </div>
-                        <div className="space-y-1">
+                              >
+                                {isReviewed
+                                  ? dayReviewNote || "Return to employee with a note"
+                                  : isReverted
+                                    ? dayReviewNote || "Returned for changes"
+                                    : "Return to employee with a note"}
+                              </HoverCardContent>
+                            </HoverCard>
+                          </div>
                           <p>{day.label}</p>
                           <p className="text-[11px] font-normal text-muted-foreground">{format(day.date, "dd MMM")}</p>
-                          <p className="text-[10px] font-medium text-muted-foreground">Work</p>
+                          <p className={cn("text-[10px] font-medium", isReverted ? "text-rose-400" : "text-muted-foreground")}>{isReverted ? "Returned" : "Work"}</p>
                         </div>
                       </th>
                     );
@@ -387,6 +444,8 @@ export default function AdminTimesheetValidationPage() {
   const [reviewNote, setReviewNote] = useState("");
   const [showReviewedHistory, setShowReviewedHistory] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [dayUnverifyTarget, setDayUnverifyTarget] = useState<{ id: string; day: DayKey } | null>(null);
+  const [dayRevertTarget, setDayRevertTarget] = useState<{ id: string; day: DayKey; note: string } | null>(null);
   const [workNoteLineId, setWorkNoteLineId] = useState<string | null>(null);
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
@@ -485,18 +544,30 @@ export default function AdminTimesheetValidationPage() {
   });
 
   const dayReviewMutation = useMutation({
-    mutationFn: ({ id, day, reviewed }: { id: string; day: DayKey; reviewed: boolean }) =>
-      api.setTimesheetDayReviewStatus(id, day, reviewed),
+    mutationFn: ({ id, day, reviewed, note }: { id: string; day: DayKey; reviewed: boolean; note?: string }) =>
+      api.setTimesheetDayReviewStatus(id, day, reviewed, note),
     onMutate: ({ id, day }) => {
       setPendingReviewKey(`${id}:${day}`);
     },
-    onSuccess: (updatedEntry) => {
+    onSuccess: (updatedEntry, variables) => {
       queryClient.setQueryData<TimesheetEntry[]>(["timesheets"], (currentEntries = []) =>
         currentEntries.map((entry) => (entry.id === updatedEntry.id ? updatedEntry : entry)),
       );
+      void queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      if (variables.reviewed) {
+        setDayUnverifyTarget(null);
+      } else if (variables.note?.trim()) {
+        setDayRevertTarget(null);
+      } else {
+        setDayUnverifyTarget(null);
+      }
       toast({
-        title: "Day review updated",
-        description: "The daily review marker has been saved.",
+        title: variables.reviewed ? "Day reviewed" : variables.note?.trim() ? "Day returned" : "Review removed",
+        description: variables.reviewed
+          ? "The daily review marker has been saved."
+          : variables.note?.trim()
+            ? "The employee has been notified with the return note."
+            : "The review mark has been removed.",
       });
     },
     onError: (error) => {
@@ -849,7 +920,7 @@ export default function AdminTimesheetValidationPage() {
                   <SelectTrigger className="rounded-xl">
                     <SelectValue placeholder="Select employee" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="max-h-[320px] overscroll-contain">
                     {employees.map((employee) => (
                       <SelectItem key={employee.id} value={employee.id}>
                         {employee.name}
@@ -1030,7 +1101,7 @@ export default function AdminTimesheetValidationPage() {
                     <SelectTrigger className="rounded-xl">
                       <SelectValue placeholder="All employees" />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectContent className="max-h-[320px] overscroll-contain">
                       <SelectItem value="all">All employees</SelectItem>
                       {departmentEmployees.map((employee) => (
                         <SelectItem key={employee.id} value={employee.id}>
@@ -1058,7 +1129,15 @@ export default function AdminTimesheetValidationPage() {
                     employee={employeeLookup.get(entry.employeeId)}
                     selectedDate={selectedReviewDate}
                     pendingReviewKey={pendingReviewKey}
-                    onToggleDayReview={(day, reviewed) => dayReviewMutation.mutate({ id: entry.id, day, reviewed })}
+                    onMarkDayReviewed={(day) => dayReviewMutation.mutate({ id: entry.id, day, reviewed: true })}
+                    onRequestDayUnverify={(day) => setDayUnverifyTarget({ id: entry.id, day })}
+                    onRequestDayRevert={(day) =>
+                      setDayRevertTarget({
+                        id: entry.id,
+                        day,
+                        note: entry.dailyReviewNotes?.[day]?.trim() ?? "",
+                      })
+                    }
                   />
                 ))
               )}
@@ -1180,6 +1259,112 @@ export default function AdminTimesheetValidationPage() {
                 </div>
               </div>
             )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(dayUnverifyTarget)} onOpenChange={(open) => !open && setDayUnverifyTarget(null)}>
+        <DialogContent className="max-w-md rounded-2xl border-border/60 bg-card/95 p-0 shadow-2xl">
+          <div className="space-y-5 p-5">
+            <DialogHeader className="space-y-1 text-left">
+              <DialogTitle className="text-lg font-semibold tracking-tight">Undo review?</DialogTitle>
+              <DialogDescription>
+                This will remove the review mark so the day can be reviewed again.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="rounded-2xl border border-border/60 bg-background/60 p-4">
+              <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Day</p>
+              <p className="mt-1 text-sm font-medium text-foreground">
+                {dayUnverifyTarget
+                  ? format(
+                      addDays(new Date(timesheets.find((entry) => entry.id === dayUnverifyTarget.id)?.weekStart ?? new Date()), DAYS.indexOf(dayUnverifyTarget.day)),
+                      "EEE, dd MMM yyyy",
+                    )
+                  : "-"}
+              </p>
+            </div>
+
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button type="button" variant="outline" className="rounded-xl border-border/60" onClick={() => setDayUnverifyTarget(null)}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                className="rounded-xl bg-sky-500 text-white hover:bg-sky-500/90"
+                disabled={dayReviewMutation.isPending}
+                onClick={() => {
+                  if (!dayUnverifyTarget) {
+                    return;
+                  }
+
+                  dayReviewMutation.mutate({
+                    id: dayUnverifyTarget.id,
+                    day: dayUnverifyTarget.day,
+                    reviewed: false,
+                  });
+                }}
+              >
+                Undo review
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(dayRevertTarget)} onOpenChange={(open) => !open && setDayRevertTarget(null)}>
+        <DialogContent className="max-w-md rounded-2xl border-border/60 bg-card/95 p-0 shadow-2xl">
+          <div className="space-y-5 p-5">
+            <DialogHeader className="space-y-1 text-left">
+              <DialogTitle className="text-lg font-semibold tracking-tight">Return day for changes</DialogTitle>
+              <DialogDescription>
+                Add a short note so the employee knows what to fix before saving the draft again.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-3 rounded-2xl border border-border/60 bg-background/60 p-4">
+              <div className="space-y-1">
+                <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Day</p>
+                <p className="text-sm font-medium text-foreground">
+                  {dayRevertTarget ? format(addDays(new Date(timesheets.find((entry) => entry.id === dayRevertTarget.id)?.weekStart ?? new Date()), DAYS.indexOf(dayRevertTarget.day)), "EEE, dd MMM yyyy") : "-"}
+                </p>
+              </div>
+              <div className="space-y-1">
+                <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Note</p>
+                <Textarea
+                  value={dayRevertTarget?.note ?? ""}
+                  onChange={(event) =>
+                    setDayRevertTarget((current) => (current ? { ...current, note: event.target.value.slice(0, 1000) } : current))
+                  }
+                  placeholder="Explain what needs to be updated for this day."
+                  className="min-h-[120px] rounded-xl border-border/60 bg-background/80 px-4 py-3 text-sm leading-6 shadow-none placeholder:text-muted-foreground"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button type="button" variant="outline" className="rounded-xl border-border/60" onClick={() => setDayRevertTarget(null)}>
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                className="rounded-xl bg-rose-500 text-white hover:bg-rose-500/90"
+                disabled={!dayRevertTarget?.note.trim() || dayReviewMutation.isPending}
+                onClick={() => {
+                  if (!dayRevertTarget) {
+                    return;
+                  }
+                  dayReviewMutation.mutate({
+                    id: dayRevertTarget.id,
+                    day: dayRevertTarget.day,
+                    reviewed: false,
+                    note: dayRevertTarget.note.trim(),
+                  });
+                }}
+              >
+                Return to employee
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>

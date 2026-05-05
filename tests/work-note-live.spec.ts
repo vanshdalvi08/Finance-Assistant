@@ -23,7 +23,8 @@ type TimesheetLineSnapshot = {
 type TimesheetSnapshot = {
   employeeId: string;
   status?: string;
-  dailyReviewStatus?: Partial<Record<DayKey, "reviewed">>;
+  dailyReviewStatus?: Partial<Record<DayKey, "reviewed" | "reverted">>;
+  dailyReviewNotes?: Partial<Record<DayKey, string>>;
   lines: TimesheetLineSnapshot[];
 };
 
@@ -60,7 +61,25 @@ function employeeCardFor(page: Page, employeeName: string) {
     .locator("xpath=ancestor::div[contains(@class,'overflow-hidden') and contains(@class,'shadow-sm')][1]");
 }
 
-async function toggleDailyReview(page: Page, trigger: Locator, day: DayKey) {
+async function toggleDailyReview(page: Page, trigger: Locator, day: DayKey, note?: string) {
+  if (typeof note === "string") {
+    await trigger.click();
+    const revertDialog = page.getByRole("dialog").last();
+    await expect(revertDialog).toBeVisible();
+    await revertDialog.getByPlaceholder("Explain what needs to be updated for this day.").fill(note);
+    await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response.url().includes(`/daily-review/${day}`)
+          && response.request().method() === "PATCH"
+          && response.status() === 200,
+      ),
+      revertDialog.getByRole("button", { name: "Return to employee" }).click(),
+    ]);
+    await expect(revertDialog).toBeHidden();
+    return;
+  }
+
   await Promise.all([
     page.waitForResponse(
       (response) =>
@@ -69,6 +88,22 @@ async function toggleDailyReview(page: Page, trigger: Locator, day: DayKey) {
         && response.status() === 200,
     ),
     trigger.click(),
+  ]);
+}
+
+async function undoDailyReview(page: Page, trigger: Locator, day: DayKey) {
+  await trigger.click();
+  const confirmDialog = page.getByRole("dialog").last();
+  await expect(confirmDialog).toBeVisible();
+  await expect(confirmDialog.getByRole("button", { name: "Undo review" })).toBeVisible();
+  await Promise.all([
+    page.waitForResponse(
+      (response) =>
+        response.url().includes(`/daily-review/${day}`)
+        && response.request().method() === "PATCH"
+        && response.status() === 200,
+    ),
+    confirmDialog.getByRole("button", { name: "Undo review" }).click(),
   ]);
 }
 
@@ -373,6 +408,7 @@ test("live daily review persists, resets after employee edits, and supports undo
     employeeSession.client,
   );
   expect(reviewedDraft?.dailyReviewStatus?.mon).toBe("reviewed");
+  expect(reviewedDraft?.dailyReviewNotes?.mon).toBeUndefined();
 
   await employeePage.reload();
   await expect(employeePage.getByRole("heading", { name: "My Timesheet" })).toBeVisible();
@@ -412,11 +448,17 @@ test("live daily review persists, resets after employee edits, and supports undo
   const markAgainButton = employeeCardAfterReload.getByRole("button", { name: "Mark Monday as reviewed" }).first();
   await expect(markAgainButton).toBeVisible();
   await toggleDailyReview(adminPage, markAgainButton, "mon");
+  const reviewedAgainDraft = await fetchEmployeeTimesheet(
+    employeeSession.accessToken,
+    employeeSession.user.id,
+    employeeSession.client,
+  );
+  expect(reviewedAgainDraft?.dailyReviewStatus?.mon).toBe("reviewed");
+  expect(reviewedAgainDraft?.dailyReviewNotes?.mon).toBeUndefined();
 
   const undoButton = employeeCardAfterReload.getByRole("button", { name: "Undo review" }).first();
   await expect(undoButton).toBeVisible();
-  await toggleDailyReview(adminPage, undoButton, "mon");
-  await expect(employeeCardAfterReload.getByRole("button", { name: "Mark Monday as reviewed" }).first()).toBeVisible();
+  await undoDailyReview(adminPage, undoButton, "mon");
 
   const undoneDraft = await fetchEmployeeTimesheet(
     employeeSession.accessToken,
@@ -424,6 +466,39 @@ test("live daily review persists, resets after employee edits, and supports undo
     employeeSession.client,
   );
   expect(undoneDraft?.dailyReviewStatus?.mon).toBeUndefined();
+  expect(undoneDraft?.dailyReviewNotes?.mon).toBeUndefined();
+
+  await employeePage.reload();
+  const revertedMondayHeader = employeePage.locator("thead th").filter({ hasText: "Mon" }).first();
+  await expect(revertedMondayHeader.getByText("Reverted", { exact: true })).toHaveCount(0);
+  await expect(revertedMondayHeader.locator("svg")).toHaveCount(0);
+
+  const returnButton = employeeCardAfterReload.getByRole("button", { name: "Return to employee with note" }).first();
+  await expect(returnButton).toBeVisible();
+  const revertNote = `Please clarify the Monday work note and update the logged hours for review ${suffix}.`;
+  await toggleDailyReview(adminPage, returnButton, "mon", revertNote);
+
+  const revertedDraft = await fetchEmployeeTimesheet(
+    employeeSession.accessToken,
+    employeeSession.user.id,
+    employeeSession.client,
+  );
+  expect(revertedDraft?.dailyReviewStatus?.mon).toBe("reverted");
+  expect(revertedDraft?.dailyReviewNotes?.mon).toBe(revertNote);
+
+  await employeePage.reload();
+  await revertedMondayHeader.hover();
+  await expect(employeePage.getByText("Returned for changes", { exact: true })).toBeVisible();
+  await expect(employeePage.getByText(revertNote, { exact: true })).toBeVisible();
+
+  await adminPage.reload();
+  await expect(adminPage.getByRole("heading", { name: "Timesheets" })).toBeVisible();
+  await adminPage.getByRole("button", { name: "Daily Review", exact: true }).click();
+  await adminPage.locator('input[type="date"]').first().fill("2026-05-04");
+  const employeeCardReviewedAgain = employeeCardFor(adminPage, employeeName);
+  await expect(employeeCardReviewedAgain).toBeVisible({ timeout: 15000 });
+
+  await expect(employeeCardReviewedAgain.getByRole("button", { name: "Mark Monday as reviewed" }).first()).toBeVisible();
 
   expect(employeePageErrors).toEqual([]);
   expect(adminPageErrors).toEqual([]);
@@ -598,17 +673,11 @@ test("live daily review keeps employee states isolated, supports multiple review
   await expect(secondEmployeeCardAfterRestart.getByRole("button", { name: "Undo review" }).first()).toBeVisible();
   await expect(secondEmployeeCardAfterRestart.getByRole("button", { name: "Mark Tuesday as reviewed" }).first()).toBeVisible();
 
-  const freshEmployeeBrowser = await createAuthenticatedContext(browser, firstEmployee.email, firstEmployeePassword);
-  await freshEmployeeBrowser.page.goto(`${FRONTEND_ORIGIN}/employee/timesheet`);
-  await expect(freshEmployeeBrowser.page.getByRole("heading", { name: "My Timesheet" })).toBeVisible();
-  const dayHeaders = freshEmployeeBrowser.page.locator("thead th");
-  await expect(dayHeaders.filter({ hasText: "Mon" }).first().locator("svg")).toBeVisible();
-  await expect(dayHeaders.filter({ hasText: "Tue" }).first().locator("svg")).toBeVisible();
-
   await toggleDailyReview(
     adminBrowserSession.page,
-    firstEmployeeCardAfterRestart.getByRole("button", { name: "Undo review" }).first(),
+    firstEmployeeCardAfterRestart.getByRole("button", { name: "Return to employee with note" }).first(),
     "mon",
+    `Please update Monday work for ${firstEmployee.name} ${suffix}.`,
   );
 
   const firstEmployeeAfterUndo = await fetchEmployeeTimesheet(
@@ -616,13 +685,12 @@ test("live daily review keeps employee states isolated, supports multiple review
     firstEmployeeSession.user.id,
     firstEmployeeSession.client,
   );
-  expect(firstEmployeeAfterUndo?.dailyReviewStatus?.mon).toBeUndefined();
+  expect(firstEmployeeAfterUndo?.dailyReviewStatus?.mon).toBe("reverted");
   expect(firstEmployeeAfterUndo?.dailyReviewStatus?.tue).toBe("reviewed");
+  expect(firstEmployeeAfterUndo?.dailyReviewNotes?.mon).toContain("Please update Monday work");
 
   expect(adminBrowserSession.pageErrors).toEqual([]);
-  expect(freshEmployeeBrowser.pageErrors).toEqual([]);
 
-  await freshEmployeeBrowser.context.close();
   await adminBrowserSession.context.close();
   await firstEmployeeSession.client.dispose();
   await secondEmployeeSession.client.dispose();

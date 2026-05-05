@@ -22,7 +22,7 @@ import {
   normalizeWeekStart,
   nowIso,
   pushAuditEvent,
-  reconcileDailyReviewStatus,
+  reconcileDailyReviewState,
   readStore,
   reviewTimesheetFast,
   saveTimesheetFast,
@@ -98,13 +98,24 @@ const timesheetSchema = z.object({
   reviewNotes: z.string().trim().optional(),
   dailyReviewStatus: z
     .object({
-      mon: z.literal("reviewed").optional(),
-      tue: z.literal("reviewed").optional(),
-      wed: z.literal("reviewed").optional(),
-      thu: z.literal("reviewed").optional(),
-      fri: z.literal("reviewed").optional(),
-      sat: z.literal("reviewed").optional(),
-      sun: z.literal("reviewed").optional(),
+      mon: z.enum(["reviewed", "reverted"]).optional(),
+      tue: z.enum(["reviewed", "reverted"]).optional(),
+      wed: z.enum(["reviewed", "reverted"]).optional(),
+      thu: z.enum(["reviewed", "reverted"]).optional(),
+      fri: z.enum(["reviewed", "reverted"]).optional(),
+      sat: z.enum(["reviewed", "reverted"]).optional(),
+      sun: z.enum(["reviewed", "reverted"]).optional(),
+    })
+    .optional(),
+  dailyReviewNotes: z
+    .object({
+      mon: z.string().trim().max(1000).optional(),
+      tue: z.string().trim().max(1000).optional(),
+      wed: z.string().trim().max(1000).optional(),
+      thu: z.string().trim().max(1000).optional(),
+      fri: z.string().trim().max(1000).optional(),
+      sat: z.string().trim().max(1000).optional(),
+      sun: z.string().trim().max(1000).optional(),
     })
     .optional(),
   lines: z.array(timesheetLineSchema).min(1),
@@ -869,6 +880,7 @@ router.post("/timesheets", requireTenantRole("admin", "employee"), async (reques
     ),
     hours: { ...blankHours(), ...line.hours },
   }));
+  const dailyReviewState = reconcileDailyReviewState(existing?.dailyReviewStatus, existing?.dailyReviewNotes, existing?.lines ?? [], lines);
 
   const entry: TimesheetEntry = {
     id: parsed.data.id ?? existing?.id ?? createId("ts"),
@@ -883,7 +895,8 @@ router.post("/timesheets", requireTenantRole("admin", "employee"), async (reques
     reviewedAt: existing?.reviewedAt,
     reviewedBy: existing?.reviewedBy,
     reviewNotes: existing?.reviewNotes,
-    dailyReviewStatus: reconcileDailyReviewStatus(existing?.dailyReviewStatus, existing?.lines ?? [], lines),
+    dailyReviewStatus: dailyReviewState.status,
+    dailyReviewNotes: dailyReviewState.notes,
     lines,
     createdAt: existing?.createdAt ?? nowIso(),
     updatedAt: nowIso(),
@@ -1049,6 +1062,7 @@ router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (r
     ),
     hours: { ...blankHours(), ...line.hours },
   }));
+  const dailyReviewState = reconcileDailyReviewState(existing.dailyReviewStatus, existing.dailyReviewNotes, existing.lines, lines);
 
   const entry: TimesheetEntry = {
     ...existing,
@@ -1063,7 +1077,8 @@ router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (r
     reviewedAt: existing.reviewedAt,
     reviewedBy: existing.reviewedBy,
     reviewNotes: existing.reviewNotes,
-    dailyReviewStatus: reconcileDailyReviewStatus(existing.dailyReviewStatus, existing.lines, lines),
+    dailyReviewStatus: dailyReviewState.status,
+    dailyReviewNotes: dailyReviewState.notes,
     lines,
     updatedAt: nowIso(),
   };
@@ -1109,7 +1124,7 @@ router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (r
 
 router.patch("/timesheets/:id/daily-review/:day", requireTenantRole("admin"), async (request, response) => {
   const day = dayKeySchema.safeParse(routeParam(request.params.day));
-  const body = z.object({ reviewed: z.boolean() }).safeParse(request.body);
+  const body = z.object({ reviewed: z.boolean(), note: z.string().trim().max(1000).optional() }).safeParse(request.body);
   if (!day.success || !body.success) {
     response.status(400).json({ message: "Invalid daily review payload" });
     return;
@@ -1136,6 +1151,7 @@ router.patch("/timesheets/:id/daily-review/:day", requireTenantRole("admin"), as
     id: existing.id,
     day: day.data,
     reviewed: body.data.reviewed,
+    note: body.data.note,
     tenantId,
     actorName: request.auth?.user.name ?? "Admin",
     actorRole: request.auth?.user.role ?? "admin",
@@ -1145,6 +1161,28 @@ router.patch("/timesheets/:id/daily-review/:day", requireTenantRole("admin"), as
   if (!updated) {
     respondNotFound(response, "Timesheet not found");
     return;
+  }
+
+  if (!body.data.reviewed && body.data.note) {
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyEmployee(
+        existing.employeeId,
+        actor,
+        {
+          type: "timesheet_reverted",
+          title: "Day returned for changes",
+          body: `Your ${day.data.toUpperCase()} work entry for the week of ${new Date(existing.weekStart).toLocaleDateString("en-IN", {
+            day: "2-digit",
+            month: "short",
+            year: "numeric",
+          })} was returned${body.data.note ? `: ${body.data.note}` : "."}`,
+          link: "/employee/timesheet",
+          email: true,
+          metadata: { timesheetId: existing.id, employeeId: existing.employeeId, day: day.data, reviewNote: body.data.note ?? null },
+        },
+      ),
+    );
   }
 
   response.json({ timesheet: updated });
@@ -1231,6 +1269,7 @@ router.post("/timesheets/submit", requireTenantRole("admin", "employee"), async 
     ),
     hours: { ...blankHours(), ...line.hours },
   }));
+  const dailyReviewState = reconcileDailyReviewState(existing?.dailyReviewStatus, existing?.dailyReviewNotes, existing?.lines ?? [], lines);
 
   const entry: TimesheetEntry = {
     id: parsed.data.id ?? existing?.id ?? createId("ts"),
@@ -1245,7 +1284,8 @@ router.post("/timesheets/submit", requireTenantRole("admin", "employee"), async 
     reviewedAt: undefined,
     reviewedBy: undefined,
     reviewNotes: undefined,
-    dailyReviewStatus: reconcileDailyReviewStatus(existing?.dailyReviewStatus, existing?.lines ?? [], lines),
+    dailyReviewStatus: dailyReviewState.status,
+    dailyReviewNotes: dailyReviewState.notes,
     lines,
     createdAt: existing?.createdAt ?? nowIso(),
     updatedAt: nowIso(),

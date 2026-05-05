@@ -2,9 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addDays, format } from "date-fns";
 import {
-  AlertTriangle,
   CalendarDays,
-  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -17,7 +15,15 @@ import {
 } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { useAuthStore } from "@/store/auth";
-import { api, type DayKey, type TimesheetDailyReviewStatus, type TimesheetEntry, type TimesheetTaskLine, type TimesheetWorkNotes } from "@/lib/api";
+import {
+  api,
+  type DayKey,
+  type TimesheetDailyReviewNotes,
+  type TimesheetDailyReviewStatus,
+  type TimesheetEntry,
+  type TimesheetTaskLine,
+  type TimesheetWorkNotes,
+} from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -203,15 +209,31 @@ function normalizeWorkNotes(input?: TimesheetWorkNotes | null) {
 
 function normalizeDailyReviewStatus(input?: TimesheetDailyReviewStatus | null) {
   return Object.fromEntries(
-    DAYS.map(({ key }) => [key, input?.[key] === "reviewed" ? "reviewed" : ""]).filter(([, value]) => value === "reviewed"),
+    DAYS.map(({ key }) => [key, input?.[key] === "reviewed" || input?.[key] === "reverted" ? input?.[key] : ""]).filter(([, value]) => value === "reviewed" || value === "reverted"),
   ) as TimesheetDailyReviewStatus;
 }
 
-function clearReviewedDayStatus(status: TimesheetDailyReviewStatus | undefined, day: DayKey) {
-  const next = { ...(status ?? {}) };
-  delete next[day];
-  const normalized = normalizeDailyReviewStatus(next);
-  return Object.keys(normalized).length > 0 ? normalized : undefined;
+function normalizeDailyReviewNotes(input?: TimesheetDailyReviewNotes | null) {
+  return Object.fromEntries(
+    DAYS.map(({ key }) => [key, input?.[key]?.trim() ?? ""]).filter(([, value]) => value.length > 0),
+  ) as TimesheetDailyReviewNotes;
+}
+
+function clearReviewedDayStatus(
+  status: TimesheetDailyReviewStatus | undefined,
+  notes: TimesheetDailyReviewNotes | undefined,
+  day: DayKey,
+) {
+  const nextStatus = { ...(status ?? {}) };
+  const nextNotes = { ...(notes ?? {}) };
+  delete nextStatus[day];
+  delete nextNotes[day];
+  const normalizedStatus = normalizeDailyReviewStatus(nextStatus);
+  const normalizedNotes = normalizeDailyReviewNotes(nextNotes);
+  return {
+    status: normalizedStatus && Object.keys(normalizedStatus).length > 0 ? normalizedStatus : undefined,
+    notes: normalizedNotes && Object.keys(normalizedNotes).length > 0 ? normalizedNotes : undefined,
+  };
 }
 
 function summarizeWorkNotes(workNotes?: TimesheetWorkNotes | null) {
@@ -305,6 +327,9 @@ export default function EmployeeTimesheetPage() {
     queryKey: ["employee-timesheets", employee?.id],
     queryFn: () => api.getTimesheets({ employeeId: employee?.id ?? "" }),
     enabled: Boolean(employee?.id),
+    refetchOnWindowFocus: true,
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: true,
   });
 
   const { data: catalogProjects = [] } = useQuery({
@@ -700,9 +725,18 @@ export default function EmployeeTimesheetPage() {
       currentEntry
         ? {
             ...currentEntry,
-            dailyReviewStatus: options?.resetReviewedDay
-              ? clearReviewedDayStatus(currentEntry.dailyReviewStatus, options.resetReviewedDay)
-              : currentEntry.dailyReviewStatus,
+            ...(options?.resetReviewedDay
+              ? (() => {
+                  const cleared = clearReviewedDayStatus(currentEntry.dailyReviewStatus, currentEntry.dailyReviewNotes, options.resetReviewedDay);
+                  return {
+                    dailyReviewStatus: cleared.status,
+                    dailyReviewNotes: cleared.notes,
+                  };
+                })()
+              : {
+                  dailyReviewStatus: currentEntry.dailyReviewStatus,
+                  dailyReviewNotes: currentEntry.dailyReviewNotes,
+                }),
             lines: currentEntry.lines.map((line) => (line.id === lineId ? updater(line) : line)),
           }
         : currentEntry,
@@ -873,10 +907,12 @@ export default function EmployeeTimesheetPage() {
         </section>
 
         {isRejected && draft?.reviewNotes ? (
-          <div className="flex items-start gap-3 rounded-2xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm shadow-sm">
-            <AlertTriangle className="mt-0.5 h-4 w-4 text-amber-300" />
+          <div className="flex items-start gap-3 rounded-2xl border border-amber-200/70 bg-amber-50/60 px-4 py-3 text-sm shadow-sm dark:border-amber-500/15 dark:bg-amber-500/5">
+            <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-full border border-amber-200/70 bg-white/80 text-amber-500 shadow-none dark:border-amber-500/15 dark:bg-slate-950/70 dark:text-amber-300">
+              <FilePenLine className="h-4 w-4" />
+            </div>
             <div className="space-y-1">
-              <p className="font-medium text-foreground">Returned for changes</p>
+              <p className="font-medium text-foreground">Changes requested</p>
               <p className="text-muted-foreground">{draft.reviewNotes}</p>
             </div>
           </div>
@@ -927,39 +963,77 @@ export default function EmployeeTimesheetPage() {
                         const isHoliday = Boolean(calendarDay?.holiday);
                         const isLeave = Boolean(calendarDay?.leave);
                         const isPending = calendarDay?.leaveStatus === "pending";
-                        const isDayReviewed = draft?.dailyReviewStatus?.[day.key] === "reviewed";
+                        const dayReviewState = draft?.dailyReviewStatus?.[day.key];
+                        const dayReviewNote = draft?.dailyReviewNotes?.[day.key]?.trim() ?? "";
+                        const isDayReviewed = dayReviewState === "reviewed";
+                        const isDayReverted = dayReviewState === "reverted";
 
                         return (
                           <th
                             key={day.key}
-                              className={cn(
-                                "relative w-[76px] min-w-[76px] border-b border-r border-border/50 px-2 py-3 text-center font-medium last:border-r-0",
-                                isHoliday && "bg-emerald-500/5",
-                                isLeave && "bg-amber-500/5",
-                                isPending && "bg-sky-500/5",
-                              )}
+                            className={cn(
+                              "relative w-[76px] min-w-[76px] border-b border-r border-border/50 px-2 py-2 text-center font-medium last:border-r-0",
+                              isHoliday && "bg-emerald-500/5",
+                              isLeave && "bg-amber-500/5",
+                              isPending && "bg-sky-500/5",
+                            )}
                           >
                             {isDayReviewed ? <span className="absolute inset-x-0 top-0 h-1 bg-emerald-400/80" /> : null}
-                            <div className="space-y-1">
-                              {isDayReviewed ? (
-                                <div className="flex justify-center">
-                                  <span className="flex h-5 w-5 items-center justify-center rounded-full border border-emerald-200 bg-emerald-50 text-emerald-600 dark:border-emerald-500/25 dark:bg-emerald-500/10 dark:text-emerald-300">
-                                    <Check className="h-3 w-3" />
-                                  </span>
-                                </div>
-                              ) : null}
-                              <p>{day.label}</p>
-                              <p className="text-[11px] font-normal text-muted-foreground">{format(day.date, "dd MMM")}</p>
-                              {isHoliday ? (
-                                <p className="text-[10px] font-medium text-emerald-300">{calendarDay?.holidayName ?? "Holiday"}</p>
-                              ) : isPending ? (
-                                <p className="text-[10px] font-medium text-sky-300">Pending</p>
-                              ) : isLeave ? (
-                                <p className="text-[10px] font-medium text-amber-300">Leave</p>
-                              ) : (
-                                <p className="text-[10px] font-medium text-muted-foreground">Work</p>
-                              )}
-                            </div>
+                            {isDayReverted ? <span className="absolute inset-x-0 top-0 h-1 bg-rose-400/70" /> : null}
+                            {isDayReviewed ? (
+                              <HoverCard openDelay={120} closeDelay={80}>
+                                <HoverCardTrigger asChild>
+                                  <div className="space-y-0.5 pt-0.5">
+                                    <p className="text-[15px] font-medium leading-tight">{day.label}</p>
+                                    <p className="text-[11px] font-normal leading-tight text-muted-foreground">{format(day.date, "dd MMM")}</p>
+                                    <p className="text-[10px] font-medium text-muted-foreground">Work</p>
+                                  </div>
+                                </HoverCardTrigger>
+                                <HoverCardContent
+                                  side="top"
+                                  sideOffset={8}
+                                  className="w-[240px] rounded-xl border border-emerald-200/70 bg-emerald-50 px-3 py-2 text-left text-xs text-emerald-900 shadow-sm dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-100"
+                                >
+                                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-600 dark:text-emerald-300">
+                                    Day verified by admin
+                                  </p>
+                                  <p className="mt-1 whitespace-pre-line leading-5">
+                                    This day was verified by the admin and is ready for the employee to continue working from.
+                                  </p>
+                                </HoverCardContent>
+                              </HoverCard>
+                            ) : null}
+                            {isDayReverted ? (
+                              <HoverCard openDelay={120} closeDelay={80}>
+                                <HoverCardTrigger asChild>
+                                  <div className="space-y-0.5 pt-0.5">
+                                    <p className="text-[15px] font-medium leading-tight">{day.label}</p>
+                                    <p className="text-[11px] font-normal leading-tight text-muted-foreground">{format(day.date, "dd MMM")}</p>
+                                    <p className="text-[10px] font-medium text-rose-300/80">Reverted</p>
+                                  </div>
+                                </HoverCardTrigger>
+                                <HoverCardContent side="top" sideOffset={8} className="w-[240px] rounded-xl border border-rose-200/50 bg-background/95 px-3 py-2 text-left text-xs text-foreground shadow-sm dark:border-rose-500/15 dark:bg-slate-950/95 dark:text-slate-100">
+                                  <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-rose-500 dark:text-rose-300">Returned for changes</p>
+                                  <p className="mt-1 whitespace-pre-line leading-5 text-muted-foreground dark:text-slate-300">
+                                    {dayReviewNote || "The admin returned this day for changes."}
+                                  </p>
+                                </HoverCardContent>
+                              </HoverCard>
+                            ) : (
+                              <div className="space-y-0.5 pt-0.5">
+                                <p className="text-[15px] font-medium leading-tight">{day.label}</p>
+                                <p className="text-[11px] font-normal leading-tight text-muted-foreground">{format(day.date, "dd MMM")}</p>
+                                {isHoliday ? (
+                                  <p className="text-[10px] font-medium text-emerald-300">{calendarDay?.holidayName ?? "Holiday"}</p>
+                                ) : isPending ? (
+                                  <p className="text-[10px] font-medium text-sky-300">Pending</p>
+                                ) : isLeave ? (
+                                  <p className="text-[10px] font-medium text-amber-300">Leave</p>
+                                ) : (
+                                  <p className="text-[10px] font-medium text-muted-foreground">Work</p>
+                                )}
+                              </div>
+                            )}
                           </th>
                         );
                       })}

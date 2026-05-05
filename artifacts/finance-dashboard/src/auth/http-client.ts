@@ -15,6 +15,7 @@ const TAB_SESSION_USER_KEY = "yojak.auth.tab.user";
 const CSRF_HEADER_NAME = "X-CSRF-Token";
 const SAME_SITE_FRONTEND_HOST = "payroll.reforix.com";
 const SAME_SITE_API_BASE_URL = "https://api.payroll.reforix.com/api";
+const LOCAL_DEV_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
 function getSameSiteApiBaseUrl() {
   if (typeof window === "undefined") {
@@ -29,15 +30,52 @@ function getSameSiteApiBaseUrl() {
   return null;
 }
 
+function getLocalDevApiBaseUrl(configuredBaseUrl: string | undefined) {
+  if (typeof window === "undefined") {
+    return configuredBaseUrl ?? DEFAULT_DEV_API_BASE_URL;
+  }
+
+  const hostname = window.location.hostname.trim().toLowerCase();
+  if (!LOCAL_DEV_HOSTS.has(hostname)) {
+    return configuredBaseUrl ?? DEFAULT_DEV_API_BASE_URL;
+  }
+
+  const protocol = window.location.protocol === "https:" ? "https:" : "http:";
+  const hostPart = hostname.includes(":") ? `[${hostname}]` : hostname;
+  return `${protocol}//${hostPart}:3001/api`;
+}
+
 function getApiBaseUrl() {
   const configuredBaseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "");
   if (configuredBaseUrl) {
+    if (typeof window !== "undefined") {
+      const configuredHost = (() => {
+        try {
+          return new URL(configuredBaseUrl).hostname.trim().toLowerCase();
+        } catch {
+          return null;
+        }
+      })();
+
+      if (configuredHost && LOCAL_DEV_HOSTS.has(configuredHost)) {
+        const localDevBaseUrl = getLocalDevApiBaseUrl(configuredBaseUrl);
+        if (localDevBaseUrl) {
+          return localDevBaseUrl;
+        }
+      }
+    }
+
     return configuredBaseUrl;
   }
 
   const sameSiteBaseUrl = getSameSiteApiBaseUrl();
   if (sameSiteBaseUrl) {
     return sameSiteBaseUrl;
+  }
+
+  const localDevBaseUrl = getLocalDevApiBaseUrl(undefined);
+  if (localDevBaseUrl) {
+    return localDevBaseUrl;
   }
 
   return import.meta.env.PROD ? DEFAULT_PROD_API_BASE_URL : DEFAULT_DEV_API_BASE_URL;

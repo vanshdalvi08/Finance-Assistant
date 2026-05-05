@@ -18,7 +18,8 @@ import type { AuthUser } from "@/auth/types";
 export type ApprovalStatus = "draft" | "submitted" | "approved" | "rejected";
 export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type TimesheetWorkNotes = Partial<Record<DayKey, string>>;
-export type TimesheetDailyReviewStatus = Partial<Record<DayKey, "reviewed">>;
+export type TimesheetDailyReviewStatus = Partial<Record<DayKey, "reviewed" | "reverted">>;
+export type TimesheetDailyReviewNotes = Partial<Record<DayKey, string>>;
 type TimeOffKind = "leave" | "holiday";
 
 const DAY_KEYS: DayKey[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -148,6 +149,7 @@ export interface TimesheetEntry {
   reviewedBy?: string;
   reviewNotes?: string;
   dailyReviewStatus?: TimesheetDailyReviewStatus;
+  dailyReviewNotes?: TimesheetDailyReviewNotes;
   lines: TimesheetTaskLine[];
 }
 
@@ -892,8 +894,11 @@ function normalizeTimesheet(entry: TimesheetEntry): TimesheetEntry {
     ...entry,
     weekStart: normalizeWeekStart(entry.weekStart),
     dailyReviewStatus: Object.fromEntries(
-      Object.entries(entry.dailyReviewStatus ?? {}).filter(([, value]) => value === "reviewed"),
+      Object.entries(entry.dailyReviewStatus ?? {}).filter(([, value]) => value === "reviewed" || value === "reverted"),
     ) as TimesheetDailyReviewStatus,
+    dailyReviewNotes: Object.fromEntries(
+      Object.entries(entry.dailyReviewNotes ?? {}).filter(([, value]) => typeof value === "string" && value.trim().length > 0),
+    ) as TimesheetDailyReviewNotes,
     lines: (entry.lines.length ? entry.lines : [{ id: createId("line"), project: "", task: "", subTask: "", notes: "", workNotes: {}, hours: blankHours() }]).map((line) => ({
       ...line,
       id: line.id || createId("line"),
@@ -1731,9 +1736,9 @@ export const api = {
   saveTimesheet: async (entry: TimesheetEntry) =>
     normalizeTimesheet((await businessPost<{ timesheet: TimesheetEntry }>("/timesheets", normalizeTimesheet(entry))).timesheet),
 
-  setTimesheetDayReviewStatus: async (id: string, day: DayKey, reviewed: boolean) =>
+  setTimesheetDayReviewStatus: async (id: string, day: DayKey, reviewed: boolean, note?: string) =>
     normalizeTimesheet(
-      (await businessPost<{ timesheet: TimesheetEntry }>(`/timesheets/${id}/daily-review/${day}`, { reviewed }, "PATCH")).timesheet,
+      (await businessPost<{ timesheet: TimesheetEntry }>(`/timesheets/${id}/daily-review/${day}`, { reviewed, note }, "PATCH")).timesheet,
     ),
 
   submitTimesheetEntry: async (entry: TimesheetEntry) =>
