@@ -15,6 +15,7 @@ export interface AppendTimesheetRowInput {
   totalHours: number;
   approvedBy: string;
   approvedAt: string;
+  tabName?: string;
 }
 
 interface GoogleServiceAccountCredentials {
@@ -72,6 +73,7 @@ function normalizeAppendPayload(input: AppendTimesheetRowInput) {
   const week = input.week.trim();
   const approvedBy = input.approvedBy.trim();
   const approvedAt = input.approvedAt.trim();
+  const tabName = input.tabName?.trim() || "Sheet1";
   const totalHours = Number(input.totalHours ?? 0);
 
   if (!employeeName || !department || !project || !task || !week || !approvedBy || !approvedAt || !Number.isFinite(totalHours)) {
@@ -88,7 +90,49 @@ function normalizeAppendPayload(input: AppendTimesheetRowInput) {
     totalHours: Number(totalHours.toFixed(2)),
     approvedBy,
     approvedAt,
+    tabName,
   };
+}
+
+function escapeSheetName(sheetName: string) {
+  const trimmed = sheetName.trim();
+  return `'${trimmed.replace(/'/g, "''")}'`;
+}
+
+async function ensureWorksheetExists(
+  sheets: ReturnType<typeof google.sheets>,
+  spreadsheetId: string,
+  sheetName: string,
+): Promise<void> {
+  const trimmedSheetName = sheetName.trim();
+  if (!trimmedSheetName || trimmedSheetName === "Sheet1") {
+    return;
+  }
+
+  const spreadsheet = await sheets.spreadsheets.get({
+    spreadsheetId,
+    fields: "sheets.properties.title",
+  });
+
+  const existingSheet = spreadsheet.data.sheets?.some((sheet) => sheet.properties?.title === trimmedSheetName);
+  if (existingSheet) {
+    return;
+  }
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: [
+        {
+          addSheet: {
+            properties: {
+              title: trimmedSheetName,
+            },
+          },
+        },
+      ],
+    },
+  });
 }
 
 export async function appendTimesheetRow(input: AppendTimesheetRowInput): Promise<boolean> {
@@ -109,10 +153,12 @@ export async function appendTimesheetRow(input: AppendTimesheetRowInput): Promis
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
   const sheets = google.sheets({ version: "v4", auth });
+  const tabName = row.tabName || "Sheet1";
+  await ensureWorksheetExists(sheets, env.spreadsheetId, tabName);
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: env.spreadsheetId,
-    range: "Sheet1!A:I",
+    range: `${escapeSheetName(tabName)}!A:I`,
     valueInputOption: "RAW",
     requestBody: {
       values: [

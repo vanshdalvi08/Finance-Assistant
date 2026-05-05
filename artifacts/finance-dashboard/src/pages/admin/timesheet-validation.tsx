@@ -670,14 +670,17 @@ export default function AdminTimesheetValidationPage() {
             </p>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <div className="inline-flex rounded-2xl border border-border/60 bg-card/80 p-1 shadow-sm">
+            <div className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-card/80 p-1 shadow-sm ring-1 ring-border/30 backdrop-blur-sm">
               <button
                 type="button"
                 onClick={() => setReviewMode("weekly")}
                 className={cn(
-                  "rounded-xl px-4 py-2 text-sm font-medium transition-colors",
-                  reviewMode === "weekly" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                  "rounded-full px-4 py-2 text-sm font-medium tracking-[-0.01em] transition-all duration-200 ease-out",
+                  reviewMode === "weekly"
+                    ? "bg-primary text-primary-foreground shadow-[0_10px_24px_rgba(59,130,246,0.22)]"
+                    : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
                 )}
+                aria-pressed={reviewMode === "weekly"}
               >
                 Weekly Timesheet
               </button>
@@ -685,9 +688,12 @@ export default function AdminTimesheetValidationPage() {
                 type="button"
                 onClick={() => setReviewMode("daily")}
                 className={cn(
-                  "rounded-xl px-4 py-2 text-sm font-medium transition-colors",
-                  reviewMode === "daily" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                  "rounded-full px-4 py-2 text-sm font-medium tracking-[-0.01em] transition-all duration-200 ease-out",
+                  reviewMode === "daily"
+                    ? "bg-primary text-primary-foreground shadow-[0_10px_24px_rgba(59,130,246,0.22)]"
+                    : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
                 )}
+                aria-pressed={reviewMode === "daily"}
               >
                 Daily Review
               </button>

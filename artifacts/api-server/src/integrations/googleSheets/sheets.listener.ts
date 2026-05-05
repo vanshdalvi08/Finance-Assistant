@@ -1,5 +1,9 @@
-import { DAY_KEYS, type TimesheetTaskLine } from "../../lib/business-store";
-import { appEvents, type TimesheetApprovedEvent } from "../../lib/events";
+import { DAY_KEYS, type DayKey, type TimesheetTaskLine } from "../../lib/business-store";
+import {
+  appEvents,
+  type TimesheetApprovedEvent,
+  type TimesheetDailyReviewVerifiedEvent,
+} from "../../lib/events";
 import { logger } from "../../lib/logger";
 import { appendTimesheetRow, isGoogleSheetsEnabledForTenant } from "./sheets.service";
 
@@ -15,6 +19,16 @@ function weekRangeLabel(weekStart: string) {
 function lineHours(line: TimesheetTaskLine) {
   return DAY_KEYS.reduce((sum, day) => sum + Number(line.hours[day] ?? 0), 0);
 }
+
+const DAY_LABELS: Record<DayKey, string> = {
+  mon: "Monday",
+  tue: "Tuesday",
+  wed: "Wednesday",
+  thu: "Thursday",
+  fri: "Friday",
+  sat: "Saturday",
+  sun: "Sunday",
+};
 
 function hasApprovedWork(event: TimesheetApprovedEvent) {
   return event.timesheet.lines.some((line) => DAY_KEYS.some((day) => Number(line.hours[day] ?? 0) > 0));
@@ -76,6 +90,7 @@ async function handleTimesheetApproved(event: TimesheetApprovedEvent) {
         totalHours,
         approvedBy,
         approvedAt,
+        tabName: "Weekly Approvals",
       });
     }
   } catch (error) {
@@ -90,6 +105,61 @@ async function handleTimesheetApproved(event: TimesheetApprovedEvent) {
   }
 }
 
+async function handleTimesheetDailyReviewVerified(event: TimesheetDailyReviewVerifiedEvent) {
+  if (!(await isGoogleSheetsEnabledForTenant(event.tenantId))) {
+    return;
+  }
+
+  const employeeName = event.employee?.name?.trim() || event.timesheet.employeeNameSnapshot?.trim();
+  const department = event.employee?.department?.trim() || "Unassigned";
+  const verifiedBy = event.verifiedBy.name.trim();
+  const week = weekRangeLabel(event.timesheet.weekStart);
+  const dayLabel = DAY_LABELS[event.day];
+  const verifiedAt = event.timesheet.reviewedAt?.trim() || new Date().toISOString();
+  const totalHours = event.timesheet.lines.reduce((sum, line) => sum + Number(line.hours[event.day] ?? 0), 0);
+
+  if (!employeeName || !verifiedBy || !week || !dayLabel || !verifiedAt) {
+    logger.warn(
+      {
+        tenantId: event.tenantId,
+        timesheetId: event.timesheet.id,
+        employeeName,
+        verifiedBy,
+        week,
+        dayLabel,
+        verifiedAt,
+      },
+      "Skipping Google Sheets sync because daily review verification data is incomplete",
+    );
+    return;
+  }
+
+  try {
+    await appendTimesheetRow({
+      employeeName,
+      department,
+      project: "Daily Review",
+      task: `${dayLabel} verification`,
+      workNote: "Day verified by admin",
+      week,
+      totalHours,
+      approvedBy: verifiedBy,
+      approvedAt: verifiedAt,
+      tabName: "Daily Reviews",
+    });
+  } catch (error) {
+    logger.error(
+      {
+        err: error,
+        tenantId: event.tenantId,
+        timesheetId: event.timesheet.id,
+        day: event.day,
+      },
+      "Google Sheets append failed after daily review verification",
+    );
+  }
+}
+
 declare global {
   // eslint-disable-next-line no-var
   var __timesheetGoogleSheetsListenerRegistered__: boolean | undefined;
@@ -99,6 +169,9 @@ if (!globalThis.__timesheetGoogleSheetsListenerRegistered__) {
   globalThis.__timesheetGoogleSheetsListenerRegistered__ = true;
   appEvents.on("timesheet_approved", (event) => {
     void handleTimesheetApproved(event);
+  });
+  appEvents.on("timesheet_daily_review_verified", (event) => {
+    void handleTimesheetDailyReviewVerified(event);
   });
 }
 

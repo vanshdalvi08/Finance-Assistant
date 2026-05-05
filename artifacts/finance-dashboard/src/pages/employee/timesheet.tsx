@@ -986,7 +986,7 @@ export default function EmployeeTimesheetPage() {
                                   <div className="space-y-0.5 pt-0.5">
                                     <p className="text-[15px] font-medium leading-tight">{day.label}</p>
                                     <p className="text-[11px] font-normal leading-tight text-muted-foreground">{format(day.date, "dd MMM")}</p>
-                                    <p className="text-[10px] font-medium text-muted-foreground">Work</p>
+                                    <p className="text-[10px] font-medium text-emerald-400">Verify</p>
                                   </div>
                                 </HoverCardTrigger>
                                 <HoverCardContent
