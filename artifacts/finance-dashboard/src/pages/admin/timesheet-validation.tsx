@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addDays, format } from "date-fns";
 import { CalendarDays, Check, CheckCircle2, ClipboardList, Eye, FileText, RefreshCcw, X } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
-import { api, type DayKey, type Employee, type TimesheetEntry, type TimesheetTaskLine } from "@/lib/api";
+import { api, type DayKey, type Employee, type ProjectBudgetTask, type TimesheetEntry, type TimesheetTaskLine } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,6 +27,8 @@ const DAY_LABELS: Record<(typeof DAYS)[number], string> = {
 };
 const READONLY_FIELD_CLASS =
   "flex h-10 items-center rounded-[18px] border border-slate-200 bg-white px-4 text-[15px] font-medium text-slate-700 shadow-none dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-100";
+const READONLY_FIELD_STACK_CLASS =
+  "rounded-[18px] border border-slate-200 bg-white px-4 py-2 text-[15px] font-medium text-slate-700 shadow-none dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-100";
 const READONLY_PLACEHOLDER_CLASS =
   "flex h-10 items-center rounded-[18px] border border-dashed border-slate-200 bg-slate-50 px-4 text-[15px] font-medium text-slate-500 dark:border-slate-700/90 dark:bg-slate-950/90 dark:text-slate-400";
 
@@ -42,6 +44,31 @@ function weekLabel(weekStart: string) {
 function taskLineLabel(line: { task?: string; subTask?: string }) {
   const task = line.task?.trim() || "Custom task";
   return line.subTask ? `${task} - ${line.subTask}` : task;
+}
+
+function taskLineDisplayLabel(
+  line: { task?: string; subTask?: string; projectTaskId?: string },
+  taskCatalogLookup?: Map<string, ProjectBudgetTask>,
+) {
+  const catalogTask = line.projectTaskId ? taskCatalogLookup?.get(line.projectTaskId) : undefined;
+  if (catalogTask) {
+    const taskName = catalogTask.name?.trim() || line.task?.trim() || "Custom task";
+    const taskDescription = catalogTask.description?.trim() || line.subTask?.trim() || "";
+    return taskDescription ? `${taskName} - ${taskDescription}` : taskName;
+  }
+
+  return taskLineLabel(line);
+}
+
+function taskLineDisplayParts(
+  line: { task?: string; subTask?: string; projectTaskId?: string },
+  taskCatalogLookup?: Map<string, ProjectBudgetTask>,
+) {
+  const catalogTask = line.projectTaskId ? taskCatalogLookup?.get(line.projectTaskId) : undefined;
+  const taskName = catalogTask?.name?.trim() || line.task?.trim() || "Custom task";
+  const taskDescription = catalogTask?.description?.trim() || line.subTask?.trim() || "";
+
+  return { taskName, taskDescription };
 }
 
 function formatHourValue(value: number) {
@@ -156,6 +183,7 @@ function AdminReadonlyTimesheetCard({
   entry,
   employee,
   selectedDate,
+  taskCatalogLookup,
   pendingReviewKey,
   onMarkDayReviewed,
   onRequestDayUnverify,
@@ -164,6 +192,7 @@ function AdminReadonlyTimesheetCard({
   entry: TimesheetEntry;
   employee?: Employee;
   selectedDate: string;
+  taskCatalogLookup?: Map<string, ProjectBudgetTask>;
   pendingReviewKey?: string | null;
   onMarkDayReviewed: (day: DayKey) => void;
   onRequestDayUnverify: (day: DayKey) => void;
@@ -349,7 +378,17 @@ function AdminReadonlyTimesheetCard({
                       </div>
                     </td>
                     <td className="sticky left-[222px] z-10 border-b border-r border-border/50 bg-card px-4 py-3 align-top">
-                      <div className={taskLineLabel(line).trim() ? READONLY_FIELD_CLASS : READONLY_PLACEHOLDER_CLASS}>{taskLineLabel(line)}</div>
+                      <div className={taskLineDisplayLabel(line, taskCatalogLookup).trim() ? READONLY_FIELD_STACK_CLASS : READONLY_PLACEHOLDER_CLASS}>
+                        {(() => {
+                          const { taskName, taskDescription } = taskLineDisplayParts(line, taskCatalogLookup);
+                          return (
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium text-foreground">{taskName}</p>
+                              {taskDescription ? <p className="truncate text-xs text-muted-foreground">{taskDescription}</p> : null}
+                            </div>
+                          );
+                        })()}
+                      </div>
                     </td>
                     {weekDays.map((day) => {
                       const workNotePreview = dayWorkNote(line, day.key);
@@ -451,6 +490,16 @@ export default function AdminTimesheetValidationPage() {
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
   const { data: timesheets = [] } = useQuery({ queryKey: ["timesheets"], queryFn: () => api.getTimesheets() });
   const { data: projectBudgetSummary = [] } = useQuery({ queryKey: ["project-budget-summary"], queryFn: api.getProjectBudgetSummary });
+  const { data: projectCatalog = [] } = useQuery({ queryKey: ["project-catalog"], queryFn: api.getProjectCatalog });
+  const taskCatalogLookup = useMemo(
+    () =>
+      new Map(
+        projectCatalog.flatMap((project) =>
+          project.tasks.map((task) => [task.id, task] as const),
+        ),
+      ),
+    [projectCatalog],
+  );
 
   useEffect(() => {
     if (!selectedEmployeeId && employees.length > 0) {
@@ -823,11 +872,12 @@ export default function AdminTimesheetValidationPage() {
                     {selectedTimesheet.lines.map((line, index) => {
                       const total = DAYS.reduce((sum, day) => sum + Number(line.hours[day] ?? 0), 0);
                       const workNoteSummary = lineWorkNoteSummary(line);
+                      const { taskName, taskDescription } = taskLineDisplayParts(line, taskCatalogLookup);
                       return (
                         <div
                           key={line.id}
                           className={cn(
-                            "grid grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)_96px] gap-4 px-4 py-3",
+                            "grid grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_96px] gap-4 px-4 py-3",
                             index !== 0 && "border-t border-border/40",
                           )}
                         >
@@ -836,8 +886,9 @@ export default function AdminTimesheetValidationPage() {
                           </div>
                           <div className="min-w-0">
                             <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0 flex-1">
-                                <p className="truncate text-sm text-foreground">{taskLineLabel(line)}</p>
+                              <div className="min-w-0 flex-1 space-y-1">
+                                <p className="break-words text-sm font-medium leading-5 text-foreground">{taskName}</p>
+                                {taskDescription ? <p className="break-words text-xs leading-5 text-muted-foreground">{taskDescription}</p> : null}
                               </div>
                               <Button
                                 type="button"
@@ -1129,6 +1180,7 @@ export default function AdminTimesheetValidationPage() {
                     entry={entry}
                     employee={employeeLookup.get(entry.employeeId)}
                     selectedDate={selectedReviewDate}
+                    taskCatalogLookup={taskCatalogLookup}
                     pendingReviewKey={pendingReviewKey}
                     onMarkDayReviewed={(day) => dayReviewMutation.mutate({ id: entry.id, day, reviewed: true })}
                     onRequestDayUnverify={(day) => setDayUnverifyTarget({ id: entry.id, day })}
@@ -1193,20 +1245,22 @@ export default function AdminTimesheetValidationPage() {
                 </div>
 
                 <div className="space-y-3">
-                  {selectedTimesheet.lines.map((line) => {
-                    const total = lineTotal(line);
-                    return (
-                      <div key={line.id} className="rounded-2xl border border-border/60 bg-background/70 p-4">
-                        <div className="flex flex-col gap-3 border-b border-border/50 pb-4 lg:flex-row lg:items-start lg:justify-between">
-                          <div className="min-w-0 space-y-3">
-                            <div className="space-y-1">
-                              <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Project</p>
-                              <p className="text-sm font-medium text-foreground">{line.project || "Custom project"}</p>
-                            </div>
-                            <div className="space-y-1">
-                              <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Task</p>
-                              <p className="text-sm text-foreground">{taskLineLabel(line)}</p>
-                            </div>
+                    {selectedTimesheet.lines.map((line) => {
+                      const total = lineTotal(line);
+                      const { taskName, taskDescription } = taskLineDisplayParts(line, taskCatalogLookup);
+                      return (
+                        <div key={line.id} className="rounded-2xl border border-border/60 bg-background/70 p-4">
+                          <div className="flex flex-col gap-3 border-b border-border/50 pb-4 lg:flex-row lg:items-start lg:justify-between">
+                            <div className="min-w-0 space-y-3">
+                              <div className="space-y-1">
+                                <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Project</p>
+                                <p className="text-sm font-medium text-foreground">{line.project || "Custom project"}</p>
+                              </div>
+                              <div className="space-y-1">
+                                <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Task</p>
+                                <p className="text-sm font-medium leading-5 text-foreground">{taskName}</p>
+                                {taskDescription ? <p className="text-xs leading-5 text-muted-foreground">{taskDescription}</p> : null}
+                              </div>
                             <div className="space-y-1.5">
                               <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Work note</p>
                               <div className="rounded-2xl border border-border/50 bg-background/90 px-4 py-3 text-sm leading-6 text-foreground">
@@ -1394,11 +1448,19 @@ export default function AdminTimesheetValidationPage() {
                 <h2 className="text-lg font-semibold tracking-tight text-foreground">Work Note</h2>
               </div>
 
-                <div className="space-y-2.5">
-                  <div className="space-y-1">
-                    <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Task</p>
-                    <p className="text-sm font-medium text-foreground">{taskLineLabel(activeWorkNoteLine ?? {})}</p>
-                  </div>
+              <div className="space-y-2.5">
+                <div className="space-y-1">
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Task</p>
+                  {(() => {
+                    const { taskName, taskDescription } = taskLineDisplayParts(activeWorkNoteLine ?? {}, taskCatalogLookup);
+                    return (
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium leading-5 text-foreground">{taskName}</p>
+                        {taskDescription ? <p className="text-xs leading-5 text-muted-foreground">{taskDescription}</p> : null}
+                      </div>
+                    );
+                  })()}
+                </div>
                   <div className="rounded-2xl border border-border/60 bg-background/70 px-4 py-3 text-sm leading-6 text-foreground">
                     {activeWorkNoteSummary || (
                       <span className="text-muted-foreground">No work note was added for this task.</span>
