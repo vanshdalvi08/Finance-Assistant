@@ -1,6 +1,7 @@
 import { test, expect, type BrowserContext, type Page } from "@playwright/test";
 
 const weekStart = "2026-05-04T12:00:00.000Z";
+const weekStartDate = weekStart.slice(0, 10);
 const workNoteText =
   "Completed API reconciliation, verified submission edge cases, and prepared the rollout notes.";
 const updatedWorkNoteText =
@@ -318,6 +319,7 @@ test("employee can save a work note and admin can review it", async ({ browser }
 
   await employeePage.goto("/employee/timesheet");
   await expect(employeePage.getByRole("heading", { name: "My Timesheet" })).toBeVisible();
+  await employeePage.locator('input[type="date"]').first().fill(weekStartDate);
 
   const taskRow = employeePage.locator("tbody tr").first();
   const mondayCell = taskRow.locator("td").nth(2);
@@ -424,9 +426,12 @@ test("employee can save a work note and admin can review it", async ({ browser }
 
   await adminPage.goto("/admin/timesheets");
   await expect(adminPage.getByRole("heading", { name: "Timesheets" })).toBeVisible();
-
-  await adminPage.getByRole("button", { name: "Work Note" }).first().click();
-  await expect(adminPage.getByText(updatedWorkNoteText)).toBeVisible();
+  const detailButton = adminPage.getByRole("button", { name: "View in detail" }).first();
+  await expect(detailButton).toBeVisible();
+  await detailButton.click();
+  const detailDialog = adminPage.getByRole("dialog");
+  await expect(detailDialog).toBeVisible();
+  await expect(detailDialog).toContainText(updatedWorkNoteText);
   expect(adminPageErrors).toEqual([]);
 
   await adminContext.close();

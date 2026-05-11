@@ -44,6 +44,8 @@ import {
   loadEmployeeProfile,
   blankHours,
   calculateTaskWindowDays,
+  canEmployeeUseProjectTask,
+  projectTaskMaxHoursForEmployee,
   sumTimesheetHours,
   sumTaskLineHoursWithinWindow,
   effectiveHourlyRate,
@@ -2241,6 +2243,7 @@ router.get("/expenses", requireTenantRole("admin", "employee"), async (request, 
 router.get("/projects/summary", requireTenantRole("admin", "employee"), async (_request, response) => {
   const store = await readStore();
   const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const requester = _request.auth?.user;
   const employees = await loadEmployees(tenantId);
   const employeeMap = new Map(employees.map((employee) => [employee.id, employee]));
   const tenantExpenses = store.expenses.filter((expense) => tenantExpenseFilter(expense, tenantId));
@@ -2298,6 +2301,7 @@ router.get("/projects/summary", requireTenantRole("admin", "employee"), async (_
       endDate?: string;
       durationDays?: number;
       hourLimitScope: "overall" | "per_employee";
+      employeeHourLimits?: { employeeId: string; hours: number }[];
       status: "active" | "archived";
       usedHours: number;
       remainingHours?: number;
@@ -2368,9 +2372,12 @@ router.get("/projects/summary", requireTenantRole("admin", "employee"), async (_
     const bucket = ensureBucket(budget.project);
     bucket.tasks = budget.tasks
       .filter((task) => task.status !== "archived")
+      .filter((task) => requester?.role !== "employee" || canEmployeeUseProjectTask(task, requester.id))
       .map((task) => {
       const usedHours = Number((taskUsageById.get(task.id) ?? 0).toFixed(2));
-      const maxHours = Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : 0;
+      const effectiveMaxHours =
+        requester?.role === "employee" ? projectTaskMaxHoursForEmployee(task, requester.id) : task.maxHours;
+      const maxHours = Number(effectiveMaxHours ?? 0) > 0 ? Number(effectiveMaxHours) : 0;
       const remainingHours = maxHours > 0 ? Math.max(0, Number((maxHours - usedHours).toFixed(2))) : undefined;
       const utilisation = maxHours > 0 ? Math.min(100, Number(((usedHours / maxHours) * 100).toFixed(1))) : 0;
       const durationDays = calculateTaskWindowDays(task);
@@ -2387,6 +2394,7 @@ router.get("/projects/summary", requireTenantRole("admin", "employee"), async (_
         endDate: task.endDate,
         durationDays,
         hourLimitScope: task.hourLimitScope === "per_employee" ? "per_employee" : "overall",
+        employeeHourLimits: task.employeeHourLimits ?? [],
         status: task.status,
         usedHours,
         remainingHours,

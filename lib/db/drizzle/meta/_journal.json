@@ -246,6 +246,13 @@
       "when": 1777921200000,
       "tag": "0033_timesheet_daily_review_notes",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1777932000000,
+      "tag": "0034_project_task_employee_hour_limits",
+      "breakpoints": true
     }
   ]
 }

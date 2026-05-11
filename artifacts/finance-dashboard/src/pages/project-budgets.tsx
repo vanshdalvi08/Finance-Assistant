@@ -4,6 +4,7 @@ import { format } from "date-fns";
 import {
   BriefcaseBusiness,
   BarChart3,
+  ChevronsUpDown,
   FolderKanban,
   Layers3,
   Pencil,
@@ -11,18 +12,22 @@ import {
   Save,
   Search,
   Trash2,
+  UserCheck,
   Users,
 } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { DashboardCard } from "@/components/dashboard-card";
 import { api } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -32,6 +37,11 @@ type TimesheetRecord = Awaited<ReturnType<typeof api.getTimesheets>>[number];
 type EmployeeRecord = Awaited<ReturnType<typeof api.getEmployees>>[number];
 const PROJECT_BUDGET_DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 
+type EmployeeHourLimitDraft = {
+  employeeId: string;
+  hours: string;
+};
+
 type TaskDraft = {
   id?: string;
   name: string;
@@ -40,6 +50,7 @@ type TaskDraft = {
   startDate: string;
   endDate: string;
   hourLimitScope: "overall" | "per_employee";
+  employeeHourLimits: EmployeeHourLimitDraft[];
   subTasks: string;
   status: "active" | "archived";
 };
@@ -59,12 +70,17 @@ const EMPTY_TASK: TaskDraft = {
   startDate: "",
   endDate: "",
   hourLimitScope: "overall",
+  employeeHourLimits: [],
   subTasks: "",
   status: "active",
 };
 
 function cloneEmptyTask(): TaskDraft {
-  return { ...EMPTY_TASK };
+  return { ...EMPTY_TASK, employeeHourLimits: [] };
+}
+
+function taskEditorKey(task: TaskDraft, index: number) {
+  return task.id ?? `task-${index}`;
 }
 
 function normalizeTaskHourLimitScope(value: string): TaskDraft["hourLimitScope"] {
@@ -134,8 +150,8 @@ function toForm(project?: ProjectRecord | null): ProjectForm {
     project: project.project,
     client: project.client ?? "",
     note: project.note ?? "",
-        tasks: project.tasks.length
-          ? project.tasks.map((task) => ({
+    tasks: project.tasks.length
+      ? project.tasks.map((task) => ({
           id: task.id,
           name: task.name,
           description: task.description ?? "",
@@ -143,6 +159,10 @@ function toForm(project?: ProjectRecord | null): ProjectForm {
           startDate: task.startDate ?? "",
           endDate: task.endDate ?? "",
           hourLimitScope: task.hourLimitScope === "per_employee" ? "per_employee" : "overall",
+          employeeHourLimits: (task.employeeHourLimits ?? []).map((limit) => ({
+            employeeId: limit.employeeId,
+            hours: String(limit.hours),
+          })),
           subTasks: task.subTasks?.join("\n") ?? "",
           status: task.status === "archived" ? "archived" : "active",
         }))
@@ -158,6 +178,10 @@ export default function ProjectBudgetsPage() {
   const [showCapacityInspector, setShowCapacityInspector] = useState(false);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState("all");
   const [form, setForm] = useState<ProjectForm>(() => toForm(null));
+  const [activeTaskEditor, setActiveTaskEditor] = useState("task-0");
+  const [taskEmployeeSearch, setTaskEmployeeSearch] = useState<Record<string, string>>({});
+  const [taskEmployeeSelectedOnly, setTaskEmployeeSelectedOnly] = useState<Record<string, boolean>>({});
+  const [taskEmployeePanelOpen, setTaskEmployeePanelOpen] = useState<Record<string, boolean>>({});
 
   const { data: projects = [] } = useQuery({
     queryKey: ["projectBudgets"],
@@ -197,6 +221,10 @@ export default function ProjectBudgetsPage() {
     () => [{ id: "all", name: "All employees" }, ...employees.map((employee) => ({ id: employee.id, name: employee.name }))],
     [employees],
   );
+  const employeeLookup = useMemo(
+    () => new Map(employees.map((employee) => [employee.id, employee])),
+    [employees],
+  );
 
   const taskUsageLookup = useMemo(() => {
     const lookup = new Map<
@@ -231,6 +259,10 @@ export default function ProjectBudgetsPage() {
 
     return lookup;
   }, [taskWindowLookup, timesheets]);
+
+  function getEmployeeSpecificTaskHours(task: ProjectRecord["tasks"][number], employeeId: string) {
+    return task.employeeHourLimits?.find((limit) => limit.employeeId === employeeId)?.hours;
+  }
 
   const filteredProjects = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -281,6 +313,15 @@ export default function ProjectBudgetsPage() {
           startDate: task.startDate || undefined,
           endDate: task.endDate || undefined,
           hourLimitScope: normalizeTaskHourLimitScope(task.hourLimitScope),
+          employeeHourLimits:
+            normalizeTaskHourLimitScope(task.hourLimitScope) === "per_employee"
+              ? task.employeeHourLimits
+                  .map((limit) => ({
+                    employeeId: limit.employeeId.trim(),
+                    hours: Math.max(0, Number(limit.hours || 0)),
+                  }))
+                  .filter((limit) => limit.employeeId && limit.hours > 0)
+              : [],
           subTasks: task.subTasks
             .split(/[\n,]/)
             .map((value) => value.trim())
@@ -289,6 +330,15 @@ export default function ProjectBudgetsPage() {
           status: task.status,
         }))
         .filter((task) => task.name.length > 0);
+
+      const invalidEmployeeAllocation = form.tasks.find(
+        (task) =>
+          normalizeTaskHourLimitScope(task.hourLimitScope) === "per_employee"
+          && task.employeeHourLimits.some((limit) => limit.employeeId.trim() && Math.max(0, Number(limit.hours || 0)) <= 0),
+      );
+      if (invalidEmployeeAllocation) {
+        throw new Error("Each selected employee needs a positive hour limit for per-employee tasks.");
+      }
 
       return api.saveProjectBudget({
         id: form.id,
@@ -362,11 +412,28 @@ export default function ProjectBudgetsPage() {
 
   function openCreate() {
     setForm(toForm(null));
+    setActiveTaskEditor("task-0");
+    setTaskEmployeeSearch({});
+    setTaskEmployeeSelectedOnly({});
+    setTaskEmployeePanelOpen({ "task-0": true });
     setEditorOpen(true);
   }
 
   function openEdit(project: ProjectRecord) {
-    setForm(toForm(project));
+    const nextForm = toForm(project);
+    setForm(nextForm);
+    setActiveTaskEditor(taskEditorKey(nextForm.tasks[0] ?? cloneEmptyTask(), 0));
+    setTaskEmployeeSearch({});
+    setTaskEmployeeSelectedOnly({});
+    setTaskEmployeePanelOpen(
+      Object.fromEntries(
+        nextForm.tasks.flatMap((task, index) =>
+          task.hourLimitScope === "per_employee" && task.employeeHourLimits.length > 0
+            ? [[taskEditorKey(task, index), true] as const]
+            : [],
+        ),
+      ),
+    );
     setEditorOpen(true);
   }
 
@@ -378,6 +445,51 @@ export default function ProjectBudgetsPage() {
           ? {
               ...task,
               [field]: field === "status" ? (value as TaskDraft["status"]) : value,
+              ...(field === "hourLimitScope" && value !== "per_employee" ? { employeeHourLimits: [] } : {}),
+            }
+          : task,
+      ),
+    }));
+  }
+
+  function toggleTaskEmployee(index: number, employeeId: string, checked: boolean) {
+    setForm((current) => ({
+      ...current,
+      tasks: current.tasks.map((task, taskIndex) => {
+        if (taskIndex !== index) {
+          return task;
+        }
+
+        const existing = task.employeeHourLimits.some((limit) => limit.employeeId === employeeId);
+        if (checked && !existing) {
+          return {
+            ...task,
+            employeeHourLimits: [...task.employeeHourLimits, { employeeId, hours: task.maxHours || "" }],
+          };
+        }
+
+        if (!checked) {
+          return {
+            ...task,
+            employeeHourLimits: task.employeeHourLimits.filter((limit) => limit.employeeId !== employeeId),
+          };
+        }
+
+        return task;
+      }),
+    }));
+  }
+
+  function updateTaskEmployeeHours(index: number, employeeId: string, hours: string) {
+    setForm((current) => ({
+      ...current,
+      tasks: current.tasks.map((task, taskIndex) =>
+        taskIndex === index
+          ? {
+              ...task,
+              employeeHourLimits: task.employeeHourLimits.map((limit) =>
+                limit.employeeId === employeeId ? { ...limit, hours } : limit,
+              ),
             }
           : task,
       ),
@@ -389,9 +501,20 @@ export default function ProjectBudgetsPage() {
       ...current,
       tasks: [...current.tasks, cloneEmptyTask()],
     }));
+    const nextTaskKey = `task-${form.tasks.length}`;
+    setActiveTaskEditor(nextTaskKey);
+    setTaskEmployeePanelOpen((current) => ({ ...current, [nextTaskKey]: true }));
   }
 
   function removeTaskRow(index: number) {
+    const removedTaskKey = taskEditorKey(form.tasks[index] ?? cloneEmptyTask(), index);
+    const nextActiveTaskKey =
+      form.tasks.length <= 1
+        ? "task-0"
+        : taskEditorKey(
+            form.tasks[index === 0 ? 1 : index - 1] ?? cloneEmptyTask(),
+            index === 0 ? 0 : index - 1,
+          );
     setForm((current) => ({
       ...current,
       tasks:
@@ -399,6 +522,24 @@ export default function ProjectBudgetsPage() {
           ? [cloneEmptyTask()]
           : current.tasks.filter((_, taskIndex) => taskIndex !== index),
     }));
+    setTaskEmployeeSearch((current) => {
+      const next = { ...current };
+      delete next[removedTaskKey];
+      return next;
+    });
+    setTaskEmployeeSelectedOnly((current) => {
+      const next = { ...current };
+      delete next[removedTaskKey];
+      return next;
+    });
+    setTaskEmployeePanelOpen((current) => {
+      const next = { ...current };
+      delete next[removedTaskKey];
+      return next;
+    });
+    if (activeTaskEditor === removedTaskKey) {
+      setActiveTaskEditor(nextActiveTaskKey);
+    }
   }
 
   return (
@@ -517,8 +658,20 @@ export default function ProjectBudgetsPage() {
                       <div className="divide-y divide-border/60">
                         {projectTasks.map((task) => {
                           const summaryTask = summaryLookup.get(project.id)?.tasks.find((item) => item.id === task.id);
-                          const maxHours = summaryTask?.maxHours ?? task.maxHours;
                           const hourLimitScope = summaryTask?.hourLimitScope ?? task.hourLimitScope ?? "overall";
+                          const targetedEmployeeCount = task.employeeHourLimits?.length ?? 0;
+                          const employeeSpecificMaxHours =
+                            selectedEmployeeId === "all" ? undefined : getEmployeeSpecificTaskHours(task, selectedEmployeeId);
+                          const selectedEmployeeAssigned =
+                            selectedEmployeeId === "all"
+                              ? true
+                              : targetedEmployeeCount === 0 || typeof employeeSpecificMaxHours === "number";
+                          const maxHours =
+                            !selectedEmployeeAssigned && hourLimitScope === "per_employee"
+                              ? undefined
+                              : typeof employeeSpecificMaxHours === "number"
+                              ? employeeSpecificMaxHours
+                              : summaryTask?.maxHours ?? task.maxHours;
                           const allClaimedHours = taskUsageLookup.get(task.id)?.total ?? 0;
                           const employeeClaimedHours =
                             selectedEmployeeId === "all"
@@ -543,6 +696,9 @@ export default function ProjectBudgetsPage() {
                             typeof maxHours === "number"
                               ? `${formatCapacityHours(maxHours)} max ${hourLimitScope === "per_employee" ? "per employee" : "overall"}`
                               : "No hour cap",
+                            hourLimitScope === "per_employee" && targetedEmployeeCount > 0
+                              ? `${targetedEmployeeCount} selected employee${targetedEmployeeCount === 1 ? "" : "s"}`
+                              : null,
                             formatTaskWindowLabel(task),
                           ]
                             .filter(Boolean)
@@ -553,6 +709,16 @@ export default function ProjectBudgetsPage() {
                               <div className="min-w-0 space-y-1">
                                 <div className="flex flex-wrap items-center gap-2">
                                   <p className="text-sm font-semibold text-foreground">{task.name}</p>
+                                  {hourLimitScope === "per_employee" ? (
+                                    <Badge variant="outline" className="rounded-full border-border/60 bg-background/50 font-normal">
+                                      Per employee
+                                    </Badge>
+                                  ) : null}
+                                  {targetedEmployeeCount > 0 ? (
+                                    <Badge variant="outline" className="rounded-full border-border/60 bg-background/50 font-normal">
+                                      {targetedEmployeeCount} assigned
+                                    </Badge>
+                                  ) : null}
                                   {task.subTasks?.length ? (
                                     <Badge variant="outline" className="rounded-full border-border/60 bg-background/50 font-normal">
                                       {task.subTasks.length} sub tasks
@@ -581,6 +747,8 @@ export default function ProjectBudgetsPage() {
                                   {hourLimitScope === "per_employee"
                                     ? selectedEmployeeId === "all"
                                       ? "Select an employee to inspect remaining"
+                                      : targetedEmployeeCount > 0 && typeof employeeSpecificMaxHours !== "number"
+                                        ? "This employee is not assigned to the task"
                                       : "Remaining for selected employee"
                                     : selectedEmployeeId === "all"
                                       ? "Available to team"
@@ -690,6 +858,16 @@ export default function ProjectBudgetsPage() {
                             <div className="min-w-0 space-y-1">
                               <div className="flex flex-wrap items-center gap-2">
                                 <p className="font-medium text-foreground">{task.name}</p>
+                                {task.hourLimitScope === "per_employee" ? (
+                                  <Badge variant="outline" className="rounded-full border-border/60 bg-background/50 font-normal">
+                                    Per employee
+                                  </Badge>
+                                ) : null}
+                                {(task.employeeHourLimits?.length ?? 0) > 0 ? (
+                                  <Badge variant="outline" className="rounded-full border-border/60 bg-background/50 font-normal">
+                                    {task.employeeHourLimits?.length} assigned
+                                  </Badge>
+                                ) : null}
                                 {task.subTasks?.length ? (
                                   <Badge variant="outline" className="rounded-full border-border/60 bg-background/50 font-normal">
                                     {task.subTasks.length} sub tasks
@@ -697,6 +875,15 @@ export default function ProjectBudgetsPage() {
                                 ) : null}
                               </div>
                               {task.description ? <p className="text-sm text-muted-foreground">{task.description}</p> : null}
+                              {(task.employeeHourLimits?.length ?? 0) > 0 ? (
+                                <p className="text-xs text-muted-foreground">
+                                  {task.employeeHourLimits
+                                    ?.slice(0, 2)
+                                    .map((limit) => `${employeeLookup.get(limit.employeeId)?.name ?? "Employee"} ${formatCapacityHours(limit.hours)}`)
+                                    .join(", ")}
+                                  {(task.employeeHourLimits?.length ?? 0) > 2 ? ` +${(task.employeeHourLimits?.length ?? 0) - 2} more` : ""}
+                                </p>
+                              ) : null}
                               {task.subTasks?.length ? (
                                 <p className="text-xs text-muted-foreground">
                                   {task.subTasks.slice(0, 2).join(", ")}
@@ -772,11 +959,96 @@ export default function ProjectBudgetsPage() {
               </Button>
             </div>
 
-            <div className="space-y-4">
-              {form.tasks.map((task, index) => (
-                <div key={task.id ?? `task-${index}`} className="rounded-2xl border border-border/60 bg-secondary/10 p-5">
-                  <div className="space-y-4">
-                    <div className="grid gap-4 md:grid-cols-[minmax(0,1.4fr)_160px_auto] md:items-end">
+            <Accordion
+              type="single"
+              collapsible
+              className="space-y-4"
+              value={activeTaskEditor}
+              onValueChange={(value) => setActiveTaskEditor(value || "")}
+            >
+              {form.tasks.map((task, index) => {
+                const taskKey = taskEditorKey(task, index);
+                const selectedEmployeeCount = task.employeeHourLimits.length;
+                const allocationOpen = taskEmployeePanelOpen[taskKey] ?? selectedEmployeeCount > 0;
+                const employeeQuery = (taskEmployeeSearch[taskKey] ?? "").trim().toLowerCase();
+                const showSelectedOnly = taskEmployeeSelectedOnly[taskKey] ?? false;
+                const visibleEmployees = [...employees]
+                  .sort((left, right) => {
+                    const leftSelected = task.employeeHourLimits.some((limit) => limit.employeeId === left.id);
+                    const rightSelected = task.employeeHourLimits.some((limit) => limit.employeeId === right.id);
+
+                    if (leftSelected !== rightSelected) {
+                      return leftSelected ? -1 : 1;
+                    }
+
+                    return left.name.localeCompare(right.name);
+                  })
+                  .filter((employee) => {
+                    const isSelected = task.employeeHourLimits.some((limit) => limit.employeeId === employee.id);
+                    if (showSelectedOnly && !isSelected) {
+                      return false;
+                    }
+
+                    if (!employeeQuery) {
+                      return true;
+                    }
+
+                    return [employee.name, employee.department ?? "", employee.email]
+                      .join(" ")
+                      .toLowerCase()
+                      .includes(employeeQuery);
+                  });
+
+                return (
+                  <AccordionItem
+                    key={taskKey}
+                    value={taskKey}
+                    className="overflow-hidden rounded-2xl border border-border/60 bg-secondary/10"
+                  >
+                    <AccordionTrigger className="px-5 py-4 hover:no-underline">
+                      <div className="flex min-w-0 flex-1 flex-col gap-3 text-left md:flex-row md:items-center md:justify-between">
+                        <div className="min-w-0 space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="truncate text-sm font-semibold text-foreground">
+                              {task.name.trim() || `Task ${index + 1}`}
+                            </p>
+                            <Badge variant="outline" className="rounded-full border-border/60 bg-background/60 font-normal capitalize">
+                              {task.status}
+                            </Badge>
+                            {task.hourLimitScope === "per_employee" ? (
+                              <Badge variant="outline" className="rounded-full border-sky-200/80 bg-sky-50/70 font-normal text-sky-700">
+                                Per employee
+                              </Badge>
+                            ) : null}
+                            {selectedEmployeeCount > 0 ? (
+                              <Badge variant="outline" className="rounded-full border-border/60 bg-background/60 font-normal">
+                                {selectedEmployeeCount} assigned
+                              </Badge>
+                            ) : null}
+                          </div>
+                          <p className="truncate text-xs text-muted-foreground">
+                            {task.description.trim() || "Add a short description so this task is easy to identify later."}
+                          </p>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground md:justify-end">
+                          {task.maxHours ? (
+                            <span className="rounded-full border border-border/60 bg-background/70 px-2.5 py-1">
+                              {task.maxHours}h {task.hourLimitScope === "per_employee" ? "cap" : "overall"}
+                            </span>
+                          ) : null}
+                          {(task.startDate || task.endDate) ? (
+                            <span className="rounded-full border border-border/60 bg-background/70 px-2.5 py-1">
+                              {task.startDate || "Start"} to {task.endDate || "End"}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    </AccordionTrigger>
+
+                    <AccordionContent className="px-5 pb-5 pt-0">
+                      <div className="space-y-4 border-t border-border/50 pt-4">
+                        <div className="grid gap-4 md:grid-cols-[minmax(0,1.4fr)_160px_auto] md:items-end">
                       <div className="space-y-2">
                         <Label className="text-xs font-medium text-muted-foreground">Task name</Label>
                         <Input
@@ -810,9 +1082,10 @@ export default function ProjectBudgetsPage() {
                           <Trash2 className="h-4 w-4" />
                         </Button>
                       </div>
-                    </div>
+                        </div>
 
-                    <div className="grid gap-4 lg:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.95fr)] lg:items-start">
+                        <div className="space-y-4">
+                          <div className="grid gap-4 lg:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.95fr)] lg:items-start">
                       <div className="space-y-4">
                         <div className="space-y-2">
                           <Label className="text-xs font-medium text-muted-foreground">Short description</Label>
@@ -889,13 +1162,193 @@ export default function ProjectBudgetsPage() {
                               onChange={(event) => updateTask(index, "endDate", event.target.value)}
                             />
                           </div>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
+
+                          {task.hourLimitScope === "per_employee" ? (
+                            <Collapsible
+                              open={allocationOpen}
+                              onOpenChange={(open) => setTaskEmployeePanelOpen((current) => ({ ...current, [taskKey]: open }))}
+                            >
+                              <div className="rounded-xl border border-border/60 bg-background/55 p-4">
+                                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                  <div className="space-y-1">
+                                    <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                                      <UserCheck className="h-4 w-4 text-muted-foreground" />
+                                      Employee allocation
+                                    </div>
+                                    <p className="text-[11px] text-muted-foreground">
+                                      Pick the employees who can claim this task and set their individual hour caps.
+                                    </p>
+                                  </div>
+
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <Badge variant="outline" className="rounded-full border-border/60 bg-background/60 font-normal">
+                                      {selectedEmployeeCount} selected
+                                    </Badge>
+                                    <CollapsibleTrigger asChild>
+                                      <Button type="button" variant="outline" size="sm" className="rounded-full">
+                                        <ChevronsUpDown className="mr-2 h-4 w-4" />
+                                        {allocationOpen ? "Hide picker" : "Edit allocation"}
+                                      </Button>
+                                    </CollapsibleTrigger>
+                                  </div>
+                                </div>
+
+                                {selectedEmployeeCount > 0 ? (
+                                  <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-sky-400/20 bg-sky-500/10 px-3 py-3 text-xs text-sky-700 dark:text-sky-100">
+                                    <span className="font-medium">Assigned</span>
+                                    {task.employeeHourLimits.slice(0, 3).map((limit) => (
+                                      <span
+                                        key={limit.employeeId}
+                                        className="rounded-full border border-sky-400/25 bg-background/70 px-2.5 py-1 text-[11px] text-foreground"
+                                      >
+                                        {employeeLookup.get(limit.employeeId)?.name ?? "Employee"} {formatCapacityHours(Number(limit.hours || 0))}
+                                      </span>
+                                    ))}
+                                    {selectedEmployeeCount > 3 ? (
+                                      <span className="rounded-full border border-sky-400/25 bg-background/70 px-2.5 py-1 text-[11px] text-foreground">
+                                        +{selectedEmployeeCount - 3} more
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                ) : (
+                                  <div className="mt-3 rounded-xl border border-dashed border-border/60 px-3 py-2.5 text-xs text-muted-foreground">
+                                    No employees selected yet. Open the picker to target this task to specific people.
+                                  </div>
+                                )}
+
+                                <CollapsibleContent className="space-y-4 pt-4">
+                                  {employees.length === 0 ? (
+                                    <div className="rounded-xl border border-dashed border-border/60 px-4 py-4 text-sm text-muted-foreground">
+                                      Add employees first so this task can be assigned to specific people.
+                                    </div>
+                                  ) : (
+                                    <>
+                                      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                                        <div className="relative w-full lg:max-w-sm">
+                                          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                                          <Input
+                                            value={taskEmployeeSearch[taskKey] ?? ""}
+                                            onChange={(event) =>
+                                              setTaskEmployeeSearch((current) => ({ ...current, [taskKey]: event.target.value }))
+                                            }
+                                            placeholder="Search employee, email, or department"
+                                            className="rounded-full bg-background/60 pl-9"
+                                          />
+                                        </div>
+
+                                        <div className="flex flex-wrap items-center gap-3">
+                                          <span className="text-xs text-muted-foreground">
+                                            Showing {visibleEmployees.length} of {employees.length}
+                                          </span>
+                                          <div className="inline-flex rounded-full border border-border/60 bg-background/40 p-1">
+                                            <button
+                                              type="button"
+                                              className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
+                                                showSelectedOnly
+                                                  ? "text-muted-foreground hover:text-foreground"
+                                                  : "bg-foreground text-background shadow-sm"
+                                              }`}
+                                              onClick={() =>
+                                                setTaskEmployeeSelectedOnly((current) => ({ ...current, [taskKey]: false }))
+                                              }
+                                            >
+                                              All employees
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${
+                                                showSelectedOnly
+                                                  ? "bg-foreground text-background shadow-sm"
+                                                  : "text-muted-foreground hover:text-foreground"
+                                              }`}
+                                              onClick={() =>
+                                                setTaskEmployeeSelectedOnly((current) => ({ ...current, [taskKey]: true }))
+                                              }
+                                            >
+                                              Selected only
+                                            </button>
+                                          </div>
+                                        </div>
+                                      </div>
+
+                                      <div className="space-y-3 rounded-2xl border border-border/60 bg-background/40 p-3">
+                                        {visibleEmployees.length === 0 ? (
+                                          <div className="rounded-xl border border-dashed border-border/60 px-4 py-6 text-center text-sm text-muted-foreground">
+                                            No employees match this filter.
+                                          </div>
+                                        ) : (
+                                          visibleEmployees.map((employee) => {
+                                            const selectedLimit = task.employeeHourLimits.find((limit) => limit.employeeId === employee.id);
+                                            const checked = Boolean(selectedLimit);
+
+                                            return (
+                                              <label
+                                                key={employee.id}
+                                                className={`flex cursor-pointer flex-col gap-3 rounded-2xl border px-4 py-3 transition xl:flex-row xl:items-center xl:justify-between ${
+                                                  checked
+                                                    ? "border-sky-400/45 bg-sky-500/10 shadow-sm"
+                                                    : "border-border/60 bg-background/55 hover:bg-background/75"
+                                                }`}
+                                              >
+                                                <div className="flex min-w-0 items-start gap-3">
+                                                  <Checkbox
+                                                    checked={checked}
+                                                    onCheckedChange={(value) => toggleTaskEmployee(index, employee.id, value === true)}
+                                                    className="mt-0.5"
+                                                  />
+                                                  <div className="min-w-0">
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                      <span className="truncate text-sm font-medium text-foreground">{employee.name}</span>
+                                                      {checked ? (
+                                                        <span className="rounded-full border border-sky-400/30 bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-sky-700 dark:text-sky-100">
+                                                          Selected
+                                                        </span>
+                                                      ) : null}
+                                                    </div>
+                                                    <p className="truncate text-[11px] text-muted-foreground">
+                                                      {employee.department?.trim() || employee.email}
+                                                    </p>
+                                                  </div>
+                                                </div>
+
+                                                <div className="flex items-center justify-between gap-3 xl:justify-end">
+                                                  <span className="text-[11px] text-muted-foreground">Hour cap</span>
+                                                  <div className="w-28">
+                                                    <Input
+                                                      type="number"
+                                                      min={0}
+                                                      step={0.5}
+                                                      value={selectedLimit?.hours ?? ""}
+                                                      onChange={(event) => updateTaskEmployeeHours(index, employee.id, event.target.value)}
+                                                      placeholder="0"
+                                                      disabled={!checked}
+                                                      className={`h-10 rounded-xl text-right ${
+                                                        checked ? "bg-background/85" : "bg-background/45"
+                                                      }`}
+                                                    />
+                                                  </div>
+                                                </div>
+                                              </label>
+                                            );
+                                          })
+                                        )}
+                                      </div>
+                                    </>
+                                  )}
+                                </CollapsibleContent>
+                              </div>
+                            </Collapsible>
+                          ) : null}
+                        </div>
+                      </div>
+                    </AccordionContent>
+                  </AccordionItem>
+                );
+              })}
+            </Accordion>
 
             <div className="flex items-center justify-between rounded-xl border border-border/60 bg-secondary/10 px-4 py-3">
               <p className="text-sm text-muted-foreground">

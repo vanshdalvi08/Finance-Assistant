@@ -6,10 +6,14 @@ import { idempotencyKeysTable, type ActorRole } from "@workspace/db/schema";
 import { requireTenantRole } from "../../middlewares/auth";
 import {
   createId,
+  canEmployeeUseProjectTask,
+  loadEmployees,
   nowIso,
+  projectTaskMaxHoursForEmployee,
   pushAuditEvent,
   readStore,
   type ProjectBudget,
+  type ProjectTaskEmployeeHourLimit,
   updateStore,
 } from "../../lib/business-store";
 import { DEFAULT_TENANT_ID } from "../../lib/tenants";
@@ -20,6 +24,11 @@ const router: IRouter = Router();
 const businessIdSchema = z.string().trim().min(1);
 const dateOnlySchema = z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/);
 
+const employeeHourLimitSchema = z.object({
+  employeeId: businessIdSchema,
+  hours: z.coerce.number().min(0),
+});
+
 const projectTaskSchema = z.object({
   id: businessIdSchema.optional(),
   name: z.string().trim().min(2),
@@ -29,6 +38,7 @@ const projectTaskSchema = z.object({
   endDate: dateOnlySchema.optional(),
   durationDays: z.coerce.number().int().min(0).optional(),
   hourLimitScope: z.enum(["overall", "per_employee"]).optional(),
+  employeeHourLimits: z.array(employeeHourLimitSchema).optional(),
   subTasks: z.array(z.string().trim().min(1)).optional(),
   status: z.enum(["active", "archived"]).optional(),
 }).superRefine((task, context) => {
@@ -48,6 +58,15 @@ const projectTaskSchema = z.object({
       code: z.ZodIssueCode.custom,
       message: "Task end date must be on or after the start date.",
       path: ["endDate"],
+    });
+  }
+
+  const employeeIds = (task.employeeHourLimits ?? []).map((limit) => limit.employeeId.trim());
+  if (new Set(employeeIds).size !== employeeIds.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Each employee can only be selected once per task.",
+      path: ["employeeHourLimits"],
     });
   }
 });
@@ -115,6 +134,9 @@ function requestHashForProjectMutation(input: z.infer<typeof projectSchema> & { 
         endDate: task.endDate?.trim() ?? "",
         durationDays: Number(task.durationDays ?? 0),
         hourLimitScope: task.hourLimitScope ?? "overall",
+        employeeHourLimits: (task.employeeHourLimits ?? [])
+          .map((limit) => ({ employeeId: limit.employeeId.trim(), hours: Number(limit.hours ?? 0) }))
+          .sort((left, right) => left.employeeId.localeCompare(right.employeeId)),
         subTasks: (task.subTasks ?? []).map((subTask) => subTask.trim()),
         status: task.status ?? "active",
       })),
@@ -139,6 +161,9 @@ function requestHashForProjectTask(input: { projectId: string; task: z.infer<typ
         endDate: input.task.endDate?.trim() ?? "",
         durationDays: Number(input.task.durationDays ?? 0),
         hourLimitScope: input.task.hourLimitScope ?? "overall",
+        employeeHourLimits: (input.task.employeeHourLimits ?? [])
+          .map((limit) => ({ employeeId: limit.employeeId.trim(), hours: Number(limit.hours ?? 0) }))
+          .sort((left, right) => left.employeeId.localeCompare(right.employeeId)),
         subTasks: (input.task.subTasks ?? []).map((subTask) => subTask.trim()),
         status: input.task.status ?? "active",
       },
@@ -154,6 +179,73 @@ function normalizeSubTasks(subTasks?: Array<string | null | undefined>) {
         .filter((item) => Boolean(item)),
     ),
   );
+}
+
+async function normalizeEmployeeHourLimits(
+  task: z.infer<typeof projectTaskSchema>,
+  tenantId: string,
+): Promise<ProjectTaskEmployeeHourLimit[]> {
+  if (task.hourLimitScope !== "per_employee") {
+    return [];
+  }
+
+  const rawLimits = task.employeeHourLimits ?? [];
+  if (rawLimits.length === 0) {
+    return [];
+  }
+
+  const employees = await loadEmployees(tenantId);
+  const validEmployeeIds = new Set(employees.map((employee) => employee.id));
+  const normalized: ProjectTaskEmployeeHourLimit[] = [];
+  const seen = new Set<string>();
+
+  for (const limit of rawLimits) {
+    const employeeId = limit.employeeId.trim();
+    const hours = Number(limit.hours ?? 0);
+    if (!employeeId || !Number.isFinite(hours) || hours <= 0) {
+      continue;
+    }
+
+    if (!validEmployeeIds.has(employeeId)) {
+      throw new ProjectValidationError("Selected task employees must belong to this workspace.");
+    }
+
+    if (seen.has(employeeId)) {
+      throw new ProjectValidationError("Each employee can only be selected once per task.");
+    }
+
+    seen.add(employeeId);
+    normalized.push({ employeeId, hours: Number(hours.toFixed(2)) });
+  }
+
+  return normalized;
+}
+
+async function normalizeProjectTasks(
+  tasks: z.infer<typeof projectTaskSchema>[] | undefined,
+  existingTasks: ProjectBudget["tasks"] | undefined,
+  tenantId: string,
+) {
+  const sourceTasks = tasks ?? existingTasks ?? [];
+  const normalizedTasks: ProjectBudget["tasks"] = [];
+
+  for (const task of sourceTasks.filter((item) => item.name.trim())) {
+    normalizedTasks.push({
+      id: task.id ?? createId("pbt"),
+      name: task.name.trim(),
+      description: task.description?.trim() || undefined,
+      maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : undefined,
+      startDate: task.startDate?.trim() || undefined,
+      endDate: task.endDate?.trim() || undefined,
+      durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : undefined,
+      hourLimitScope: task.hourLimitScope === "per_employee" ? "per_employee" : "overall",
+      employeeHourLimits: await normalizeEmployeeHourLimits(task, tenantId),
+      subTasks: normalizeSubTasks(task.subTasks),
+      status: task.status === "archived" ? "archived" : "active",
+    });
+  }
+
+  return normalizedTasks;
 }
 
 function normalizeProjectName(value: string) {
@@ -292,10 +384,11 @@ router.get("/projects", requireTenantRole("admin"), async (request, response) =>
   });
 });
 
-router.get("/projects/catalog", async (request, response) => {
+router.get("/projects/catalog", requireTenantRole("admin", "employee"), async (request, response) => {
   const store = await readStore();
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const includeArchived = request.query.includeArchived === "true";
+  const requester = request.auth?.user;
   const projects = store.projectBudgets
     .filter((budget) => tenantProjectFilter(budget, tenantId))
     .filter((budget) => includeArchived || budget.status !== "archived")
@@ -309,7 +402,15 @@ router.get("/projects/catalog", async (request, response) => {
       status: budget.status,
       createdAt: budget.createdAt,
       updatedAt: budget.updatedAt,
-      tasks: [...budget.tasks].filter((task) => task.status !== "archived").sort((left, right) => left.name.localeCompare(right.name)),
+      tasks: [...budget.tasks]
+        .filter((task) => task.status !== "archived")
+        .filter((task) => requester?.role !== "employee" || canEmployeeUseProjectTask(task, requester.id))
+        .map((task) =>
+          requester?.role === "employee"
+            ? { ...task, maxHours: projectTaskMaxHoursForEmployee(task, requester.id) }
+            : task,
+        )
+        .sort((left, right) => left.name.localeCompare(right.name)),
     }));
 
   response.json({ projectCatalog: projects, projects });
@@ -363,6 +464,13 @@ router.post("/projects", requireTenantRole("admin"), async (request, response) =
     response.status(409).json({ message: `A project named "${parsed.data.project.trim()}" already exists.` });
     return;
   }
+  let tasks: ProjectBudget["tasks"];
+  try {
+    tasks = await normalizeProjectTasks(parsed.data.tasks, existing?.tasks, tenantId);
+  } catch (error) {
+    if (handleProjectValidationError(error, response)) return;
+    throw error;
+  }
   const budget: ProjectBudget = {
     id: parsed.data.id ?? existing?.id ?? createId("pb"),
     tenantId,
@@ -371,18 +479,7 @@ router.post("/projects", requireTenantRole("admin"), async (request, response) =
     totalBudget: Math.abs(parsed.data.totalBudget),
     client: parsed.data.client?.trim() || existing?.client,
     note: parsed.data.note?.trim() || existing?.note,
-    tasks: (parsed.data.tasks ?? existing?.tasks ?? []).filter((task) => task.name.trim()).map((task) => ({
-      id: task.id ?? createId("pbt"),
-      name: task.name.trim(),
-      description: task.description?.trim() || undefined,
-      maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : undefined,
-      startDate: task.startDate?.trim() || undefined,
-      endDate: task.endDate?.trim() || undefined,
-      durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : undefined,
-      hourLimitScope: task.hourLimitScope === "per_employee" ? "per_employee" : "overall",
-      subTasks: normalizeSubTasks(task.subTasks),
-      status: task.status === "archived" ? "archived" : "active",
-    })),
+    tasks,
     createdAt: existing?.createdAt ?? nowIso(),
     updatedAt: nowIso(),
   };
@@ -509,6 +606,14 @@ router.route("/projects/:id").get(async (request, response) => {
     return;
   }
 
+  let tasks: ProjectBudget["tasks"];
+  try {
+    tasks = await normalizeProjectTasks(parsed.data.tasks, existing.tasks, tenantId);
+  } catch (error) {
+    if (handleProjectValidationError(error, response)) return;
+    throw error;
+  }
+
   const budget: ProjectBudget = {
     ...existing,
     tenantId,
@@ -516,18 +621,7 @@ router.route("/projects/:id").get(async (request, response) => {
     totalBudget: Math.abs(parsed.data.totalBudget),
     client: parsed.data.client?.trim() || existing.client,
     note: parsed.data.note?.trim() || existing.note,
-    tasks: (parsed.data.tasks ?? existing.tasks).filter((task) => task.name.trim()).map((task) => ({
-      id: task.id ?? createId("pbt"),
-      name: task.name.trim(),
-      description: task.description?.trim() || undefined,
-      maxHours: Number(task.maxHours ?? 0) > 0 ? Number(task.maxHours) : undefined,
-      startDate: task.startDate?.trim() || undefined,
-      endDate: task.endDate?.trim() || undefined,
-      durationDays: Number(task.durationDays ?? 0) > 0 ? Number(task.durationDays) : undefined,
-      hourLimitScope: task.hourLimitScope === "per_employee" ? "per_employee" : "overall",
-      subTasks: normalizeSubTasks(task.subTasks),
-      status: task.status === "archived" ? "archived" : "active",
-    })),
+    tasks,
     updatedAt: nowIso(),
   };
 
@@ -734,6 +828,14 @@ router.post("/projects/:id/tasks", requireTenantRole("admin"), async (request, r
     return;
   }
 
+  let employeeHourLimits: ProjectTaskEmployeeHourLimit[];
+  try {
+    employeeHourLimits = await normalizeEmployeeHourLimits(parsed.data, tenantId);
+  } catch (error) {
+    if (handleProjectValidationError(error, response)) return;
+    throw error;
+  }
+
   const task: ProjectBudget["tasks"][number] = {
     id: parsed.data.id ?? createId("pbt"),
     name: parsed.data.name.trim(),
@@ -743,6 +845,7 @@ router.post("/projects/:id/tasks", requireTenantRole("admin"), async (request, r
     endDate: parsed.data.endDate?.trim() || undefined,
     durationDays: Number(parsed.data.durationDays ?? 0) > 0 ? Number(parsed.data.durationDays) : undefined,
     hourLimitScope: parsed.data.hourLimitScope === "per_employee" ? "per_employee" : "overall",
+    employeeHourLimits,
     subTasks: normalizeSubTasks(parsed.data.subTasks),
     status: parsed.data.status === "archived" ? "archived" : "active",
   };

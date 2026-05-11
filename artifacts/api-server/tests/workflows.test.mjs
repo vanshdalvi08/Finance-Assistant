@@ -288,6 +288,182 @@ test("timesheet approve retries stay idempotent with key reuse protection", { co
   }
 });
 
+test("employee timesheet edits preserve reviewed days that were not changed", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-timesheet-daily-review");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+  const employeeToken = await login(employee.email, createdEmployee.temporaryPassword);
+  const weekStart = "2026-04-13";
+
+  const createResponse = await api("/business/timesheets", {
+    method: "POST",
+    token: employeeToken,
+    body: {
+      employeeId: employee.id,
+      weekStart,
+      lines: [{ project: "Phase 2", task: "Initial row", hours: { mon: 1, tue: 2 } }],
+    },
+  });
+  assert.ok([200, 201].includes(createResponse.status), `Timesheet create failed: ${JSON.stringify(createResponse.json)}`);
+  const timesheetId = createResponse.json.timesheet.id;
+
+  try {
+    const reviewMon = await api(`/business/timesheets/${timesheetId}/daily-review/mon`, {
+      method: "PATCH",
+      token: adminToken,
+      body: { reviewed: true },
+    });
+    assert.equal(reviewMon.status, 200, JSON.stringify(reviewMon.json));
+
+    const reviewTue = await api(`/business/timesheets/${timesheetId}/daily-review/tue`, {
+      method: "PATCH",
+      token: adminToken,
+      body: { reviewed: true },
+    });
+    assert.equal(reviewTue.status, 200, JSON.stringify(reviewTue.json));
+
+    const saveResponse = await api(`/business/timesheets/${timesheetId}`, {
+      method: "PATCH",
+      token: employeeToken,
+      body: {
+        employeeId: employee.id,
+        weekStart,
+        lines: [
+          { project: "Phase 2", task: "Initial row", hours: { mon: 1, tue: 2 } },
+          { project: "Phase 2", task: "New row", hours: { wed: 3 } },
+        ],
+      },
+    });
+    assert.equal(saveResponse.status, 200, JSON.stringify(saveResponse.json));
+    assert.deepEqual(saveResponse.json.timesheet.dailyReviewStatus, {
+      mon: "reviewed",
+      tue: "reviewed",
+    });
+  } finally {
+    await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("employee cannot change an admin-verified day", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-timesheet-locked-day");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+  const employeeToken = await login(employee.email, createdEmployee.temporaryPassword);
+  const weekStart = "2026-04-20";
+
+  const createResponse = await api("/business/timesheets", {
+    method: "POST",
+    token: employeeToken,
+    body: {
+      employeeId: employee.id,
+      weekStart,
+      lines: [{ project: "Phase 2", task: "Locked row", hours: { mon: 2, wed: 1 }, workNotes: { mon: "Initial note" } }],
+    },
+  });
+  assert.ok([200, 201].includes(createResponse.status), `Timesheet create failed: ${JSON.stringify(createResponse.json)}`);
+  const timesheetId = createResponse.json.timesheet.id;
+
+  try {
+    const reviewResponse = await api(`/business/timesheets/${timesheetId}/daily-review/mon`, {
+      method: "PATCH",
+      token: adminToken,
+      body: { reviewed: true },
+    });
+    assert.equal(reviewResponse.status, 200, JSON.stringify(reviewResponse.json));
+
+    const lockedPatch = await api(`/business/timesheets/${timesheetId}`, {
+      method: "PATCH",
+      token: employeeToken,
+      body: {
+        employeeId: employee.id,
+        weekStart,
+        lines: [{ project: "Phase 2", task: "Locked row", hours: { mon: 4, wed: 1 }, workNotes: { mon: "Changed note" } }],
+      },
+    });
+    assert.equal(lockedPatch.status, 409, JSON.stringify(lockedPatch.json));
+    assert.match(String(lockedPatch.json.message), /verified day/i);
+
+    const unlockedPatch = await api(`/business/timesheets/${timesheetId}`, {
+      method: "PATCH",
+      token: employeeToken,
+      body: {
+        employeeId: employee.id,
+        weekStart,
+        lines: [
+          { project: "Phase 2", task: "Locked row", hours: { mon: 2, wed: 1 }, workNotes: { mon: "Initial note" } },
+          { project: "Phase 2", task: "Open row", hours: { thu: 3 }, workNotes: { thu: "Allowed change" } },
+        ],
+      },
+    });
+    assert.equal(unlockedPatch.status, 200, JSON.stringify(unlockedPatch.json));
+    assert.equal(unlockedPatch.json.timesheet.dailyReviewStatus.mon, "reviewed");
+  } finally {
+    await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("reviewing all 7 days auto-submits the week to the admin queue", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-timesheet-auto-submit");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+  const employeeToken = await login(employee.email, createdEmployee.temporaryPassword);
+  const weekStart = "2026-04-27";
+
+  const createResponse = await api("/business/timesheets", {
+    method: "POST",
+    token: employeeToken,
+    body: {
+      employeeId: employee.id,
+      weekStart,
+      lines: [
+        {
+          project: "Phase 2",
+          task: "Full week",
+          hours: { mon: 1, tue: 1, wed: 1, thu: 1, fri: 1, sat: 1, sun: 1 },
+        },
+      ],
+    },
+  });
+  assert.ok([200, 201].includes(createResponse.status), `Timesheet create failed: ${JSON.stringify(createResponse.json)}`);
+  const timesheetId = createResponse.json.timesheet.id;
+
+  try {
+    for (const day of ["mon", "tue", "wed", "thu", "fri", "sat"]) {
+      const response = await api(`/business/timesheets/${timesheetId}/daily-review/${day}`, {
+        method: "PATCH",
+        token: adminToken,
+        body: { reviewed: true },
+      });
+      assert.equal(response.status, 200, JSON.stringify(response.json));
+      assert.equal(response.json.timesheet.status, "draft");
+    }
+
+    const finalReviewResponse = await api(`/business/timesheets/${timesheetId}/daily-review/sun`, {
+      method: "PATCH",
+      token: adminToken,
+      body: { reviewed: true },
+    });
+    assert.equal(finalReviewResponse.status, 200, JSON.stringify(finalReviewResponse.json));
+    assert.equal(finalReviewResponse.json.timesheet.status, "submitted");
+    assert.equal(typeof finalReviewResponse.json.timesheet.submittedAt, "string");
+
+    const listResponse = await api("/business/timesheets", {
+      token: adminToken,
+    });
+    assert.equal(listResponse.status, 200, JSON.stringify(listResponse.json));
+    const saved = listResponse.json.timesheets.find((entry) => entry.id === timesheetId);
+    assert.equal(saved?.status, "submitted");
+  } finally {
+    await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
 test("timesheet submit retries stay idempotent with key reuse protection", { concurrency: false }, async () => {
   const adminToken = await login("admin@yojak.in", "yojak123");
   const suffix = randomSuffix("phase2-timesheet-submit-idem");

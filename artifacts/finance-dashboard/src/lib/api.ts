@@ -255,6 +255,7 @@ export interface ProjectBudgetTask {
   endDate?: string;
   durationDays?: number;
   hourLimitScope?: "overall" | "per_employee";
+  employeeHourLimits?: Array<{ employeeId: string; hours: number }>;
   subTasks?: string[];
   status: "active" | "archived";
   usedHours?: number;
@@ -443,6 +444,7 @@ interface SaveProjectBudgetInput {
     endDate?: string;
     durationDays?: number;
     hourLimitScope?: "overall" | "per_employee";
+    employeeHourLimits?: Array<{ employeeId: string; hours: number }>;
     subTasks?: string[];
     status?: "active" | "archived";
   }>;
@@ -917,6 +919,17 @@ function normalizeProjectBudget(project: ProjectBudget): ProjectBudget {
     ...project,
     note: project.note ?? project.notes ?? "",
     notes: project.notes ?? project.note ?? "",
+    tasks: (project.tasks ?? []).map((task) => ({
+      ...task,
+      employeeHourLimits: Array.isArray(task.employeeHourLimits)
+        ? task.employeeHourLimits
+            .map((limit) => ({
+              employeeId: String(limit.employeeId ?? "").trim(),
+              hours: Number(limit.hours ?? 0),
+            }))
+            .filter((limit) => limit.employeeId && Number.isFinite(limit.hours) && limit.hours > 0)
+        : [],
+    })),
   };
 }
 

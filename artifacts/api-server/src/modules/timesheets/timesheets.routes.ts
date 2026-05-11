@@ -16,6 +16,7 @@ import {
   type TimesheetEntry,
   blankHours,
   createId,
+  findChangedReviewedDays,
   loadEmployeeProfile,
   loadEmployees,
   normalizeDate,
@@ -387,6 +388,20 @@ function timesheetHasContent(entry: TimesheetEntry) {
       DAY_KEYS.some((day) => Boolean(line.workNotes?.[day]?.trim()));
     const hasHours = DAY_KEYS.some((day) => Number(line.hours[day] ?? 0) > 0);
     return hasText || hasHours;
+  });
+}
+
+function reviewedDayLabel(day: DayKey) {
+  return day.charAt(0).toUpperCase() + day.slice(1);
+}
+
+function respondReviewedDaysLocked(response: Response, reviewedDays: DayKey[]) {
+  const labels = reviewedDays.map(reviewedDayLabel).join(", ");
+  response.status(409).json({
+    message: `Verified day${reviewedDays.length === 1 ? "" : "s"} ${labels} ${
+      reviewedDays.length === 1 ? "is" : "are"
+    } locked. Ask an admin to unverify or return ${reviewedDays.length === 1 ? "that day" : "those days"} before changing hours or work notes.`,
+    lockedDays: reviewedDays,
   });
 }
 
@@ -880,8 +895,20 @@ router.post("/timesheets", requireTenantRole("admin", "employee"), async (reques
     ),
     hours: { ...blankHours(), ...line.hours },
   }));
-  const dailyReviewState = reconcileDailyReviewState(existing?.dailyReviewStatus, existing?.dailyReviewNotes, existing?.lines ?? [], lines);
-  const shouldResetDailyReviewState = request.auth?.user.role === "employee";
+  const lockedReviewedDays =
+    request.auth?.user.role === "employee" && existing
+      ? findChangedReviewedDays(existing.dailyReviewStatus, existing.lines, lines)
+      : [];
+  if (lockedReviewedDays.length > 0) {
+    respondReviewedDaysLocked(response, lockedReviewedDays);
+    return;
+  }
+  const dailyReviewState = reconcileDailyReviewState(
+    existing?.dailyReviewStatus,
+    existing?.dailyReviewNotes,
+    existing?.lines ?? [],
+    lines,
+  );
 
   const entry: TimesheetEntry = {
     id: parsed.data.id ?? existing?.id ?? createId("ts"),
@@ -896,8 +923,8 @@ router.post("/timesheets", requireTenantRole("admin", "employee"), async (reques
     reviewedAt: existing?.reviewedAt,
     reviewedBy: existing?.reviewedBy,
     reviewNotes: existing?.reviewNotes,
-    dailyReviewStatus: shouldResetDailyReviewState ? undefined : dailyReviewState.status,
-    dailyReviewNotes: shouldResetDailyReviewState ? undefined : dailyReviewState.notes,
+    dailyReviewStatus: dailyReviewState.status,
+    dailyReviewNotes: dailyReviewState.notes,
     lines,
     createdAt: existing?.createdAt ?? nowIso(),
     updatedAt: nowIso(),
@@ -1063,8 +1090,18 @@ router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (r
     ),
     hours: { ...blankHours(), ...line.hours },
   }));
-  const dailyReviewState = reconcileDailyReviewState(existing.dailyReviewStatus, existing.dailyReviewNotes, existing.lines, lines);
-  const shouldResetDailyReviewState = request.auth?.user.role === "employee";
+  const lockedReviewedDays =
+    request.auth?.user.role === "employee" ? findChangedReviewedDays(existing.dailyReviewStatus, existing.lines, lines) : [];
+  if (lockedReviewedDays.length > 0) {
+    respondReviewedDaysLocked(response, lockedReviewedDays);
+    return;
+  }
+  const dailyReviewState = reconcileDailyReviewState(
+    existing.dailyReviewStatus,
+    existing.dailyReviewNotes,
+    existing.lines,
+    lines,
+  );
 
   const entry: TimesheetEntry = {
     ...existing,
@@ -1079,8 +1116,8 @@ router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (r
     reviewedAt: existing.reviewedAt,
     reviewedBy: existing.reviewedBy,
     reviewNotes: existing.reviewNotes,
-    dailyReviewStatus: shouldResetDailyReviewState ? undefined : dailyReviewState.status,
-    dailyReviewNotes: shouldResetDailyReviewState ? undefined : dailyReviewState.notes,
+    dailyReviewStatus: dailyReviewState.status,
+    dailyReviewNotes: dailyReviewState.notes,
     lines,
     updatedAt: nowIso(),
   };
@@ -1285,6 +1322,14 @@ router.post("/timesheets/submit", requireTenantRole("admin", "employee"), async 
     ),
     hours: { ...blankHours(), ...line.hours },
   }));
+  const lockedReviewedDays =
+    request.auth?.user.role === "employee" && existing
+      ? findChangedReviewedDays(existing.dailyReviewStatus, existing.lines, lines)
+      : [];
+  if (lockedReviewedDays.length > 0) {
+    respondReviewedDaysLocked(response, lockedReviewedDays);
+    return;
+  }
   const dailyReviewState = reconcileDailyReviewState(existing?.dailyReviewStatus, existing?.dailyReviewNotes, existing?.lines ?? [], lines);
 
   const entry: TimesheetEntry = {

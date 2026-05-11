@@ -1,6 +1,7 @@
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 
 const weekStart = "2026-05-04T12:00:00.000Z";
+const weekStartDate = weekStart.slice(0, 10);
 
 const employeeUser = {
   id: "emp-work-note-ux",
@@ -247,6 +248,7 @@ test("employee work note dialog shows one close button", async ({ browser }) => 
   const pageErrors = trackPageErrors(page);
 
   await page.goto("/employee/timesheet");
+  await page.locator('input[type="date"]').first().fill(weekStartDate);
   await page.getByRole("button", { name: "Edit work note for Mon" }).click();
 
   const dialog = page.getByRole("dialog");

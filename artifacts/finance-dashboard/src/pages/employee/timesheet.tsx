@@ -236,6 +236,18 @@ function clearReviewedDayStatus(
   };
 }
 
+function isReviewedDayLocked(status: TimesheetDailyReviewStatus | undefined, day: DayKey) {
+  return status?.[day] === "reviewed";
+}
+
+function lineHasReviewedDayContent(line: TimesheetTaskLine, status: TimesheetDailyReviewStatus | undefined) {
+  return DAYS.some(
+    ({ key }) =>
+      isReviewedDayLocked(status, key) &&
+      (Number(line.hours[key] ?? 0) > 0 || Boolean(line.workNotes?.[key]?.trim())),
+  );
+}
+
 function summarizeWorkNotes(workNotes?: TimesheetWorkNotes | null) {
   const normalized = normalizeWorkNotes(workNotes);
   if (!normalized) {
@@ -711,6 +723,7 @@ export default function EmployeeTimesheetPage() {
   const readOnly = draft?.status === "submitted" || draft?.status === "approved";
   const isRejected = draft?.status === "rejected";
   const canPersistDraft = hasDraftContent(draft);
+  const activeDayLocked = activeNoteCell ? isReviewedDayLocked(draft?.dailyReviewStatus, activeNoteCell.day) : false;
 
   function goToWeek(date: Date) {
     setSelectedWeek(weekStartIso(date));
@@ -754,6 +767,14 @@ export default function EmployeeTimesheetPage() {
   );
 
   function openWorkNoteDialog(line: TimesheetTaskLine, day: DayKey) {
+    if (isReviewedDayLocked(draft?.dailyReviewStatus, day)) {
+      toast({
+        title: "Day locked",
+        description: "This day was already verified by admin and cannot be edited.",
+      });
+      return;
+    }
+
     const hasDayScopedNotes = Boolean(normalizeWorkNotes(line.workNotes));
     setActiveNoteCell({ lineId: line.id, day });
     setCellHoursDraft(hourInputValue(Number(line.hours[day] ?? 0)));
@@ -808,6 +829,15 @@ export default function EmployeeTimesheetPage() {
       return;
     }
 
+    if (isReviewedDayLocked(draft?.dailyReviewStatus, activeNoteCell.day)) {
+      toast({
+        title: "Day locked",
+        description: "This day was already verified by admin and cannot be edited.",
+      });
+      closeWorkNoteDialog();
+      return;
+    }
+
     const nextValue = resolveHourValue(activeWorkNoteLine.id, activeNoteCell.day, cellHoursDraft);
     if (nextValue === null) {
       return;
@@ -833,6 +863,14 @@ export default function EmployeeTimesheetPage() {
   }
 
   function changeHour(lineId: string, day: DayKey, rawValue: string) {
+    if (isReviewedDayLocked(draft?.dailyReviewStatus, day)) {
+      toast({
+        title: "Day locked",
+        description: "This day was already verified by admin and cannot be edited.",
+      });
+      return;
+    }
+
     const nextValue = resolveHourValue(lineId, day, rawValue);
     if (nextValue === null) {
       return;
@@ -1060,6 +1098,8 @@ export default function EmployeeTimesheetPage() {
                       const showProjectInput = projectSelectionValue === "__custom__" || projectOptions.length === 0;
                       const hasProjectValue = Boolean(line.project.trim());
                       const showTaskInput = hasProjectValue && (taskSelectionValue === "__custom__" || projectTaskOptions.length === 0);
+                      const rowHasLockedReviewedContent = lineHasReviewedDayContent(line, draft.dailyReviewStatus);
+                      const rowEditDisabled = readOnly || rowHasLockedReviewedContent;
 
                       return (
                         <tr
@@ -1074,7 +1114,7 @@ export default function EmployeeTimesheetPage() {
                                 <div className="relative">
                                   <select
                                     value={projectSelectionValue}
-                                    disabled={readOnly}
+                                    disabled={rowEditDisabled}
                                     className={fieldControlClass}
                                     onChange={(event) => setProjectChoice(line.id, event.target.value)}
                                   >
@@ -1093,7 +1133,7 @@ export default function EmployeeTimesheetPage() {
                                 <Input
                                   value={line.project}
                                   placeholder="Project name"
-                                  disabled={readOnly}
+                                  disabled={rowEditDisabled}
                                   className="h-10 rounded-[18px] border-slate-200 bg-white px-4 text-[15px] font-medium text-slate-700 shadow-none dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-100"
                                   onChange={(event) =>
                                     updateLine(line.id, (currentLine) => ({
@@ -1115,7 +1155,7 @@ export default function EmployeeTimesheetPage() {
                                       <div className="relative">
                                         <select
                                           value={taskSelectionValue}
-                                          disabled={readOnly}
+                                          disabled={rowEditDisabled}
                                           className={fieldControlClass}
                                           onChange={(event) => setTaskChoice(line.id, event.target.value)}
                                         >
@@ -1133,7 +1173,7 @@ export default function EmployeeTimesheetPage() {
                                         <Input
                                           value={line.task}
                                           placeholder="Custom task name"
-                                          disabled={readOnly}
+                                          disabled={rowEditDisabled}
                                           className="h-10 rounded-[18px] border-slate-200 bg-white px-4 text-[15px] font-medium text-slate-700 shadow-none dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-100"
                                           onChange={(event) =>
                                             updateLine(line.id, (currentLine) => ({
@@ -1162,7 +1202,7 @@ export default function EmployeeTimesheetPage() {
                                         <div className="relative">
                                           <select
                                             value={line.subTask ?? ""}
-                                            disabled={readOnly}
+                                            disabled={rowEditDisabled}
                                             className={fieldControlClass}
                                             onChange={(event) => setSubTaskChoice(line.id, event.target.value)}
                                           >
@@ -1182,7 +1222,7 @@ export default function EmployeeTimesheetPage() {
                                 <Input
                                   value={line.task}
                                   placeholder="Custom task name"
-                                  disabled={readOnly}
+                                  disabled={rowEditDisabled}
                                           className="h-10 rounded-[18px] border-slate-200 bg-white px-4 text-[15px] font-medium text-slate-700 shadow-none dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-100"
                                   onChange={(event) =>
                                     updateLine(line.id, (currentLine) => ({
@@ -1208,6 +1248,7 @@ export default function EmployeeTimesheetPage() {
                           const hasExistingHours = Number(line.hours[day.key] ?? 0) > 0;
                           const workNotePreview = line.workNotes?.[day.key]?.trim() ?? "";
                           const blockTaskWindowDay = outsideTaskWindow && !hasExistingHours;
+                          const dayLocked = isReviewedDayLocked(draft.dailyReviewStatus, day.key);
                           const placeholder = calendarDay?.holiday
                             ? calendarDay.holidayName ?? "Holiday"
                             : calendarDay?.leaveStatus === "pending"
@@ -1225,6 +1266,7 @@ export default function EmployeeTimesheetPage() {
                                 day.key === "sat" || day.key === "sun" ? "bg-secondary/5" : "",
                                 isOffDay && "bg-secondary/10",
                                 outsideTaskWindow && "bg-secondary/10",
+                                dayLocked && "bg-emerald-50/70 dark:bg-emerald-500/5",
                               )}
                               onMouseEnter={() => setHoveredCell({ lineId: line.id, day: day.key })}
                               onMouseLeave={() =>
@@ -1241,10 +1283,10 @@ export default function EmployeeTimesheetPage() {
                                         <Input
                                           type="text"
                                           inputMode="decimal"
-                                          disabled={readOnly || isOffDay || blockTaskWindowDay}
+                                          disabled={readOnly || dayLocked || isOffDay || blockTaskWindowDay}
                                           className={cn(
                                             "h-[40px] w-[58px] rounded-[16px] border border-slate-200/90 bg-white px-2 pb-[5px] pt-0 text-center text-[0.95rem] font-medium leading-none text-slate-700 shadow-none transition focus-visible:border-sky-400/50 focus-visible:ring-4 focus-visible:ring-sky-500/10 dark:border-[#1a1f2e] dark:bg-slate-950/90 dark:text-slate-100 dark:focus-visible:border-sky-400/70",
-                                            (readOnly || isOffDay || blockTaskWindowDay) && "bg-slate-50 text-slate-400 dark:bg-slate-900 dark:text-slate-500",
+                                            (readOnly || dayLocked || isOffDay || blockTaskWindowDay) && "bg-slate-50 text-slate-400 dark:bg-slate-900 dark:text-slate-500",
                                             workNotePreview && "border-sky-200 dark:border-sky-500/40",
                                           )}
                                           placeholder={placeholder}
@@ -1261,7 +1303,7 @@ export default function EmployeeTimesheetPage() {
                                           className="absolute inset-x-0 bottom-[4px] flex h-3 items-center justify-center"
                                           onClick={() => openWorkNoteDialog(line, day.key)}
                                           aria-label={`Edit work note for ${day.label}`}
-                                          disabled={readOnly}
+                                          disabled={readOnly || dayLocked}
                                         >
                                           <span className="block aspect-square h-[6px] rounded-full bg-[#2F80FF]" />
                                         </button>
@@ -1284,10 +1326,10 @@ export default function EmployeeTimesheetPage() {
                                     <Input
                                       type="text"
                                       inputMode="decimal"
-                                      disabled={readOnly || isOffDay || blockTaskWindowDay}
+                                      disabled={readOnly || dayLocked || isOffDay || blockTaskWindowDay}
                                       className={cn(
                                         "h-[40px] w-[58px] rounded-[16px] border border-slate-200/90 bg-white px-2 pb-[5px] pt-0 text-center text-[0.95rem] font-medium leading-none text-slate-700 shadow-none transition focus-visible:border-sky-400/50 focus-visible:ring-4 focus-visible:ring-sky-500/10 dark:border-[#1a1f2e] dark:bg-slate-950/90 dark:text-slate-100 dark:focus-visible:border-sky-400/70",
-                                        (readOnly || isOffDay || blockTaskWindowDay) && "bg-slate-50 text-slate-400 dark:bg-slate-900 dark:text-slate-500",
+                                        (readOnly || dayLocked || isOffDay || blockTaskWindowDay) && "bg-slate-50 text-slate-400 dark:bg-slate-900 dark:text-slate-500",
                                       )}
                                       placeholder={placeholder}
                                       value={hourInputValue(line.hours[day.key])}
@@ -1298,7 +1340,7 @@ export default function EmployeeTimesheetPage() {
                                         changeHour(line.id, day.key, event.target.value);
                                       }}
                                     />
-                                    {hoveredCell?.lineId === line.id && hoveredCell.day === day.key && !readOnly && !isOffDay && !blockTaskWindowDay ? (
+                                    {hoveredCell?.lineId === line.id && hoveredCell.day === day.key && !readOnly && !dayLocked && !isOffDay && !blockTaskWindowDay ? (
                                       <button
                                         type="button"
                                         className="absolute inset-x-0 bottom-[4px] flex h-3 items-center justify-center text-slate-200 transition hover:text-slate-400"
@@ -1324,7 +1366,7 @@ export default function EmployeeTimesheetPage() {
                                 variant="ghost"
                                 size="sm"
                                 className="h-8 rounded-xl px-2 text-muted-foreground hover:bg-secondary/25 hover:text-foreground"
-                                disabled={readOnly}
+                                disabled={rowEditDisabled}
                                 onClick={() =>
                                   setDraft((currentEntry) =>
                                     currentEntry
@@ -1342,7 +1384,7 @@ export default function EmployeeTimesheetPage() {
                                 variant="ghost"
                                 size="sm"
                                 className="h-8 rounded-xl px-2 text-muted-foreground hover:bg-secondary/25 hover:text-foreground"
-                                disabled={readOnly}
+                                disabled={rowEditDisabled}
                                 onClick={() =>
                                   setDraft((currentEntry) =>
                                     currentEntry
@@ -1554,7 +1596,7 @@ export default function EmployeeTimesheetPage() {
                     }
                     setCellHoursDraft(event.target.value);
                   }}
-                  disabled={readOnly}
+                  disabled={readOnly || activeDayLocked}
                   className="h-11 rounded-[16px] border-slate-200 bg-white pr-11 text-[15px] font-medium text-slate-800 shadow-none focus-visible:border-sky-400/50 focus-visible:ring-4 focus-visible:ring-sky-500/10"
                 />
                 <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-base font-medium text-slate-400">h</span>
@@ -1570,7 +1612,7 @@ export default function EmployeeTimesheetPage() {
                 onChange={(event) => setCellWorkNoteDraft(event.target.value.slice(0, 500))}
                 placeholder="Describe the work completed, key update, or specific output for this task."
                 className="min-h-[136px] rounded-[16px] border-slate-200 bg-white px-4 py-3 text-[15px] leading-7 text-slate-700 shadow-none placeholder:text-slate-400 focus-visible:border-sky-400/50 focus-visible:ring-4 focus-visible:ring-sky-500/10"
-                disabled={readOnly}
+                disabled={readOnly || activeDayLocked}
               />
               <p className="text-right text-sm font-medium text-slate-400">{cellWorkNoteDraft.length} / 500</p>
             </div>
@@ -1588,7 +1630,7 @@ export default function EmployeeTimesheetPage() {
                 type="button"
                 className="h-11 min-w-[164px] rounded-[16px] border border-[#1667ff]/10 bg-[linear-gradient(135deg,#2f80ff_0%,#1667ff_100%)] px-6 text-base font-semibold text-white shadow-[0_14px_26px_rgba(22,103,255,0.24)] hover:brightness-[1.02]"
                 onClick={saveWorkNote}
-                disabled={readOnly}
+                disabled={readOnly || activeDayLocked}
               >
                 Save
               </Button>

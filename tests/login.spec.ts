@@ -1,10 +1,17 @@
 import { test, expect } from '@playwright/test';
+import {
+  DEFAULT_ADMIN_EMAIL,
+  DEFAULT_ADMIN_PASSWORD,
+  ensureDefaultAdminCredentials,
+} from './live-test-helpers';
 
 test('admin can login', async ({ page }) => {
+  await ensureDefaultAdminCredentials();
+
   await page.goto('/login');
 
-  await page.getByRole('textbox', { name: 'E-mail' }).fill(process.env.E2E_ADMIN_EMAIL ?? '');
-  await page.getByRole('textbox', { name: 'Password' }).fill(process.env.E2E_ADMIN_PASSWORD ?? '');
+  await page.getByRole('textbox', { name: 'E-mail' }).fill(process.env.E2E_ADMIN_EMAIL ?? DEFAULT_ADMIN_EMAIL);
+  await page.getByRole('textbox', { name: 'Password' }).fill(process.env.E2E_ADMIN_PASSWORD ?? DEFAULT_ADMIN_PASSWORD);
 
   await page.getByRole('button', { name: 'Sign in' }).click();
 
