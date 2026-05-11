@@ -1,15 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState, useTransition } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { addDays, format } from "date-fns";
-import { CalendarDays, Check, CheckCircle2, ClipboardList, Eye, FileText, RefreshCcw, X } from "lucide-react";
+import { addDays, format, getISOWeek, startOfWeek } from "date-fns";
+import { CalendarDays, Check, CheckCircle2, ChevronLeft, ChevronRight, ClipboardList, Eye, FileText, RefreshCcw, X } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { api, type DayKey, type Employee, type ProjectBudgetTask, type TimesheetEntry, type TimesheetTaskLine } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
@@ -39,6 +41,24 @@ function lineTotal(line: { hours: Partial<Record<(typeof DAYS)[number], number>>
 function weekLabel(weekStart: string) {
   const start = new Date(weekStart);
   return `${format(start, "dd MMM")} - ${format(addDays(start, 6), "dd MMM yyyy")}`;
+}
+
+function normalizeReviewDate(value?: string | Date) {
+  const date =
+    typeof value === "string"
+      ? new Date(`${value}T12:00:00`)
+      : value instanceof Date
+        ? new Date(value)
+        : new Date();
+  return format(date, "yyyy-MM-dd");
+}
+
+function reviewWeekStart(value: string) {
+  return startOfWeek(new Date(`${value}T12:00:00`), { weekStartsOn: 1 });
+}
+
+function reviewWeekLabel(value: string) {
+  return weekLabel(reviewWeekStart(value).toISOString());
 }
 
 function taskLineLabel(line: { task?: string; subTask?: string }) {
@@ -120,12 +140,6 @@ function lineHasContent(line: TimesheetTaskLine) {
 
 function timesheetHasDisplayContent(entry: TimesheetEntry) {
   return entry.lines.some((line) => lineHasContent(line));
-}
-
-function includesDateInWeek(weekStart: string, selectedDate: string) {
-  const start = format(new Date(weekStart), "yyyy-MM-dd");
-  const end = format(addDays(new Date(weekStart), 6), "yyyy-MM-dd");
-  return selectedDate >= start && selectedDate <= end;
 }
 
 function statusBadgeTone(status: TimesheetEntry["status"]) {
@@ -476,7 +490,9 @@ export default function AdminTimesheetValidationPage() {
   const [selectedTimesheetId, setSelectedTimesheetId] = useState("");
   const [selectedEmployeeId, setSelectedEmployeeId] = useState("");
   const [selectedMonth, setSelectedMonth] = useState(() => format(new Date(), "yyyy-MM"));
-  const [selectedReviewDate, setSelectedReviewDate] = useState(() => format(new Date(), "yyyy-MM-dd"));
+  const [selectedReviewDate, setSelectedReviewDate] = useState(() => normalizeReviewDate());
+  const [reviewJumpOpen, setReviewJumpOpen] = useState(false);
+  const [reviewFiltersOpen, setReviewFiltersOpen] = useState(false);
   const [selectedDepartmentFilter, setSelectedDepartmentFilter] = useState("all");
   const [selectedReviewEmployeeId, setSelectedReviewEmployeeId] = useState("all");
   const [pendingReviewKey, setPendingReviewKey] = useState<string | null>(null);
@@ -486,6 +502,7 @@ export default function AdminTimesheetValidationPage() {
   const [dayUnverifyTarget, setDayUnverifyTarget] = useState<{ id: string; day: DayKey } | null>(null);
   const [dayRevertTarget, setDayRevertTarget] = useState<{ id: string; day: DayKey; note: string } | null>(null);
   const [workNoteLineId, setWorkNoteLineId] = useState<string | null>(null);
+  const [isReviewNavigating, startReviewNavigationTransition] = useTransition();
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
   const { data: timesheets = [] } = useQuery({ queryKey: ["timesheets"], queryFn: () => api.getTimesheets() });
@@ -671,18 +688,32 @@ export default function AdminTimesheetValidationPage() {
     [selectedTimesheet, workNoteLineId],
   );
   const activeWorkNoteSummary = useMemo(() => (activeWorkNoteLine ? lineWorkNoteSummary(activeWorkNoteLine) : ""), [activeWorkNoteLine]);
+  const deferredReviewDate = useDeferredValue(selectedReviewDate);
+  const deferredDepartmentFilter = useDeferredValue(selectedDepartmentFilter);
+  const deferredReviewEmployeeId = useDeferredValue(selectedReviewEmployeeId);
+  const selectedReviewWeekStart = useMemo(() => format(reviewWeekStart(selectedReviewDate), "yyyy-MM-dd"), [selectedReviewDate]);
+  const selectedReviewWeekLabel = useMemo(() => reviewWeekLabel(selectedReviewDate), [selectedReviewDate]);
+  const selectedReviewWeekNumber = useMemo(() => getISOWeek(reviewWeekStart(selectedReviewDate)), [selectedReviewDate]);
+  const deferredReviewWeekStart = useMemo(() => format(reviewWeekStart(deferredReviewDate), "yyyy-MM-dd"), [deferredReviewDate]);
+
+  function shiftReviewWeek(days: number) {
+    startReviewNavigationTransition(() => {
+      setSelectedReviewDate((current) => normalizeReviewDate(addDays(new Date(`${current}T12:00:00`), days)));
+    });
+  }
+
   const dailyReviewEntries = useMemo(
     () =>
       timesheets
-        .filter((entry) => includesDateInWeek(entry.weekStart, selectedReviewDate))
+        .filter((entry) => format(new Date(entry.weekStart), "yyyy-MM-dd") === deferredReviewWeekStart)
         .filter((entry) => timesheetHasDisplayContent(entry))
         .filter((entry) => {
           const employee = employeeLookup.get(entry.employeeId);
-          if (selectedDepartmentFilter !== "all" && normalizeText(employee?.department) !== normalizeText(selectedDepartmentFilter)) {
+          if (deferredDepartmentFilter !== "all" && normalizeText(employee?.department) !== normalizeText(deferredDepartmentFilter)) {
             return false;
           }
 
-          if (selectedReviewEmployeeId !== "all" && entry.employeeId !== selectedReviewEmployeeId) {
+          if (deferredReviewEmployeeId !== "all" && entry.employeeId !== deferredReviewEmployeeId) {
             return false;
           }
 
@@ -696,7 +727,7 @@ export default function AdminTimesheetValidationPage() {
 
           return new Date(right.submittedAt ?? right.reviewedAt ?? right.weekStart).getTime() - new Date(left.submittedAt ?? left.reviewedAt ?? left.weekStart).getTime();
         }),
-    [employeeLookup, selectedDepartmentFilter, selectedReviewDate, selectedReviewEmployeeId, timesheets],
+    [deferredDepartmentFilter, deferredReviewEmployeeId, deferredReviewWeekStart, employeeLookup, timesheets],
   );
   const dailyReviewSummary = useMemo(
     () => ({
@@ -706,6 +737,9 @@ export default function AdminTimesheetValidationPage() {
     }),
     [dailyReviewEntries],
   );
+  const selectedDepartmentLabel = selectedDepartmentFilter === "all" ? "All departments" : selectedDepartmentFilter;
+  const selectedReviewEmployeeLabel =
+    selectedReviewEmployeeId === "all" ? "All employees" : employeeLookup.get(selectedReviewEmployeeId)?.name?.trim() || "Selected employee";
 
 
   return (
@@ -750,7 +784,10 @@ export default function AdminTimesheetValidationPage() {
             {reviewMode === "weekly" ? (
               <Input type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} className="w-[220px] rounded-xl" />
             ) : (
-              <Input type="date" value={selectedReviewDate} onChange={(event) => setSelectedReviewDate(event.target.value)} className="w-[220px] rounded-xl" />
+              <div className="flex h-10 w-[220px] items-center gap-2 rounded-xl border border-border/60 bg-card/80 px-3 text-sm font-medium text-foreground shadow-sm">
+                <CalendarDays className="h-4 w-4 text-muted-foreground" />
+                <span className="truncate">{selectedReviewWeekLabel}</span>
+              </div>
             )}
           </div>
         </div>
@@ -1126,47 +1163,150 @@ export default function AdminTimesheetValidationPage() {
                   Review saved employee work by date, department, and employee. This view mirrors the employee weekly grid without any editing controls.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="grid gap-4 md:grid-cols-3">
-                <div className="space-y-1.5">
-                  <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Date</p>
-                  <Input type="date" value={selectedReviewDate} onChange={(event) => setSelectedReviewDate(event.target.value)} className="rounded-xl" />
-                </div>
-                <div className="space-y-1.5">
-                  <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Department</p>
-                  <Select value={selectedDepartmentFilter} onValueChange={setSelectedDepartmentFilter}>
-                    <SelectTrigger className="rounded-xl">
-                      <SelectValue placeholder="All departments" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All departments</SelectItem>
-                      {departmentOptions.map((department) => (
-                        <SelectItem key={department} value={department}>
-                          {department}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-1.5">
-                  <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Employee</p>
-                  <Select value={selectedReviewEmployeeId} onValueChange={setSelectedReviewEmployeeId}>
-                    <SelectTrigger className="rounded-xl">
-                      <SelectValue placeholder="All employees" />
-                    </SelectTrigger>
-                    <SelectContent className="max-h-[320px] overscroll-contain">
-                      <SelectItem value="all">All employees</SelectItem>
-                      {departmentEmployees.map((employee) => (
-                        <SelectItem key={employee.id} value={employee.id}>
-                          {employee.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+              <CardContent>
+                <Collapsible open={reviewFiltersOpen} onOpenChange={setReviewFiltersOpen} className="rounded-[22px] border border-border/60 bg-background/45">
+                  <div className="flex flex-col gap-4 p-4">
+                    <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-9 w-9 rounded-xl border border-border/60 bg-card/70 text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+                          onClick={() => shiftReviewWeek(-7)}
+                        >
+                          <ChevronLeft className="h-4 w-4" />
+                          <span className="sr-only">Previous week</span>
+                        </Button>
+                        <div className="min-w-[188px] px-1">
+                          <p className="text-base font-semibold tracking-[-0.01em] text-foreground">{selectedReviewWeekLabel}</p>
+                          <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+                            <span>Week {selectedReviewWeekNumber}</span>
+                            <span className="h-1 w-1 rounded-full bg-border/80" />
+                            <span>{selectedDepartmentLabel}</span>
+                            <span className="h-1 w-1 rounded-full bg-border/80" />
+                            <span>{selectedReviewEmployeeLabel}</span>
+                          </div>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-9 w-9 rounded-xl border border-border/60 bg-card/70 text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+                          onClick={() => shiftReviewWeek(7)}
+                        >
+                          <ChevronRight className="h-4 w-4" />
+                          <span className="sr-only">Next week</span>
+                        </Button>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-9 rounded-xl border-border/60 bg-card/80 px-3 whitespace-nowrap"
+                          onClick={() =>
+                            startReviewNavigationTransition(() => {
+                              setSelectedReviewDate(normalizeReviewDate());
+                            })
+                          }
+                        >
+                          <CalendarDays className="mr-2 h-4 w-4" />
+                          This Week
+                        </Button>
+                        <Popover open={reviewJumpOpen} onOpenChange={setReviewJumpOpen}>
+                          <PopoverTrigger asChild>
+                            <Button type="button" variant="outline" size="sm" className="h-9 rounded-xl border-border/60 bg-card/80 px-3 whitespace-nowrap">
+                              <CalendarDays className="mr-2 h-4 w-4" />
+                              Jump to Date
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent align="end" className="w-[280px] rounded-2xl border-border/60 bg-card/95 p-4 shadow-xl">
+                            <div className="space-y-3">
+                              <div className="space-y-1">
+                                <p className="text-sm font-semibold text-foreground">Jump to review week</p>
+                                <p className="text-xs text-muted-foreground">Choose any day and we’ll open that full review week.</p>
+                              </div>
+                              <Input
+                                type="date"
+                                value={selectedReviewDate}
+                                onChange={(event) => {
+                                  startReviewNavigationTransition(() => {
+                                    setSelectedReviewDate(event.target.value);
+                                  });
+                                  setReviewJumpOpen(false);
+                                }}
+                                className="rounded-xl"
+                              />
+                            </div>
+                          </PopoverContent>
+                        </Popover>
+                        <CollapsibleTrigger asChild>
+                          <Button type="button" variant="ghost" size="sm" className="h-9 rounded-xl border border-border/60 bg-card/70 px-3 text-sm hover:bg-secondary/60">
+                            Filter Options
+                            <ChevronRight className={cn("ml-2 h-4 w-4 transition-transform duration-200", reviewFiltersOpen && "rotate-90")} />
+                          </Button>
+                        </CollapsibleTrigger>
+                      </div>
+                    </div>
+
+                    <CollapsibleContent className="border-t border-border/50 pt-4">
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div className="space-y-1.5">
+                          <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Department</p>
+                          <Select
+                            value={selectedDepartmentFilter}
+                            onValueChange={(value) =>
+                              startReviewNavigationTransition(() => {
+                                setSelectedDepartmentFilter(value);
+                              })
+                            }
+                          >
+                            <SelectTrigger className="rounded-xl">
+                              <SelectValue placeholder="All departments" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="all">All departments</SelectItem>
+                              {departmentOptions.map((department) => (
+                                <SelectItem key={department} value={department}>
+                                  {department}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-1.5">
+                          <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Employee</p>
+                          <Select
+                            value={selectedReviewEmployeeId}
+                            onValueChange={(value) =>
+                              startReviewNavigationTransition(() => {
+                                setSelectedReviewEmployeeId(value);
+                              })
+                            }
+                          >
+                            <SelectTrigger className="rounded-xl">
+                              <SelectValue placeholder="All employees" />
+                            </SelectTrigger>
+                            <SelectContent className="max-h-[320px] overscroll-contain">
+                              <SelectItem value="all">All employees</SelectItem>
+                              {departmentEmployees.map((employee) => (
+                                <SelectItem key={employee.id} value={employee.id}>
+                                  {employee.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                    </CollapsibleContent>
+                  </div>
+                </Collapsible>
               </CardContent>
             </Card>
 
-            <div className="space-y-4">
+            <div className={cn("min-h-[55vh] space-y-4 [overflow-anchor:none]", isReviewNavigating && "opacity-90")}>
               {dailyReviewEntries.length === 0 ? (
                 <Card className="border-border/60 bg-card/80 shadow-sm">
                   <CardContent className="px-5 py-12 text-center text-sm text-muted-foreground">
@@ -1179,7 +1319,7 @@ export default function AdminTimesheetValidationPage() {
                     key={entry.id}
                     entry={entry}
                     employee={employeeLookup.get(entry.employeeId)}
-                    selectedDate={selectedReviewDate}
+                    selectedDate={deferredReviewDate}
                     taskCatalogLookup={taskCatalogLookup}
                     pendingReviewKey={pendingReviewKey}
                     onMarkDayReviewed={(day) => dayReviewMutation.mutate({ id: entry.id, day, reviewed: true })}
