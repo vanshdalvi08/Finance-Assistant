@@ -1641,6 +1641,9 @@ export const api = {
   addFund: async (input: AddFundInput) =>
     (await businessPost<{ fund: Fund }>("/funds", input)).fund,
 
+  deleteFund: async (id: string) =>
+    businessPost<void>(`/funds/${id}`, undefined, "DELETE"),
+
   getCategories: async () => (await businessGet<{ categories: ExpenseCategory[] }>("/categories")).categories,
 
   getExpenseCategories: async (group?: "personal" | "office") => {

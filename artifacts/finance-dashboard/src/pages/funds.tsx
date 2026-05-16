@@ -2,6 +2,16 @@ import { useMemo, useState, type ChangeEvent } from "react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { api, type AdminOverview, type ChartPoint, type Fund, type Transaction } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { DashboardCard } from "@/components/dashboard-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
@@ -14,7 +24,7 @@ import * as z from "zod";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowDownRight, ChevronDown, ChevronRight, Paperclip, Plus, Upload, Wallet, X } from "lucide-react";
+import { ArrowDownRight, ChevronDown, ChevronRight, Paperclip, Plus, Trash2, Upload, Wallet, X } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { uploadFundReceipt, type UploadedAsset } from "@/lib/uploads";
 
@@ -121,6 +131,48 @@ function updateTransactions(current: Transaction[] | undefined, fund: Fund) {
   return [nextTransaction, ...current.filter((transaction) => transaction.id !== nextTransaction.id)];
 }
 
+function removeOverview(current: AdminOverview | undefined, fund: Fund) {
+  if (!current) {
+    return current;
+  }
+
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const currentYear = new Date().getFullYear();
+  const fundMonth = getFundMonthKey(fund.date);
+  const safeFundDate = getSafeDate(fund.date);
+
+  return {
+    ...current,
+    totalFunds: Math.max(0, current.totalFunds - fund.amount),
+    currentBalance: current.currentBalance - fund.amount,
+    monthToDateFunds: current.monthToDateFunds - (fundMonth === currentMonth ? fund.amount : 0),
+    yearToDateFunds: current.yearToDateFunds - (safeFundDate?.getFullYear() === currentYear ? fund.amount : 0),
+  };
+}
+
+function removeChartData(current: ChartPoint[] | undefined, fund: Fund) {
+  if (!current) {
+    return current;
+  }
+
+  const monthKey = getFundMonthKey(fund.date);
+  if (monthKey === "unknown") {
+    return current;
+  }
+
+  return current.map((point) =>
+    point.month === monthKey ? { ...point, funds: Math.max(0, point.funds - fund.amount) } : point,
+  );
+}
+
+function removeTransactions(current: Transaction[] | undefined, fund: Fund) {
+  if (!current) {
+    return current;
+  }
+
+  return current.filter((transaction) => transaction.id !== `txn_${fund.id}`);
+}
+
 export default function Funds() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -129,6 +181,7 @@ export default function Funds() {
   const [openHistoryMonth, setOpenHistoryMonth] = useState<string | null>(null);
   const [receiptFile, setReceiptFile] = useState<UploadedAsset | null>(null);
   const [isUploadingReceipt, setIsUploadingReceipt] = useState(false);
+  const [fundToDelete, setFundToDelete] = useState<Fund | null>(null);
 
   const { data: funds = [] } = useQuery({
     queryKey: ["funds"],
@@ -219,6 +272,31 @@ export default function Funds() {
         amount: 0,
         date: new Date().toISOString().split("T")[0],
         note: "",
+      });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (fund: Fund) => {
+      await api.deleteFund(fund.id);
+      return fund;
+    },
+    onSuccess: (deletedFund) => {
+      queryClient.setQueryData<Fund[]>(["funds"], (current = []) => current.filter((fund) => fund.id !== deletedFund.id));
+      queryClient.setQueryData<ChartPoint[]>(["chartData"], (current) => removeChartData(current, deletedFund));
+      queryClient.setQueryData<AdminOverview>(["adminOverview"], (current) => removeOverview(current, deletedFund));
+      queryClient.setQueryData<Transaction[]>(["transactions"], (current) => removeTransactions(current, deletedFund));
+      setFundToDelete(null);
+      toast({
+        title: "Fund removed",
+        description: `${deletedFund.source} was removed from your inflows.`,
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "Could not remove fund",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
       });
     },
   });
@@ -479,6 +557,7 @@ export default function Funds() {
                       <TableHead>Receipt</TableHead>
                       <TableHead>Date</TableHead>
                       <TableHead className="text-right">Amount</TableHead>
+                      <TableHead className="w-[56px] text-right"> </TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -509,6 +588,18 @@ export default function Funds() {
                         <TableCell className="text-muted-foreground">{formatFundDate(fund.date)}</TableCell>
                         <TableCell className="text-right font-medium text-primary">
                           +{fund.amount.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                            onClick={() => setFundToDelete(fund)}
+                            title={`Delete ${fund.source}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -574,6 +665,7 @@ export default function Funds() {
                               <TableHead>Receipt</TableHead>
                               <TableHead>Date</TableHead>
                               <TableHead className="text-right">Amount</TableHead>
+                              <TableHead className="w-[56px] text-right"> </TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
@@ -600,6 +692,18 @@ export default function Funds() {
                                 <TableCell className="text-right font-medium text-primary">
                                   +{fund.amount.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
                                 </TableCell>
+                                <TableCell className="text-right">
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                                    onClick={() => setFundToDelete(fund)}
+                                    title={`Delete ${fund.source}`}
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                </TableCell>
                               </TableRow>
                             ))}
                           </TableBody>
@@ -612,6 +716,34 @@ export default function Funds() {
             </CardContent>
           </Card>
         ) : null}
+
+        <AlertDialog open={Boolean(fundToDelete)} onOpenChange={(open) => !open && setFundToDelete(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete this fund entry?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {fundToDelete
+                  ? `This will remove the inflow from ${fundToDelete.source} dated ${formatFundDate(fundToDelete.date)} for ${formatCurrency(fundToDelete.amount)}.`
+                  : "This fund entry will be removed."}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={deleteMutation.isPending}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                disabled={deleteMutation.isPending || !fundToDelete}
+                onClick={(event) => {
+                  event.preventDefault();
+                  if (!fundToDelete) {
+                    return;
+                  }
+                  deleteMutation.mutate(fundToDelete);
+                }}
+              >
+                {deleteMutation.isPending ? "Deleting..." : "Delete Fund"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </DashboardLayout>
   );

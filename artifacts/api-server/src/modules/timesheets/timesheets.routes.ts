@@ -1202,20 +1202,6 @@ router.patch("/timesheets/:id/daily-review/:day", requireTenantRole("admin"), as
     return;
   }
 
-  if (body.data.reviewed) {
-    const employee = await loadEmployeeProfile(existing.employeeId, tenantId);
-    appEvents.emit("timesheet_daily_review_verified", {
-      tenantId,
-      timesheet: updated,
-      employee,
-      day: day.data,
-      verifiedBy: {
-        userId: request.auth?.user.id,
-        name: request.auth?.user.name ?? "Admin",
-      },
-    });
-  }
-
   if (!body.data.reviewed && body.data.note) {
     const actor = notificationActor(request);
     await deliverNotification(
