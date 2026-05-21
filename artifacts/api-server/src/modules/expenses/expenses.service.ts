@@ -5,8 +5,6 @@ import {
   type ApprovalStatus,
   type BusinessStore,
   type ExpenseRecord,
-  type FundRecord,
-  type SalaryRecord,
   createId,
   loadEmployeeProfile,
   normalizeDate,
@@ -18,8 +16,8 @@ import {
 import { assertEmployeeSelfAccess, assertTenantAccess } from "../../lib/policies";
 import { hashSha256 } from "../../lib/security";
 import { assertWorkflowTransition } from "../../lib/workflow-state";
-import { DEFAULT_TENANT_ID } from "../../lib/tenants";
 import { assertActorRoleAccess } from "../../lib/policies";
+import { assertFinancialAccount, availableFundsByAccount } from "../../lib/financial-accounts";
 
 export type ExpenseActor = {
   userId?: string;
@@ -31,6 +29,7 @@ export type ExpenseActor = {
 
 export type ExpenseInput = {
   id?: string;
+  accountId?: string;
   employeeId?: string;
   employeeNameSnapshot?: string;
   project?: string;
@@ -56,52 +55,20 @@ export class ExpensesServiceError extends Error {
   }
 }
 
-function approveExpenses(store: BusinessStore) {
-  return store.expenses.filter((expense) => expense.status === "approved");
-}
-
-function paidSalaries(store: BusinessStore) {
-  return store.salaries.filter((salary) => salary.status === "paid");
-}
-
-function tenantExpenseFilter(expense: ExpenseRecord, tenantId: string) {
-  return (expense.tenantId ?? DEFAULT_TENANT_ID) === tenantId;
-}
-
-function tenantFundFilter(fund: FundRecord, tenantId: string) {
-  return (fund.tenantId ?? DEFAULT_TENANT_ID) === tenantId;
-}
-
-function tenantSalaryFilter(salary: SalaryRecord, tenantId: string) {
-  return (salary.tenantId ?? DEFAULT_TENANT_ID) === tenantId;
-}
-
-function availableFunds(store: BusinessStore, tenantId?: string) {
-  const totalFunds = store.funds
-    .filter((fund) => (tenantId ? tenantFundFilter(fund, tenantId) : true))
-    .reduce((sum, fund) => sum + Math.abs(Number(fund.amount ?? 0)), 0);
-  const spentExpenses = approveExpenses(store)
-    .filter((expense) => (tenantId ? tenantExpenseFilter(expense, tenantId) : true))
-    .reduce((sum, expense) => sum + Math.abs(Number(expense.amount ?? 0)), 0);
-  const spentSalary = paidSalaries(store)
-    .filter((salary) => (tenantId ? tenantSalaryFilter(salary, tenantId) : true))
-    .reduce((sum, salary) => sum + Math.abs(Number(salary.amount ?? 0)), 0);
-  return Math.max(0, Number((totalFunds - spentExpenses - spentSalary).toFixed(2)));
-}
-
-function ensureFunds(store: BusinessStore, amount: number, label: string, tenantId?: string) {
+function ensureFunds(store: BusinessStore, amount: number, label: string, tenantId: string, accountId: string) {
   const required = Math.abs(Number(amount ?? 0));
-  const available = availableFunds(store, tenantId);
+  const available = availableFundsByAccount(store, tenantId, accountId);
   if (required > available) {
     throw new ExpensesServiceError(
       "insufficient_funds",
-      `Insufficient total funds for ${label}. Available balance is ${available.toLocaleString("en-IN")} INR.`,
+      `Insufficient funds in the selected account for ${label}. Available balance is ${available.toLocaleString("en-IN")} INR.`,
     );
   }
 }
 
-function summarizeExpense(expense: Pick<ExpenseRecord, "employeeId" | "employeeNameSnapshot" | "category" | "group" | "amount" | "date" | "status" | "project" | "description" | "note" | "reviewerNote">) {
+function summarizeExpense(expense: Pick<ExpenseRecord, "accountId" | "employeeId" | "employeeNameSnapshot" | "category" | "group" | "amount" | "date" | "status" | "project" | "description" | "note" | "reviewerNote">) {
   return {
+    accountId: expense.accountId ?? null,
     employeeId: expense.employeeId ?? null,
     employeeNameSnapshot: expense.employeeNameSnapshot ?? null,
     category: expense.category,
@@ -118,6 +85,7 @@ function summarizeExpense(expense: Pick<ExpenseRecord, "employeeId" | "employeeN
 
 function changedExpenseFields(previous: ExpenseRecord | null, next: ExpenseRecord) {
   const candidates: Array<keyof ReturnType<typeof summarizeExpense>> = [
+    "accountId",
     "employeeId",
     "employeeNameSnapshot",
     "category",
@@ -255,9 +223,24 @@ export async function saveExpense(input: ExpenseInput, actor: ExpenseActor, requ
       throw new ExpensesServiceError("invalid_input", "Expense amount must be greater than zero.");
     }
 
+    const selectedAccountId =
+      requesterRole === "employee"
+        ? existing?.accountId
+        : input.accountId?.trim() || existing?.accountId;
+    if (status === "approved") {
+      if (!selectedAccountId) {
+        throw new ExpensesServiceError("invalid_input", "Select a Paid Through account before approving this expense.");
+      }
+      assertFinancialAccount(current, actor.tenantId, selectedAccountId);
+      if (!existing || existing.status !== "approved") {
+        ensureFunds(current, nextAmount, "this expense", actor.tenantId, selectedAccountId);
+      }
+    }
+
     expense = {
       id: input.id ?? existing?.id ?? createId("exp"),
       tenantId: actor.tenantId,
+      accountId: status === "approved" ? selectedAccountId : requesterRole === "employee" ? undefined : selectedAccountId,
       employeeId: input.employeeId,
       employeeNameSnapshot: input.employeeNameSnapshot?.trim() || existing?.employeeNameSnapshot || employee?.name,
       project: input.project?.trim() || existing?.project,
@@ -353,7 +336,7 @@ export async function setExpenseStatus(
   nextStatus: ApprovalStatus,
   reviewerNote: string | undefined,
   actor: ExpenseActor,
-  options?: { idempotencyKey?: string | null },
+  options?: { idempotencyKey?: string | null; accountId?: string | null },
 ) {
   const idempotencyKey = options?.idempotencyKey?.trim() || null;
   const requestHash = idempotencyKey
@@ -395,12 +378,24 @@ export async function setExpenseStatus(
         throw new ExpensesServiceError("invalid_state", error instanceof Error ? error.message : "Invalid expense state transition.");
       }
 
+      const selectedAccountId =
+        nextStatus === "approved"
+          ? options?.accountId?.trim() || existing.accountId
+          : existing.accountId;
+      if (nextStatus === "approved") {
+        if (!selectedAccountId) {
+          throw new ExpensesServiceError("invalid_input", "Select a Paid Through account before approving this expense.");
+        }
+        assertFinancialAccount(current, actor.tenantId, selectedAccountId);
+      }
+
       if (nextStatus === "approved" && existing.status !== "approved") {
-        ensureFunds(current, existing.amount, "this expense", actor.tenantId);
+        ensureFunds(current, existing.amount, "this expense", actor.tenantId, selectedAccountId!);
       }
 
       expense = {
         ...existing,
+        accountId: nextStatus === "approved" ? selectedAccountId : existing.accountId,
         status: nextStatus,
         reviewerNote: reviewerNote?.trim() || undefined,
         updatedAt: nowIso(),

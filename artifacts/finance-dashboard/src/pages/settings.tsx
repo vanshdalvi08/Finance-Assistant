@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "wouter";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { api, ExpenseCategory } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -8,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Pencil, Trash2, Building2, Home, Settings as SettingsIcon } from "lucide-react";
+import { ArrowRight, Plus, Pencil, Trash2, Building2, Home, Settings as SettingsIcon, WalletCards } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const PRESET_COLORS = [
@@ -243,6 +244,28 @@ export default function Settings() {
         </div>
 
         <div className="space-y-4">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Operations</h2>
+          <Link href="/settings/financial-accounts">
+            <button className="w-full rounded-2xl border border-border/50 bg-card/60 p-5 text-left transition-colors hover:bg-card">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <div className="rounded-xl bg-secondary/40 p-2.5 text-muted-foreground">
+                    <WalletCards className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold">Financial Accounts</p>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Manage money sources used for expenses, salaries, reimbursements, and operational balances.
+                    </p>
+                  </div>
+                </div>
+                <div className="rounded-full border border-border/60 bg-background/70 p-2 text-muted-foreground">
+                  <ArrowRight className="h-4 w-4" />
+                </div>
+              </div>
+            </button>
+          </Link>
+
           <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Company Information</h2>
           <Card className="border-border/50">
             <CardHeader className="pb-3">

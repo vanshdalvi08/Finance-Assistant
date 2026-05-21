@@ -6,6 +6,7 @@ import {
   businessStateTable,
   expenseCategoriesTable,
   expensesTable,
+  financialAccountsTable,
   fundsTable,
   projectBudgetsTable,
   projectTasksTable,
@@ -17,6 +18,7 @@ import {
   type AuditTrailEntry as DbAuditTrailEntry,
   type Expense as DbExpense,
   type ExpenseCategory as DbExpenseCategory,
+  type FinancialAccount as DbFinancialAccount,
   type Fund as DbFund,
   type Project as DbProject,
   type ProjectBudget as DbProjectBudget,
@@ -41,6 +43,8 @@ export type LeaveRequestStatus = "pending" | "approved" | "rejected";
 export type LeaveRequestKind = "leave" | "holiday";
 export type LeavePolicyPeriod = "monthly" | "quarterly" | "yearly";
 export type LeavePolicyScope = "all" | "selected";
+export type FinancialAccountType = "operational" | "personal" | "mixed_use" | "reserve" | "cash";
+export type FinancialAccountCategory = "bank" | "cash" | "wallet" | "other";
 
 function normalizeProjectTaskHourLimitScope(value: unknown): ProjectTaskHourLimitScope {
   return value === "per_employee" ? "per_employee" : "overall";
@@ -123,6 +127,7 @@ export interface AuditTrailDetailsRecord {
 export interface FundRecord {
   id: string;
   tenantId: string;
+  accountId?: string;
   source: string;
   amount: number;
   date: string;
@@ -130,6 +135,20 @@ export interface FundRecord {
   receiptName?: string;
   receiptPath?: string;
   receiptUrl?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FinancialAccountRecord {
+  id: string;
+  tenantId: string;
+  name: string;
+  accountType: FinancialAccountType;
+  category: FinancialAccountCategory;
+  openingBalance: number;
+  description?: string;
+  includeInOperationalReporting: boolean;
+  isActive: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -146,6 +165,7 @@ export interface ExpenseCategoryRecord {
 export interface ExpenseRecord {
   id: string;
   tenantId: string;
+  accountId?: string;
   employeeId?: string;
   employeeNameSnapshot?: string;
   project?: string;
@@ -167,6 +187,7 @@ export interface ExpenseRecord {
 export interface SalaryRecord {
   id: string;
   tenantId: string;
+  accountId?: string;
   employeeId: string;
   employeeNameSnapshot?: string;
   amount: number;
@@ -317,6 +338,7 @@ export interface AuditTrailEntry {
     | "employee"
     | "expense"
     | "fund"
+    | "financial-account"
     | "salary"
     | "timesheet"
     | "category"
@@ -333,6 +355,7 @@ export interface AuditTrailEntry {
 }
 
 export interface BusinessStore {
+  financialAccounts: FinancialAccountRecord[];
   funds: FundRecord[];
   categories: ExpenseCategoryRecord[];
   expenses: ExpenseRecord[];
@@ -364,6 +387,7 @@ export interface UserProfile {
 }
 
 export const DAY_KEYS: DayKey[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+export const DEFAULT_FINANCIAL_ACCOUNT_NAME = "Operational";
 
 export const DEFAULT_CATEGORIES: ExpenseCategoryRecord[] = [
   { id: "00000000-0000-0000-0000-000000000001", name: "Software", color: "#6366f1", group: "office", createdAt: "1970-01-01T00:00:00.000Z", updatedAt: "1970-01-01T00:00:00.000Z" },
@@ -379,6 +403,50 @@ export const DEFAULT_CATEGORIES: ExpenseCategoryRecord[] = [
   { id: "00000000-0000-0000-0000-000000000015", name: "Transport", color: "#14b8a6", group: "personal", createdAt: "1970-01-01T00:00:00.000Z", updatedAt: "1970-01-01T00:00:00.000Z" },
   { id: "00000000-0000-0000-0000-000000000016", name: "Entertainment", color: "#f59e0b", group: "personal", createdAt: "1970-01-01T00:00:00.000Z", updatedAt: "1970-01-01T00:00:00.000Z" },
 ];
+
+export function normalizeFinancialAccountType(value: unknown): FinancialAccountType {
+  switch (value) {
+    case "personal":
+    case "mixed_use":
+    case "reserve":
+    case "cash":
+      return value;
+    default:
+      return "operational";
+  }
+}
+
+export function normalizeFinancialAccountCategory(value: unknown): FinancialAccountCategory {
+  switch (value) {
+    case "cash":
+    case "wallet":
+    case "other":
+      return value;
+    default:
+      return "bank";
+  }
+}
+
+export function defaultFinancialAccountId(tenantId: string) {
+  return `acct_operational_${tenantId}`;
+}
+
+export function createDefaultFinancialAccount(tenantId: string): FinancialAccountRecord {
+  const now = nowIso();
+  return {
+    id: defaultFinancialAccountId(tenantId),
+    tenantId,
+    name: DEFAULT_FINANCIAL_ACCOUNT_NAME,
+    accountType: "operational",
+    category: "bank",
+    openingBalance: 0,
+    description: "Default operational account",
+    includeInOperationalReporting: true,
+    isActive: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
 
 const STATE_ID = "default";
 let schemaReady: Promise<void> | null = null;
@@ -680,6 +748,7 @@ function calculatePurchaseOrderTaskAmount(hours?: number | null, rate?: number |
 
 function stripNormalizedStore(store: BusinessStore): BusinessStateData {
   const {
+    financialAccounts: _financialAccounts,
     funds: _funds,
     categories: _categories,
     expenses: _expenses,
@@ -693,10 +762,45 @@ function stripNormalizedStore(store: BusinessStore): BusinessStateData {
   return rest;
 }
 
+function financialAccountFromRow(row: DbFinancialAccount): FinancialAccountRecord {
+  return {
+    id: row.id,
+    tenantId: String((row as DbFinancialAccount & { tenantId?: string }).tenantId ?? DEFAULT_TENANT_ID),
+    name: row.name.trim(),
+    accountType: normalizeFinancialAccountType(row.accountType),
+    category: normalizeFinancialAccountCategory(row.category),
+    openingBalance: Math.abs(Number(row.openingBalance ?? 0)),
+    description: row.description?.trim() || undefined,
+    includeInOperationalReporting: Boolean(row.includeInOperationalReporting),
+    isActive: Boolean(row.isActive),
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt),
+  };
+}
+
+function financialAccountToRow(account: FinancialAccountRecord) {
+  return {
+    id: account.id,
+    tenantId: account.tenantId?.trim() || DEFAULT_TENANT_ID,
+    name: account.name.trim(),
+    accountType: normalizeFinancialAccountType(account.accountType),
+    category: normalizeFinancialAccountCategory(account.category),
+    openingBalance: Math.abs(Number(account.openingBalance ?? 0)),
+    description: account.description?.trim() || "",
+    includeInOperationalReporting: Boolean(account.includeInOperationalReporting),
+    isActive: Boolean(account.isActive),
+    createdAt: toDate(account.createdAt),
+    updatedAt: toDate(account.updatedAt),
+  };
+}
+
 function fundFromRow(row: DbFund): FundRecord {
   return {
     id: row.id,
     tenantId: String((row as DbFund & { tenantId?: string }).tenantId ?? DEFAULT_TENANT_ID),
+    accountId: "accountId" in row && typeof (row as { accountId?: unknown }).accountId === "string"
+      ? String((row as { accountId?: string }).accountId ?? "").trim() || undefined
+      : undefined,
     source: row.source.trim(),
     amount: Math.abs(Number(row.amount ?? 0)),
     date: toIso(row.date),
@@ -712,6 +816,7 @@ function fundToRow(fund: FundRecord) {
   return {
     id: fund.id,
     tenantId: fund.tenantId?.trim() || DEFAULT_TENANT_ID,
+    accountId: fund.accountId?.trim() || null,
     source: fund.source.trim(),
     amount: Math.abs(Number(fund.amount ?? 0)),
     date: toDate(fund.date),
@@ -756,6 +861,10 @@ function expenseFromRow(row: DbExpense): ExpenseRecord {
   return {
     id: row.id,
     tenantId,
+    accountId:
+      "accountId" in row && typeof (row as { accountId?: unknown }).accountId === "string"
+        ? String((row as { accountId?: string }).accountId ?? "").trim() || undefined
+        : undefined,
     employeeId: row.employeeId ?? undefined,
     employeeNameSnapshot: row.employeeNameSnapshot?.trim() || undefined,
     project: row.project?.trim() || undefined,
@@ -782,6 +891,7 @@ function expenseToRow(expense: ExpenseRecord) {
   return {
     id: expense.id,
     tenantId: expense.tenantId?.trim() || DEFAULT_TENANT_ID,
+    accountId: expense.accountId?.trim() || null,
     employeeId: expense.employeeId ?? null,
     employeeNameSnapshot: expense.employeeNameSnapshot?.trim() || null,
     project: expense.project?.trim() || null,
@@ -805,6 +915,10 @@ function salaryFromRow(row: DbSalary): SalaryRecord {
   return {
     id: row.id,
     tenantId: String((row as DbSalary & { tenantId?: string }).tenantId ?? DEFAULT_TENANT_ID),
+    accountId:
+      "accountId" in row && typeof (row as { accountId?: unknown }).accountId === "string"
+        ? String((row as { accountId?: string }).accountId ?? "").trim() || undefined
+        : undefined,
     employeeId: row.employeeId,
     employeeNameSnapshot: row.employeeNameSnapshot?.trim() || undefined,
     amount: Math.abs(Number(row.amount ?? 0)),
@@ -826,6 +940,7 @@ function salaryToRow(salary: SalaryRecord) {
   return {
     id: salary.id,
     tenantId: salary.tenantId?.trim() || DEFAULT_TENANT_ID,
+    accountId: salary.accountId?.trim() || null,
     employeeId: salary.employeeId,
     employeeNameSnapshot: salary.employeeNameSnapshot?.trim() || null,
     amount: Math.abs(Number(salary.amount ?? 0)),
@@ -1338,7 +1453,8 @@ function timesheetLinesToRows(
 }
 
 async function ensureNormalizedBusinessMigration(store: BusinessStore) {
-  const [fundRows, categoryRows, expenseRows, salaryRows, projectRows, projectTaskRows, timesheetRows, timesheetLineRows, purchaseOrderRows, auditRows] = await Promise.all([
+  const [financialAccountRows, fundRows, categoryRows, expenseRows, salaryRows, projectRows, projectTaskRows, timesheetRows, timesheetLineRows, purchaseOrderRows, auditRows] = await Promise.all([
+    db.select({ id: financialAccountsTable.id }).from(financialAccountsTable).limit(1),
     db.select({ id: fundsTable.id }).from(fundsTable).limit(1),
     db.select({ id: expenseCategoriesTable.id }).from(expenseCategoriesTable).limit(1),
     db.select({ id: expensesTable.id }).from(expensesTable).limit(1),
@@ -1351,6 +1467,7 @@ async function ensureNormalizedBusinessMigration(store: BusinessStore) {
     db.select({ id: auditTrailTable.id }).from(auditTrailTable).limit(1),
   ]);
 
+  const needsFinancialAccounts = financialAccountRows.length === 0 && store.financialAccounts.length > 0;
   const needsFunds = fundRows.length === 0 && store.funds.length > 0;
   const needsCategories = categoryRows.length === 0 && store.categories.length > 0;
   const needsExpenses = expenseRows.length === 0 && store.expenses.length > 0;
@@ -1362,6 +1479,7 @@ async function ensureNormalizedBusinessMigration(store: BusinessStore) {
   const needsPurchaseOrders = purchaseOrderRows.length === 0 && store.purchaseOrders.length > 0;
   const needsAuditTrail = auditRows.length === 0 && store.auditTrail.length > 0;
   if (
+    !needsFinancialAccounts &&
     !needsFunds &&
     !needsCategories &&
     !needsExpenses &&
@@ -1383,6 +1501,10 @@ async function ensureNormalizedBusinessMigration(store: BusinessStore) {
   const timesheetLines = store.timesheets.flatMap((entry) => timesheetLinesToRows(entry, validProjectIds, validTaskIds));
 
   await db.transaction(async (tx) => {
+    if (needsFinancialAccounts) {
+      await tx.insert(financialAccountsTable).values(store.financialAccounts.map(financialAccountToRow));
+    }
+
     if (needsFunds) {
       await tx.insert(fundsTable).values(store.funds.map(fundToRow));
     }
@@ -1425,8 +1547,78 @@ async function ensureNormalizedBusinessMigration(store: BusinessStore) {
   });
 }
 
+function ensureFinancialAccountCoverage(store: BusinessStore): BusinessStore {
+  const tenantIds = new Set<string>();
+  for (const account of store.financialAccounts) tenantIds.add(account.tenantId?.trim() || DEFAULT_TENANT_ID);
+  for (const fund of store.funds) tenantIds.add(fund.tenantId?.trim() || DEFAULT_TENANT_ID);
+  for (const expense of store.expenses) tenantIds.add(expense.tenantId?.trim() || DEFAULT_TENANT_ID);
+  for (const salary of store.salaries) tenantIds.add(salary.tenantId?.trim() || DEFAULT_TENANT_ID);
+
+  const accounts = [...store.financialAccounts];
+  const accountIds = new Set(accounts.map((account) => account.id));
+  const defaultAccountByTenant = new Map<string, string>();
+
+  for (const tenantId of tenantIds) {
+    const existingTenantAccounts = accounts.filter((account) => account.tenantId === tenantId);
+    const operationalAccount = existingTenantAccounts.find((account) => account.accountType === "operational")
+      ?? existingTenantAccounts[0];
+    if (operationalAccount) {
+      defaultAccountByTenant.set(tenantId, operationalAccount.id);
+      continue;
+    }
+
+    const created = createDefaultFinancialAccount(tenantId);
+    accounts.push(created);
+    accountIds.add(created.id);
+    defaultAccountByTenant.set(tenantId, created.id);
+  }
+
+  return {
+    ...store,
+    financialAccounts: accounts,
+    funds: store.funds.map((fund) => {
+      const tenantId = fund.tenantId?.trim() || DEFAULT_TENANT_ID;
+      const fallbackId = defaultAccountByTenant.get(tenantId);
+      const accountId = fund.accountId?.trim();
+      return {
+        ...fund,
+        accountId: accountId && accountIds.has(accountId) ? accountId : fallbackId,
+      };
+    }),
+    expenses: store.expenses.map((expense) => {
+      const tenantId = expense.tenantId?.trim() || DEFAULT_TENANT_ID;
+      const fallbackId = defaultAccountByTenant.get(tenantId);
+      const accountId = expense.accountId?.trim();
+      const shouldBackfill = expense.status === "approved";
+      return {
+        ...expense,
+        accountId: accountId && accountIds.has(accountId)
+          ? accountId
+          : shouldBackfill
+            ? fallbackId
+            : undefined,
+      };
+    }),
+    salaries: store.salaries.map((salary) => {
+      const tenantId = salary.tenantId?.trim() || DEFAULT_TENANT_ID;
+      const fallbackId = defaultAccountByTenant.get(tenantId);
+      const accountId = salary.accountId?.trim();
+      const shouldBackfill = salary.status === "paid";
+      return {
+        ...salary,
+        accountId: accountId && accountIds.has(accountId)
+          ? accountId
+          : shouldBackfill
+            ? fallbackId
+            : undefined,
+      };
+    }),
+  };
+}
+
 export function createDefaultStore(): BusinessStore {
   return {
+    financialAccounts: [],
     funds: [],
     categories: DEFAULT_CATEGORIES.map((category) => ({ ...category })),
     expenses: [],
@@ -1450,13 +1642,27 @@ export function createDefaultStore(): BusinessStore {
 export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessStore {
   const defaults = createDefaultStore();
   if (!input) {
-    return defaults;
+    return ensureFinancialAccountCoverage(defaults);
   }
 
-  return {
+  return ensureFinancialAccountCoverage({
+    financialAccounts: Array.isArray(input.financialAccounts) ? input.financialAccounts.map((account) => ({
+      id: account.id ?? createId("acct"),
+      tenantId: String((account as FinancialAccountRecord).tenantId ?? DEFAULT_TENANT_ID).trim() || DEFAULT_TENANT_ID,
+      name: String(account.name ?? DEFAULT_FINANCIAL_ACCOUNT_NAME).trim() || DEFAULT_FINANCIAL_ACCOUNT_NAME,
+      accountType: normalizeFinancialAccountType(account.accountType),
+      category: normalizeFinancialAccountCategory(account.category),
+      openingBalance: Math.abs(Number(account.openingBalance ?? 0)),
+      description: account.description?.trim() || undefined,
+      includeInOperationalReporting: account.includeInOperationalReporting ?? normalizeFinancialAccountType(account.accountType) === "operational",
+      isActive: account.isActive ?? true,
+      createdAt: normalizeDate(String(account.createdAt ?? nowIso())),
+      updatedAt: normalizeDate(String(account.updatedAt ?? account.createdAt ?? nowIso())),
+    })) : [],
     funds: Array.isArray(input.funds) ? input.funds.map((fund) => ({
       id: fund.id ?? createId("fund"),
       tenantId: String((fund as FundRecord).tenantId ?? DEFAULT_TENANT_ID).trim() || DEFAULT_TENANT_ID,
+      accountId: fund.accountId?.trim() || undefined,
       source: String(fund.source ?? "").trim(),
       amount: Math.abs(Number(fund.amount ?? 0)),
       date: normalizeDate(String(fund.date ?? nowIso())),
@@ -1477,6 +1683,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
     expenses: Array.isArray(input.expenses) ? input.expenses.map((expense) => ({
       id: expense.id ?? createId("exp"),
       tenantId: String((expense as ExpenseRecord).tenantId ?? DEFAULT_TENANT_ID).trim() || DEFAULT_TENANT_ID,
+      accountId: expense.accountId?.trim() || undefined,
       employeeId: expense.employeeId?.trim() || undefined,
       employeeNameSnapshot: expense.employeeNameSnapshot?.trim() || undefined,
       project: expense.project?.trim() || undefined,
@@ -1497,6 +1704,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
     salaries: Array.isArray(input.salaries) ? input.salaries.map((salary) => ({
       id: salary.id ?? createId("sal"),
       tenantId: String((salary as SalaryRecord).tenantId ?? DEFAULT_TENANT_ID).trim() || DEFAULT_TENANT_ID,
+      accountId: salary.accountId?.trim() || undefined,
       employeeId: String(salary.employeeId ?? "").trim(),
       employeeNameSnapshot: salary.employeeNameSnapshot?.trim() || undefined,
       amount: Math.abs(Number(salary.amount ?? 0)),
@@ -1657,7 +1865,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
       details: normalizeAuditTrailDetails(entry.details, entry.requestId),
       createdAt: normalizeDate(String(entry.createdAt ?? nowIso())),
     })) : [],
-  };
+  });
 }
 
 export async function ensureSchema() {
@@ -1708,6 +1916,7 @@ async function loadStoreFromDatabase(): Promise<BusinessStore> {
   const legacyStore = normalizeStore(stateRows[0]?.data ?? createDefaultStore());
 
   let [
+    financialAccountRows,
     fundRows,
     categoryRows,
     expenseRows,
@@ -1720,6 +1929,7 @@ async function loadStoreFromDatabase(): Promise<BusinessStore> {
     purchaseOrderRows,
     auditRows,
   ] = await Promise.all([
+    db.select().from(financialAccountsTable).orderBy(asc(financialAccountsTable.name), asc(financialAccountsTable.createdAt)),
     db.select().from(fundsTable).orderBy(desc(fundsTable.date), desc(fundsTable.createdAt)),
     db.select().from(expenseCategoriesTable).orderBy(asc(expenseCategoriesTable.group), asc(expenseCategoriesTable.name)),
     db.select().from(expensesTable).orderBy(desc(expensesTable.date), desc(expensesTable.createdAt)),
@@ -1734,6 +1944,8 @@ async function loadStoreFromDatabase(): Promise<BusinessStore> {
   ]);
 
   const effectiveFunds = fundRows.length > 0 ? fundRows.map(fundFromRow) : legacyStore.funds;
+  const effectiveFinancialAccounts =
+    financialAccountRows.length > 0 ? financialAccountRows.map(financialAccountFromRow) : legacyStore.financialAccounts;
   const effectiveCategories = categoryRows.length > 0 ? categoryRows.map(categoryFromRow) : legacyStore.categories;
   const effectiveExpenses = expenseRows.length > 0 ? expenseRows.map(expenseFromRow) : legacyStore.expenses;
   const effectiveSalaries = salaryRows.length > 0 ? salaryRows.map(salaryFromRow) : legacyStore.salaries;
@@ -1743,6 +1955,7 @@ async function loadStoreFromDatabase(): Promise<BusinessStore> {
   const effectivePurchaseOrders = purchaseOrderRows.length > 0 ? purchaseOrderRows.map(purchaseOrderFromRow) : legacyStore.purchaseOrders;
   const effectiveAuditTrail = auditRows.length > 0 ? auditRows.map(auditEntryFromRow) : legacyStore.auditTrail;
 
+  const needsFinancialAccounts = financialAccountRows.length === 0 && effectiveFinancialAccounts.length > 0;
   const needsFunds = fundRows.length === 0 && effectiveFunds.length > 0;
   const needsCategories = categoryRows.length === 0 && effectiveCategories.length > 0;
   const needsExpenses = expenseRows.length === 0 && effectiveExpenses.length > 0;
@@ -1756,6 +1969,7 @@ async function loadStoreFromDatabase(): Promise<BusinessStore> {
 
   if (
     needsFunds ||
+    needsFinancialAccounts ||
     needsCategories ||
     needsExpenses ||
     needsSalaries ||
@@ -1768,6 +1982,7 @@ async function loadStoreFromDatabase(): Promise<BusinessStore> {
   ) {
     await ensureNormalizedBusinessMigration({
       ...legacyStore,
+      financialAccounts: effectiveFinancialAccounts,
       funds: effectiveFunds,
       categories: effectiveCategories,
       expenses: effectiveExpenses,
@@ -1779,6 +1994,7 @@ async function loadStoreFromDatabase(): Promise<BusinessStore> {
     });
 
     [
+      financialAccountRows,
       fundRows,
       categoryRows,
       expenseRows,
@@ -1791,6 +2007,7 @@ async function loadStoreFromDatabase(): Promise<BusinessStore> {
       purchaseOrderRows,
       auditRows,
     ] = await Promise.all([
+      db.select().from(financialAccountsTable).orderBy(asc(financialAccountsTable.name), asc(financialAccountsTable.createdAt)),
       db.select().from(fundsTable).orderBy(desc(fundsTable.date), desc(fundsTable.createdAt)),
       db.select().from(expenseCategoriesTable).orderBy(asc(expenseCategoriesTable.group), asc(expenseCategoriesTable.name)),
       db.select().from(expensesTable).orderBy(desc(expensesTable.date), desc(expensesTable.createdAt)),
@@ -1827,6 +2044,7 @@ async function loadStoreFromDatabase(): Promise<BusinessStore> {
 
   const store = normalizeStore({
     ...legacyStore,
+    financialAccounts: financialAccountRows.map(financialAccountFromRow),
     funds: fundRows.map(fundFromRow),
     categories: categoryRows.map(categoryFromRow),
     expenses: expenseRows.map(expenseFromRow),
@@ -1862,6 +2080,7 @@ export async function readStore(options?: { fresh?: boolean }): Promise<Business
 }
 
 async function persistStoreUnsafe(previousStore: BusinessStore | null, store: BusinessStore): Promise<void> {
+  const financialAccounts = store.financialAccounts.map(financialAccountToRow);
   const funds = store.funds.map(fundToRow);
   const categories = store.categories.map(categoryToRow);
   const expenses = store.expenses.map(expenseToRow);
@@ -1875,6 +2094,7 @@ async function persistStoreUnsafe(previousStore: BusinessStore | null, store: Bu
   const timesheetLines = store.timesheets.flatMap((entry) => timesheetLinesToRows(entry, validProjectIds, validTaskIds));
   const purchaseOrders = store.purchaseOrders.map(purchaseOrderToRow);
   const auditTrail = store.auditTrail.map(auditEntryToRow);
+  const financialAccountsChanged = !previousStore || !sameSlice(previousStore.financialAccounts, store.financialAccounts);
   const fundsChanged = !previousStore || !sameSlice(previousStore.funds, store.funds);
   const categoriesChanged = !previousStore || !sameSlice(previousStore.categories, store.categories);
   const expensesChanged = !previousStore || !sameSlice(previousStore.expenses, store.expenses);
@@ -1886,6 +2106,28 @@ async function persistStoreUnsafe(previousStore: BusinessStore | null, store: Bu
   const businessStateChanged = !previousStore || !sameSlice(stripNormalizedStore(previousStore), stripNormalizedStore(store));
 
   await db.transaction(async (tx) => {
+    if (financialAccountsChanged) {
+      const previousAccounts = new Map(previousStore?.financialAccounts.map((account) => [account.id, account]) ?? []);
+      const nextAccounts = new Map(store.financialAccounts.map((account) => [account.id, account]));
+      const removedIds = [...previousAccounts.keys()].filter((id) => !nextAccounts.has(id));
+      const changedIds = store.financialAccounts
+        .filter((account) => !previousAccounts.has(account.id) || !sameSlice(previousAccounts.get(account.id), account))
+        .map((account) => account.id);
+
+      if (removedIds.length > 0) {
+        await tx.delete(financialAccountsTable).where(inArray(financialAccountsTable.id, removedIds));
+      }
+
+      for (const account of financialAccounts.filter((row) => changedIds.includes(row.id))) {
+        const { id: _accountId, createdAt: _accountCreatedAt, ...updateValues } = account;
+        if (previousAccounts.has(account.id)) {
+          await tx.update(financialAccountsTable).set(updateValues).where(eq(financialAccountsTable.id, account.id));
+        } else {
+          await tx.insert(financialAccountsTable).values(account);
+        }
+      }
+    }
+
     if (auditTrailChanged) {
       const previousIds = new Set(previousStore?.auditTrail.map((entry) => entry.id) ?? []);
       const nextIds = new Set(store.auditTrail.map((entry) => entry.id));

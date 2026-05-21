@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { api } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -10,12 +10,14 @@ import { Badge } from "@/components/ui/badge";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import { CreditCard, Clock3, BadgeCheck } from "lucide-react";
-import type { AdminOverview, ChartPoint, Transaction } from "@/lib/api";
+import type { FinancialAccount } from "@/lib/api";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 type PayrollStatus = "pending" | "paid";
 
 type SalaryRecord = {
   id: string;
+  accountId?: string;
   employeeId: string;
   employeeNameSnapshot?: string;
   amount: number;
@@ -59,6 +61,21 @@ function getPayrollDate(record: SalaryRecord) {
   return record.paidAt ?? record.date;
 }
 
+function accountDisplayName(account: FinancialAccount) {
+  const typeLabel =
+    account.accountType === "mixed_use"
+      ? "Mixed Use"
+      : account.accountType === "operational"
+        ? "Operational"
+        : account.accountType === "reserve"
+          ? "Reserve"
+          : account.accountType === "cash"
+            ? "Cash"
+            : "Personal";
+
+  return `${account.name} • ${typeLabel}`;
+}
+
 function upsertSalaryRecord(current: SalaryRecord[] | undefined, nextRecord: SalaryRecord) {
   if (!current) {
     return [nextRecord];
@@ -72,68 +89,47 @@ function upsertSalaryRecord(current: SalaryRecord[] | undefined, nextRecord: Sal
   return current.map((record) => (record.id === nextRecord.id ? nextRecord : record));
 }
 
-function patchChartData(current: ChartPoint[] | undefined, nextRecord: SalaryRecord) {
-  if (!current) {
-    return current;
-  }
-
-  const monthKey = getPayrollDate(nextRecord).slice(0, 7);
-  const next = current.map((point) =>
-    point.month === monthKey ? { ...point, salary: point.salary + nextRecord.amount } : point,
-  );
-
-  if (next.some((point) => point.month === monthKey)) {
-    return next;
-  }
-
-  return [...current, { month: monthKey, funds: 0, expenses: 0, salary: nextRecord.amount }].sort((left, right) =>
-    left.month.localeCompare(right.month),
-  );
-}
-
-function patchOverview(current: AdminOverview | undefined, nextRecord: SalaryRecord, previousStatus?: PayrollStatus) {
-  if (!current) {
-    return current;
-  }
-
-  const amount = getPayrollAmount(nextRecord);
-  const previousWasPaid = previousStatus === "paid";
-  const nextIsPaid = getPayrollStatus(nextRecord) === "paid";
-  const delta = nextIsPaid && !previousWasPaid ? amount : 0;
-
-  return {
-    ...current,
-    totalSalaryPaid: current.totalSalaryPaid + delta,
-    currentBalance: current.currentBalance - delta,
-  };
-}
-
-function patchTransactions(current: Transaction[] | undefined, nextRecord: SalaryRecord, employeeName: string) {
-  if (!current) {
-    return current;
-  }
-
-  const nextTransaction: Transaction = {
-    id: `txn_${nextRecord.id}`,
-    type: "salary",
-    amount: -getPayrollAmount(nextRecord),
-    date: getPayrollDate(nextRecord),
-    description: `${employeeName} salary`,
-    category: "payroll",
-  };
-
-  return [nextTransaction, ...current.filter((transaction) => transaction.id !== nextTransaction.id)];
-}
-
 export default function Salary() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [showPaidHistory, setShowPaidHistory] = useState(false);
+  const [accountSelections, setAccountSelections] = useState<Record<string, string>>({});
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
   const { data: salaryData = [] } = useQuery({ queryKey: ["salaries"], queryFn: api.getSalaries });
   const { data: adminOverview } = useQuery({ queryKey: ["adminOverview"], queryFn: api.getAdminOverview });
+  const { data: financialAccounts = [] } = useQuery({ queryKey: ["financialAccounts"], queryFn: api.getFinancialAccounts });
   const salaries = salaryData as SalaryRecord[];
+
+  useEffect(() => {
+    if (financialAccounts.length === 0) {
+      return;
+    }
+
+    setAccountSelections((current) => {
+      const next = { ...current };
+      const preferred =
+        financialAccounts.find((account) => account.accountType === "operational" && account.isActive)
+        ?? financialAccounts.find((account) => account.isActive)
+        ?? financialAccounts[0];
+
+      for (const record of salaries.filter((item) => getPayrollStatus(item) === "pending")) {
+        if (next[record.id] || record.accountId) {
+          continue;
+        }
+        if (preferred) {
+          next[record.id] = preferred.id;
+        }
+      }
+
+      return next;
+    });
+  }, [financialAccounts, salaries]);
+
+  const accountBalances = useMemo(
+    () => new Map((adminOverview?.financialAccounts ?? []).map((account) => [account.id, account.balance])),
+    [adminOverview?.financialAccounts],
+  );
 
   const pendingPayroll = salaries.filter((record) => getPayrollStatus(record) === "pending");
   const paidPayroll = salaries.filter((record) => getPayrollStatus(record) === "paid");
@@ -145,12 +141,13 @@ export default function Salary() {
 
   const paySalaryRecord = (api as any).paySalaryRecord as
     | undefined
-    | ((id: string) => Promise<SalaryRecord>);
+    | ((id: string, input?: { note?: string; accountId?: string }) => Promise<SalaryRecord>);
 
   const payMutation = useMutation({
     mutationFn: async (record: SalaryRecord): Promise<{ persisted: boolean; record: SalaryRecord }> => {
+      const accountId = accountSelections[record.id] ?? record.accountId;
       if (typeof paySalaryRecord === "function") {
-        const updatedRecord = await paySalaryRecord(record.id);
+        const updatedRecord = await paySalaryRecord(record.id, { accountId });
         return { persisted: true, record: updatedRecord ?? record };
       }
 
@@ -177,19 +174,15 @@ export default function Salary() {
           paidAt: new Date().toISOString(),
           date: record.date ?? new Date().toISOString(),
         } satisfies SalaryRecord);
-      const previousStatus = getPayrollStatus(record);
-
       queryClient.setQueryData<SalaryRecord[]>(["salaries"], (current) => upsertSalaryRecord(current, updatedRecord));
       queryClient.setQueryData<SalaryRecord[]>(["employee-salaries", record.employeeId], (current) =>
         upsertSalaryRecord(current, updatedRecord),
       );
-      queryClient.setQueryData<ChartPoint[]>(["chartData"], (current) => patchChartData(current, updatedRecord));
-      queryClient.setQueryData<AdminOverview>(["adminOverview"], (current) =>
-        patchOverview(current, updatedRecord, previousStatus),
-      );
-      queryClient.setQueryData<Transaction[]>(["transactions"], (current) =>
-        patchTransactions(current, updatedRecord, updatedRecord.employeeNameSnapshot ?? record.employeeNameSnapshot ?? "Employee"),
-      );
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["adminOverview"] }),
+        queryClient.invalidateQueries({ queryKey: ["chartData"] }),
+        queryClient.invalidateQueries({ queryKey: ["transactions"] }),
+      ]);
 
       toast({
         title: "Salary paid",
@@ -254,6 +247,7 @@ export default function Salary() {
                       <TableHead className="text-right">Hours</TableHead>
                       <TableHead className="text-right">Rate</TableHead>
                       <TableHead className="text-right">Amount</TableHead>
+                      <TableHead>Paid Through</TableHead>
                       <TableHead>Source</TableHead>
                       <TableHead className="text-right">Action</TableHead>
                     </TableRow>
@@ -261,7 +255,7 @@ export default function Salary() {
                   <TableBody>
                     {pendingPayroll.length === 0 ? (
                       <TableRow className="border-border/50">
-                        <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">
+                        <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
                           No pending payroll records.
                         </TableCell>
                       </TableRow>
@@ -270,7 +264,9 @@ export default function Salary() {
                         const employee = employees.find((item) => item.id === record.employeeId);
                         const employeeName = record.employeeNameSnapshot ?? employee?.name ?? "Unknown";
                         const amount = getPayrollAmount(record);
-                        const insufficientFunds = typeof adminOverview?.currentBalance === "number" && amount > adminOverview.currentBalance;
+                        const selectedAccountId = accountSelections[record.id] ?? record.accountId;
+                        const availableBalance = selectedAccountId ? accountBalances.get(selectedAccountId) ?? 0 : 0;
+                        const insufficientFunds = Boolean(selectedAccountId) && amount > availableBalance;
 
                         return (
                           <TableRow key={record.id} className="border-border/50">
@@ -288,6 +284,25 @@ export default function Salary() {
                               {formatCurrency(amount)}
                             </TableCell>
                             <TableCell>
+                              <Select
+                                value={selectedAccountId ?? ""}
+                                onValueChange={(value) =>
+                                  setAccountSelections((current) => ({ ...current, [record.id]: value }))
+                                }
+                              >
+                                <SelectTrigger className="h-8 w-[190px] rounded-full border-border/60 bg-background/70 text-xs">
+                                  <SelectValue placeholder="Select account" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {financialAccounts.filter((account) => account.isActive).map((account) => (
+                                    <SelectItem key={account.id} value={account.id}>
+                                      {accountDisplayName(account)}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </TableCell>
+                            <TableCell>
                               <Badge variant="outline" className="font-normal text-xs">
                                 {record.source === "timesheet" ? "Timesheet" : "Manual"}
                               </Badge>
@@ -296,10 +311,16 @@ export default function Salary() {
                               <Button
                                 size="sm"
                                 onClick={() => payMutation.mutate(record)}
-                                disabled={payMutation.isPending || insufficientFunds}
-                                title={insufficientFunds ? "Not enough available funds to pay this salary yet." : undefined}
+                                disabled={payMutation.isPending || !selectedAccountId || insufficientFunds}
+                                title={
+                                  !selectedAccountId
+                                    ? "Select the financial account used for this payout."
+                                    : insufficientFunds
+                                      ? "Not enough available funds in the selected account."
+                                      : undefined
+                                }
                               >
-                                {insufficientFunds ? "Insufficient Funds" : "Pay Salary"}
+                                {!selectedAccountId ? "Select Account" : insufficientFunds ? "Insufficient Funds" : "Pay Salary"}
                               </Button>
                             </TableCell>
                           </TableRow>
