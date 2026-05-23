@@ -346,7 +346,7 @@ test("employee timesheet edits preserve reviewed days that were not changed", { 
   }
 });
 
-test("employee cannot change an admin-verified day", { concurrency: false }, async () => {
+test("employee cannot change an admin-protected day", { concurrency: false }, async () => {
   const adminToken = await login("admin@yojak.in", "yojak123");
   const suffix = randomSuffix("phase2-timesheet-locked-day");
   const createdEmployee = await createEmployee(adminToken, suffix);
@@ -384,7 +384,7 @@ test("employee cannot change an admin-verified day", { concurrency: false }, asy
       },
     });
     assert.equal(lockedPatch.status, 409, JSON.stringify(lockedPatch.json));
-    assert.match(String(lockedPatch.json.message), /verified day/i);
+    assert.match(String(lockedPatch.json.message), /protected day/i);
 
     const unlockedPatch = await api(`/business/timesheets/${timesheetId}`, {
       method: "PATCH",
@@ -400,6 +400,192 @@ test("employee cannot change an admin-verified day", { concurrency: false }, asy
     });
     assert.equal(unlockedPatch.status, 200, JSON.stringify(unlockedPatch.json));
     assert.equal(unlockedPatch.json.timesheet.dailyReviewStatus.mon, "reviewed");
+  } finally {
+    await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("admin can lock a day and the employee cannot change it", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-timesheet-day-lock");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+  const employeeToken = await login(employee.email, createdEmployee.temporaryPassword);
+  const weekStart = "2026-05-04";
+
+  const createResponse = await api("/business/timesheets", {
+    method: "POST",
+    token: employeeToken,
+    body: {
+      employeeId: employee.id,
+      weekStart,
+      lines: [{ project: "Phase 2", task: "Day lock", hours: { tue: 2, thu: 1 }, workNotes: { tue: "Locked day note" } }],
+    },
+  });
+  assert.ok([200, 201].includes(createResponse.status), `Timesheet create failed: ${JSON.stringify(createResponse.json)}`);
+  const timesheetId = createResponse.json.timesheet.id;
+
+  try {
+    const lockResponse = await api(`/business/timesheets/${timesheetId}/daily-review/tue`, {
+      method: "PATCH",
+      token: adminToken,
+      body: { action: "locked" },
+    });
+    assert.equal(lockResponse.status, 200, JSON.stringify(lockResponse.json));
+    assert.equal(lockResponse.json.timesheet.dailyReviewLocks.tue, true);
+
+    const lockedPatch = await api(`/business/timesheets/${timesheetId}`, {
+      method: "PATCH",
+      token: employeeToken,
+      body: {
+        employeeId: employee.id,
+        weekStart,
+        lines: [{ project: "Phase 2", task: "Day lock", hours: { tue: 4, thu: 1 }, workNotes: { tue: "Changed" } }],
+      },
+    });
+    assert.equal(lockedPatch.status, 409, JSON.stringify(lockedPatch.json));
+    assert.match(String(lockedPatch.json.message), /protected day/i);
+
+    const openPatch = await api(`/business/timesheets/${timesheetId}`, {
+      method: "PATCH",
+      token: employeeToken,
+      body: {
+        employeeId: employee.id,
+        weekStart,
+        lines: [
+          { project: "Phase 2", task: "Day lock", hours: { tue: 2, thu: 1 }, workNotes: { tue: "Locked day note" } },
+          { project: "Phase 2", task: "Open row", hours: { fri: 3 }, workNotes: { fri: "Allowed edit" } },
+        ],
+      },
+    });
+    assert.equal(openPatch.status, 200, JSON.stringify(openPatch.json));
+    assert.equal(openPatch.json.timesheet.dailyReviewLocks.tue, true);
+  } finally {
+    await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("admin can mark an empty day as holiday and the employee cannot edit it", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-timesheet-day-holiday");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+  const employeeToken = await login(employee.email, createdEmployee.temporaryPassword);
+  const weekStart = "2026-05-11";
+
+  const createResponse = await api("/business/timesheets", {
+    method: "POST",
+    token: employeeToken,
+    body: {
+      employeeId: employee.id,
+      weekStart,
+      lines: [{ project: "Phase 2", task: "Holiday row", hours: { tue: 2, wed: 1 } }],
+    },
+  });
+  assert.ok([200, 201].includes(createResponse.status), `Timesheet create failed: ${JSON.stringify(createResponse.json)}`);
+  const timesheetId = createResponse.json.timesheet.id;
+
+  try {
+    const holidayResponse = await api(`/business/timesheets/${timesheetId}/daily-review/mon`, {
+      method: "PATCH",
+      token: adminToken,
+      body: { action: "holiday" },
+    });
+    assert.equal(holidayResponse.status, 200, JSON.stringify(holidayResponse.json));
+    assert.equal(holidayResponse.json.timesheet.dailyReviewHolidays.mon, true);
+
+    const lockedPatch = await api(`/business/timesheets/${timesheetId}`, {
+      method: "PATCH",
+      token: employeeToken,
+      body: {
+        employeeId: employee.id,
+        weekStart,
+        lines: [{ project: "Phase 2", task: "Holiday row", hours: { mon: 8, tue: 2, wed: 1 }, workNotes: { mon: "Should fail" } }],
+      },
+    });
+    assert.equal(lockedPatch.status, 409, JSON.stringify(lockedPatch.json));
+    assert.match(String(lockedPatch.json.message), /protected day/i);
+  } finally {
+    await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("admin cannot mark a worked day as holiday", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-timesheet-holiday-safety");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+  const employeeToken = await login(employee.email, createdEmployee.temporaryPassword);
+  const weekStart = "2026-05-18";
+
+  const createResponse = await api("/business/timesheets", {
+    method: "POST",
+    token: employeeToken,
+    body: {
+      employeeId: employee.id,
+      weekStart,
+      lines: [{ project: "Phase 2", task: "Worked day", hours: { wed: 4 }, workNotes: { wed: "Already logged" } }],
+    },
+  });
+  assert.ok([200, 201].includes(createResponse.status), `Timesheet create failed: ${JSON.stringify(createResponse.json)}`);
+  const timesheetId = createResponse.json.timesheet.id;
+
+  try {
+    const holidayResponse = await api(`/business/timesheets/${timesheetId}/daily-review/wed`, {
+      method: "PATCH",
+      token: adminToken,
+      body: { action: "holiday" },
+    });
+    assert.equal(holidayResponse.status, 409, JSON.stringify(holidayResponse.json));
+    assert.match(String(holidayResponse.json.message), /cannot mark.*holiday/i);
+  } finally {
+    await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("admin holiday shows up in the employee month calendar", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-timesheet-month-calendar-holiday");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+  const employeeToken = await login(employee.email, createdEmployee.temporaryPassword);
+  const weekStart = "2026-05-11";
+
+  const createResponse = await api("/business/timesheets", {
+    method: "POST",
+    token: employeeToken,
+    body: {
+      employeeId: employee.id,
+      weekStart,
+      lines: [{ project: "Phase 2", task: "Month calendar holiday", hours: { tue: 2, wed: 1 } }],
+    },
+  });
+  assert.ok([200, 201].includes(createResponse.status), `Timesheet create failed: ${JSON.stringify(createResponse.json)}`);
+  const timesheetId = createResponse.json.timesheet.id;
+
+  try {
+    const holidayResponse = await api(`/business/timesheets/${timesheetId}/daily-review/mon`, {
+      method: "PATCH",
+      token: adminToken,
+      body: { action: "holiday" },
+    });
+    assert.equal(holidayResponse.status, 200, JSON.stringify(holidayResponse.json));
+
+    const calendarResponse = await api(`/business/month-calendar?employeeId=${employee.id}&month=2026-05`, {
+      method: "GET",
+      token: employeeToken,
+    });
+    assert.equal(calendarResponse.status, 200, JSON.stringify(calendarResponse.json));
+
+    const holidayDay = calendarResponse.json.monthCalendar.days.find((day) => day.date.startsWith("2026-05-11"));
+    assert.ok(holidayDay, "Expected the month calendar to include 2026-05-11");
+    assert.equal(holidayDay.holiday, true);
+    assert.equal(holidayDay.holidaySource, "admin");
+    assert.equal(holidayDay.holidayName, "Holiday");
   } finally {
     await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
     await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
@@ -1232,6 +1418,59 @@ test("timesheet draft create/update/delete workflow stays stable for repeated sa
     });
     assert.equal(deletedLookup.status, 404, JSON.stringify(deletedLookup.json));
   } finally {
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("empty review shells can be shown, locked, and protected before work is entered", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("timesheet-shell");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+  const employeeToken = await login(employee.email, createdEmployee.temporaryPassword);
+  const timesheetId = randomSuffix("timesheet-shell-id");
+  const timesheetPayload = {
+    id: timesheetId,
+    employeeId: employee.id,
+    employeeNameSnapshot: employee.name,
+    weekStart: "2026-05-18",
+    reviewShell: true,
+    lines: [],
+  };
+
+  try {
+    const createResponse = await api("/business/timesheets", {
+      method: "POST",
+      token: adminToken,
+      body: timesheetPayload,
+    });
+    assert.equal(createResponse.status, 201, JSON.stringify(createResponse.json));
+    assert.equal(createResponse.json.timesheet.id, timesheetId);
+    assert.equal(createResponse.json.timesheet.reviewShell, true);
+
+    const lockResponse = await api(`/business/timesheets/${timesheetId}/daily-review/mon`, {
+      method: "PATCH",
+      token: adminToken,
+      body: { action: "locked" },
+    });
+    assert.equal(lockResponse.status, 200, JSON.stringify(lockResponse.json));
+    assert.equal(lockResponse.json.timesheet.dailyReviewLocks.mon, true);
+
+    const employeePatch = await api(`/business/timesheets/${timesheetId}`, {
+      method: "PATCH",
+      token: employeeToken,
+      body: {
+        id: timesheetId,
+        employeeId: employee.id,
+        employeeNameSnapshot: employee.name,
+        weekStart: "2026-05-18",
+        lines: [{ project: "Shell Project", task: "Shell task", hours: { mon: 1 } }],
+      },
+    });
+    assert.equal(employeePatch.status, 409, JSON.stringify(employeePatch.json));
+    assert.match(String(employeePatch.json.message), /protected day/i);
+  } finally {
+    await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
     await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
   }
 });

@@ -1,7 +1,7 @@
 import { useDeferredValue, useEffect, useMemo, useState, useTransition } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addDays, format, getISOWeek, startOfWeek } from "date-fns";
-import { CalendarDays, Check, CheckCircle2, ChevronLeft, ChevronRight, ClipboardList, Eye, FileText, RefreshCcw, X } from "lucide-react";
+import { CalendarDays, Check, CheckCircle2, ChevronLeft, ChevronRight, ClipboardList, Eye, FileText, Lock, RefreshCcw, Users, X } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { api, type DayKey, type Employee, type ProjectBudgetTask, type TimesheetEntry, type TimesheetTaskLine } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -36,6 +36,18 @@ const READONLY_PLACEHOLDER_CLASS =
 
 function lineTotal(line: { hours: Partial<Record<(typeof DAYS)[number], number>> }) {
   return DAYS.reduce((sum, day) => sum + Number(line.hours[day] ?? 0), 0);
+}
+
+function blankReviewHours(): Record<DayKey, number> {
+  return {
+    mon: 0,
+    tue: 0,
+    wed: 0,
+    thu: 0,
+    fri: 0,
+    sat: 0,
+    sun: 0,
+  };
 }
 
 function weekLabel(weekStart: string) {
@@ -142,6 +154,10 @@ function timesheetHasDisplayContent(entry: TimesheetEntry) {
   return entry.lines.some((line) => lineHasContent(line));
 }
 
+type DailyReviewSheetEntry = TimesheetEntry & {
+  isMissingSheet?: boolean;
+};
+
 function statusBadgeTone(status: TimesheetEntry["status"]) {
   if (status === "approved") {
     return "border-emerald-500/20 bg-emerald-500/10 text-emerald-300";
@@ -199,18 +215,26 @@ function AdminReadonlyTimesheetCard({
   selectedDate,
   taskCatalogLookup,
   pendingReviewKey,
+  isExpanded,
   onMarkDayReviewed,
   onRequestDayUnverify,
   onRequestDayRevert,
+  onToggleDayHoliday,
+  onToggleDayLock,
+  onToggleExpanded,
 }: {
   entry: TimesheetEntry;
   employee?: Employee;
   selectedDate: string;
   taskCatalogLookup?: Map<string, ProjectBudgetTask>;
   pendingReviewKey?: string | null;
+  isExpanded: boolean;
   onMarkDayReviewed: (day: DayKey) => void;
   onRequestDayUnverify: (day: DayKey) => void;
   onRequestDayRevert: (day: DayKey) => void;
+  onToggleDayHoliday: (day: DayKey, active: boolean) => void;
+  onToggleDayLock: (day: DayKey, active: boolean) => void;
+  onToggleExpanded: () => void;
 }) {
   const weekDays = DAYS.map((day, index) => {
     const date = addDays(new Date(entry.weekStart), index);
@@ -222,6 +246,20 @@ function AdminReadonlyTimesheetCard({
   });
   const selectedDayKey = weekDays.find((day) => format(day.date, "yyyy-MM-dd") === selectedDate)?.key ?? null;
   const displayLines = entry.lines.filter((line) => lineHasContent(line));
+  const isEmptySheet = displayLines.length === 0;
+  const renderLines = isEmptySheet
+    ? [
+        {
+          id: "empty-sheet",
+          project: "",
+          task: "",
+          subTask: "",
+          notes: "",
+          workNotes: {},
+          hours: blankReviewHours(),
+        },
+      ]
+    : displayLines;
   const dayTotals = DAYS.map((day) => ({
     key: day,
     total: displayLines.reduce((sum, line) => sum + Number(line.hours[day] ?? 0), 0),
@@ -252,15 +290,37 @@ function AdminReadonlyTimesheetCard({
             <Badge className="rounded-full border border-border/60 bg-background/70 px-3 py-1 text-[11px] font-medium text-foreground shadow-none">
               {formatHourValue(totalHours)}
             </Badge>
+            {entry.reviewShell ? (
+              <Badge className="rounded-full border border-border/60 bg-secondary/40 px-3 py-1 text-[11px] font-medium text-muted-foreground shadow-none">
+                Empty sheet
+              </Badge>
+            ) : null}
           </div>
         </div>
       </CardHeader>
 
       <CardContent className="p-0">
-        {displayLines.length === 0 ? (
-          <div className="px-5 py-12 text-center text-sm text-muted-foreground">No saved timesheet content for this employee on the selected date.</div>
-        ) : (
-          <div className="timesheet-scroll overflow-x-auto">
+        {isEmptySheet && !isExpanded ? (
+          <div className="flex flex-col gap-3 border-b border-border/50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-foreground">No hours logged yet</p>
+              <p className="text-sm text-muted-foreground">
+                Open this sheet only when you need to lock, mark a holiday, or review a day before the employee enters work.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-9 rounded-xl border-border/60 bg-card/80 px-3 whitespace-nowrap"
+              onClick={onToggleExpanded}
+            >
+              Open sheet
+            </Button>
+          </div>
+        ) : null}
+        {isEmptySheet && !isExpanded ? null : (
+        <div className="timesheet-scroll overflow-x-auto">
             <table className="w-full min-w-[1030px] table-fixed border-separate border-spacing-0">
               <thead>
                 <tr className="bg-secondary/10 text-left text-sm text-muted-foreground">
@@ -273,11 +333,23 @@ function AdminReadonlyTimesheetCard({
                   {weekDays.map((day) => {
                     const dayReviewState = entry.dailyReviewStatus?.[day.key];
                     const dayReviewNote = entry.dailyReviewNotes?.[day.key]?.trim() ?? "";
+                    const isHoliday = entry.dailyReviewHolidays?.[day.key] === true;
+                    const isDayLocked = entry.dailyReviewLocks?.[day.key] === true;
                     const isReviewed = dayReviewState === "reviewed";
                     const isReverted = dayReviewState === "reverted";
                     const toggleKey = `${entry.id}:${day.key}`;
                     const isPending = pendingReviewKey === toggleKey;
                     const fullDayName = format(day.date, "EEEE");
+                    const dayStatus = isHoliday ? "Holiday" : isReviewed ? "Verified" : isReverted ? "Returned" : isDayLocked ? "Locked" : "Work";
+                    const dayStatusClass = isHoliday
+                      ? "text-emerald-500 dark:text-emerald-300"
+                      : isReviewed
+                        ? "text-emerald-400"
+                        : isReverted
+                          ? "text-rose-400"
+                          : isDayLocked
+                            ? "text-slate-500 dark:text-slate-300"
+                            : "text-muted-foreground";
 
                     return (
                       <th
@@ -287,15 +359,64 @@ function AdminReadonlyTimesheetCard({
                           day.key === selectedDayKey && "bg-sky-500/5",
                         )} 
                       >
-                        {isReviewed ? <span className="absolute inset-x-0 top-0 h-1 bg-emerald-400/85" /> : null}
-                        {isReverted ? <span className="absolute inset-x-0 top-0 h-1 bg-rose-400/70" /> : null}
-                        <div className="space-y-1">
-                          <div className="flex justify-center gap-1.5">
+                        {isHoliday ? <span className="absolute inset-x-0 top-0 h-1 bg-emerald-500/85" /> : null}
+                        {!isHoliday && isReviewed ? <span className="absolute inset-x-0 top-0 h-1 bg-emerald-400/85" /> : null}
+                        {!isHoliday && isReverted ? <span className="absolute inset-x-0 top-0 h-1 bg-rose-400/70" /> : null}
+                          <div className="space-y-1">
+                            <div className="flex justify-center gap-1.5">
+                              <HoverCard openDelay={120} closeDelay={80}>
+                                <HoverCardTrigger asChild>
+                                  <button
+                                    type="button"
+                                    onClick={() => onToggleDayHoliday(day.key, !isHoliday)}
+                                    disabled={isPending}
+                                    aria-label={isHoliday ? `Remove holiday from ${fullDayName}` : `Mark ${fullDayName} as holiday`}
+                                    className={cn(
+                                      "flex h-5 w-5 items-center justify-center rounded-full border text-[11px] font-semibold transition-all duration-200 ease-out motion-safe:transform-gpu will-change-transform hover:-translate-y-0.5 active:translate-y-0 active:scale-95",
+                                      isHoliday
+                                        ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-200"
+                                        : "border-slate-200/90 bg-white/90 text-slate-400 hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-600 dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-500 dark:hover:border-emerald-500/30 dark:hover:bg-emerald-500/10 dark:hover:text-emerald-300",
+                                      isPending && "opacity-60",
+                                    )}
+                                  >
+                                    H
+                                </button>
+                              </HoverCardTrigger>
+                              <HoverCardContent side="top" sideOffset={8} className="w-auto rounded-xl px-3 py-2 text-xs">
+                                {isHoliday ? "Remove holiday" : `Mark ${fullDayName} as holiday`}
+                              </HoverCardContent>
+                            </HoverCard>
+
                             <HoverCard openDelay={120} closeDelay={80}>
-                              <HoverCardTrigger asChild>
-                                <button
-                                  type="button"
-                                  onClick={() => {
+                                <HoverCardTrigger asChild>
+                                  <button
+                                    type="button"
+                                    onClick={() => onToggleDayLock(day.key, !isDayLocked)}
+                                    disabled={isPending}
+                                    aria-label={isDayLocked ? `Unlock ${fullDayName}` : `Lock ${fullDayName}`}
+                                    className={cn(
+                                      "flex h-5 w-5 items-center justify-center rounded-full border transition-all duration-200 ease-out motion-safe:transform-gpu will-change-transform hover:-translate-y-0.5 active:translate-y-0 active:scale-95",
+                                      isDayLocked
+                                        ? "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-500/30 dark:bg-slate-500/10 dark:text-slate-200"
+                                        : "border-slate-200/90 bg-white/90 text-slate-300 hover:border-slate-300 hover:bg-slate-100 hover:text-slate-600 dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-600 dark:hover:border-slate-500/30 dark:hover:bg-slate-500/10 dark:hover:text-slate-300",
+                                      isPending && "opacity-60",
+                                    )}
+                                  >
+                                    <Lock className="h-3 w-3" />
+                                  </button>
+                                </HoverCardTrigger>
+                                <HoverCardContent side="top" sideOffset={8} className="w-auto rounded-xl px-3 py-2 text-xs">
+                                  {isDayLocked ? "Unlock day" : `Lock ${fullDayName}`}
+                                </HoverCardContent>
+                              </HoverCard>
+                            </div>
+
+                            <div className="flex justify-center gap-1.5">
+                              <HoverCard openDelay={120} closeDelay={80}>
+                                <HoverCardTrigger asChild>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
                                     if (isReviewed) {
                                       onRequestDayUnverify(day.key);
                                       return;
@@ -304,23 +425,23 @@ function AdminReadonlyTimesheetCard({
                                     if (!isReviewed) {
                                       onMarkDayReviewed(day.key);
                                     }
-                                  }}
-                                  disabled={isPending}
-                                  aria-label={isReviewed ? "Undo review" : `Mark ${fullDayName} as reviewed`}
-                                  className={cn(
-                                    "group flex h-5 w-5 items-center justify-center rounded-full border transition-all duration-200 ease-out motion-safe:transform-gpu will-change-transform hover:-translate-y-0.5 active:translate-y-0 active:scale-95",
-                                    isReviewed
-                                      ? "border-emerald-200 bg-emerald-50 text-emerald-600 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300"
-                                      : "border-slate-200/90 bg-white/90 text-slate-300 hover:border-sky-200 hover:bg-sky-50 hover:text-sky-500 dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-600 dark:hover:border-sky-500/30 dark:hover:bg-sky-500/10 dark:hover:text-sky-300",
-                                    isPending && "opacity-60",
-                                  )}
-                                >
-                                  <Check className="h-3 w-3" />
-                                </button>
-                              </HoverCardTrigger>
-                              <HoverCardContent
-                                side="top"
-                                sideOffset={8}
+                                    }}
+                                    disabled={isPending || isHoliday}
+                                    aria-label={isReviewed ? "Undo review" : `Mark ${fullDayName} as reviewed`}
+                                    className={cn(
+                                      "group flex h-5 w-5 items-center justify-center rounded-full border transition-all duration-200 ease-out motion-safe:transform-gpu will-change-transform hover:-translate-y-0.5 active:translate-y-0 active:scale-95",
+                                      isReviewed
+                                        ? "border-emerald-200 bg-emerald-50 text-emerald-600 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300"
+                                        : "border-slate-200/90 bg-white/90 text-slate-300 hover:border-sky-200 hover:bg-sky-50 hover:text-sky-500 dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-600 dark:hover:border-sky-500/30 dark:hover:bg-sky-500/10 dark:hover:text-sky-300",
+                                      isPending && "opacity-60",
+                                    )}
+                                  >
+                                    <Check className="h-3 w-3" />
+                                  </button>
+                                </HoverCardTrigger>
+                                <HoverCardContent
+                                  side="top"
+                                  sideOffset={8}
                                 className={cn(
                                   "w-auto rounded-xl px-3 py-2 text-xs",
                                   isReviewed
@@ -333,25 +454,25 @@ function AdminReadonlyTimesheetCard({
                             </HoverCard>
 
                             <HoverCard openDelay={120} closeDelay={80}>
-                              <HoverCardTrigger asChild>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    onRequestDayRevert(day.key);
-                                  }}
-                                  disabled={isPending}
-                                  aria-label="Return to employee with note"
-                                  className={cn(
-                                    "group flex h-5 w-5 items-center justify-center rounded-full border transition-all duration-200 ease-out motion-safe:transform-gpu will-change-transform hover:-translate-y-0.5 active:translate-y-0 active:scale-95",
-                                    isReviewed || isReverted
-                                      ? "border-rose-100 bg-rose-50/55 text-rose-400 hover:border-rose-200 hover:bg-rose-50/80 hover:text-rose-500 dark:border-rose-500/15 dark:bg-rose-500/8 dark:text-rose-300 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/12 dark:hover:text-rose-200"
-                                      : "border-slate-200/90 bg-white/90 text-slate-300 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-500 dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-600 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-300",
-                                    isPending && "opacity-60",
-                                  )}
-                                >
-                                  <X className="h-3 w-3" />
-                                </button>
-                              </HoverCardTrigger>
+                                <HoverCardTrigger asChild>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      onRequestDayRevert(day.key);
+                                    }}
+                                    disabled={isPending || isHoliday}
+                                    aria-label="Return to employee with note"
+                                    className={cn(
+                                      "group flex h-5 w-5 items-center justify-center rounded-full border transition-all duration-200 ease-out motion-safe:transform-gpu will-change-transform hover:-translate-y-0.5 active:translate-y-0 active:scale-95",
+                                      isReviewed || isReverted
+                                        ? "border-rose-100 bg-rose-50/55 text-rose-400 hover:border-rose-200 hover:bg-rose-50/80 hover:text-rose-500 dark:border-rose-500/15 dark:bg-rose-500/8 dark:text-rose-300 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/12 dark:hover:text-rose-200"
+                                        : "border-slate-200/90 bg-white/90 text-slate-300 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-500 dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-600 dark:hover:border-rose-500/30 dark:hover:bg-rose-500/10 dark:hover:text-rose-300",
+                                      isPending && "opacity-60",
+                                    )}
+                                  >
+                                    <X className="h-3 w-3" />
+                                  </button>
+                                </HoverCardTrigger>
                               <HoverCardContent
                                 side="top"
                                 sideOffset={8}
@@ -370,12 +491,12 @@ function AdminReadonlyTimesheetCard({
                               </HoverCardContent>
                             </HoverCard>
                           </div>
-                          <p>{day.label}</p>
-                          <p className="text-[11px] font-normal text-muted-foreground">{format(day.date, "dd MMM")}</p>
-                          <p className={cn("text-[10px] font-medium", isReverted ? "text-rose-400" : "text-muted-foreground")}>{isReverted ? "Returned" : "Work"}</p>
-                        </div>
-                      </th>
-                    );
+                            <p>{day.label}</p>
+                            <p className="text-[11px] font-normal text-muted-foreground">{format(day.date, "dd MMM")}</p>
+                            <p className={cn("text-[10px] font-medium", dayStatusClass)}>{dayStatus}</p>
+                          </div>
+                        </th>
+                      );
                   })}
                   <th className="w-[88px] min-w-[88px] border-b border-border/50 px-2 py-3 text-center font-medium text-foreground">
                     Total
@@ -384,20 +505,22 @@ function AdminReadonlyTimesheetCard({
               </thead>
 
               <tbody>
-                {displayLines.map((line) => (
+                {renderLines.map((line) => (
                   <tr key={line.id}>
                     <td className="sticky left-0 z-10 border-b border-r border-border/50 bg-card px-4 py-3 align-top">
                       <div className={line.project.trim() ? READONLY_FIELD_CLASS : READONLY_PLACEHOLDER_CLASS}>
-                        {line.project.trim() || "Custom project"}
+                        {isEmptySheet && line.id === "empty-sheet" ? "No hours logged yet" : line.project.trim() || "Custom project"}
                       </div>
                     </td>
                     <td className="sticky left-[222px] z-10 border-b border-r border-border/50 bg-card px-4 py-3 align-top">
-                      <div className={taskLineDisplayLabel(line, taskCatalogLookup).trim() ? READONLY_FIELD_STACK_CLASS : READONLY_PLACEHOLDER_CLASS}>
+                      <div className={isEmptySheet ? READONLY_PLACEHOLDER_CLASS : taskLineDisplayLabel(line, taskCatalogLookup).trim() ? READONLY_FIELD_STACK_CLASS : READONLY_PLACEHOLDER_CLASS}>
                         {(() => {
                           const { taskName, taskDescription } = taskLineDisplayParts(line, taskCatalogLookup);
                           return (
                             <div className="min-w-0">
-                              <p className="truncate text-sm font-medium text-foreground">{taskName}</p>
+                              <p className="truncate text-sm font-medium text-foreground">
+                                {isEmptySheet && line.id === "empty-sheet" ? "Open the day controls above to initialize this week" : taskName}
+                              </p>
                               {taskDescription ? <p className="truncate text-xs text-muted-foreground">{taskDescription}</p> : null}
                             </div>
                           );
@@ -493,6 +616,8 @@ export default function AdminTimesheetValidationPage() {
   const [selectedReviewDate, setSelectedReviewDate] = useState(() => normalizeReviewDate());
   const [reviewJumpOpen, setReviewJumpOpen] = useState(false);
   const [reviewFiltersOpen, setReviewFiltersOpen] = useState(false);
+  const [showAllEmployeeSheets, setShowAllEmployeeSheets] = useState(false);
+  const [expandedEmptySheetEmployeeId, setExpandedEmptySheetEmployeeId] = useState<string | null>(null);
   const [selectedDepartmentFilter, setSelectedDepartmentFilter] = useState("all");
   const [selectedReviewEmployeeId, setSelectedReviewEmployeeId] = useState("all");
   const [pendingReviewKey, setPendingReviewKey] = useState<string | null>(null);
@@ -610,8 +735,17 @@ export default function AdminTimesheetValidationPage() {
   });
 
   const dayReviewMutation = useMutation({
-    mutationFn: ({ id, day, reviewed, note }: { id: string; day: DayKey; reviewed: boolean; note?: string }) =>
-      api.setTimesheetDayReviewStatus(id, day, reviewed, note),
+    mutationFn: ({
+      id,
+      day,
+      action,
+      note,
+    }: {
+      id: string;
+      day: DayKey;
+      action: "reviewed" | "reverted" | "holiday" | "locked" | "clear_review" | "clear_holiday" | "clear_lock";
+      note?: string;
+    }) => api.setTimesheetDayReviewStatus(id, day, action, note),
     onMutate: ({ id, day }) => {
       setPendingReviewKey(`${id}:${day}`);
     },
@@ -620,20 +754,42 @@ export default function AdminTimesheetValidationPage() {
         currentEntries.map((entry) => (entry.id === updatedEntry.id ? updatedEntry : entry)),
       );
       void queryClient.invalidateQueries({ queryKey: ["notifications"] });
-      if (variables.reviewed) {
+      if (variables.action === "reviewed" || variables.action === "clear_review") {
         setDayUnverifyTarget(null);
-      } else if (variables.note?.trim()) {
+      } else if (variables.action === "reverted" && variables.note?.trim()) {
         setDayRevertTarget(null);
-      } else {
-        setDayUnverifyTarget(null);
       }
-      toast({
-        title: variables.reviewed ? "Day reviewed" : variables.note?.trim() ? "Day returned" : "Review removed",
-        description: variables.reviewed
+      const title =
+        variables.action === "reviewed"
+          ? "Day reviewed"
+          : variables.action === "reverted"
+            ? "Day returned"
+            : variables.action === "holiday"
+              ? "Day marked as holiday"
+              : variables.action === "locked"
+                ? "Day locked"
+                : variables.action === "clear_holiday"
+                  ? "Holiday removed"
+                  : variables.action === "clear_lock"
+                    ? "Day unlocked"
+                    : "Review removed";
+      const description =
+        variables.action === "reviewed"
           ? "The daily review marker has been saved."
-          : variables.note?.trim()
+          : variables.action === "reverted"
             ? "The employee has been notified with the return note."
-            : "The review mark has been removed.",
+            : variables.action === "holiday"
+              ? "The employee will see this day as a holiday and cannot edit it."
+              : variables.action === "locked"
+                ? "The employee cannot edit this day until it is unlocked."
+                : variables.action === "clear_holiday"
+                  ? "The holiday marker has been removed."
+                  : variables.action === "clear_lock"
+                    ? "The day is editable again unless another protected state exists."
+                    : "The review mark has been removed.";
+      toast({
+        title,
+        description,
       });
     },
     onError: (error) => {
@@ -647,6 +803,60 @@ export default function AdminTimesheetValidationPage() {
       setPendingReviewKey(null);
     },
   });
+
+  const createReviewShellMutation = useMutation({
+    mutationFn: async ({
+      employeeId,
+      employeeNameSnapshot,
+      weekStart,
+    }: {
+      employeeId: string;
+      employeeNameSnapshot: string;
+      weekStart: string;
+    }) =>
+      api.saveTimesheet({
+        id: `shell-${employeeId}-${weekStart}`,
+        employeeId,
+        employeeNameSnapshot,
+        weekStart,
+        status: "draft",
+        reviewShell: true,
+        lines: [],
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["timesheets"] });
+    },
+  });
+
+  async function resolveDailyReviewSheet(entry: DailyReviewSheetEntry) {
+    if (!entry.isMissingSheet) {
+      return entry;
+    }
+
+    return createReviewShellMutation.mutateAsync({
+      employeeId: entry.employeeId,
+      employeeNameSnapshot: employeeLookup.get(entry.employeeId)?.name?.trim() || entry.employeeNameSnapshot,
+      weekStart: entry.weekStart,
+    });
+  }
+
+  async function handleDailyReviewAction(
+    entry: DailyReviewSheetEntry,
+    day: DayKey,
+    action: "reviewed" | "reverted" | "holiday" | "locked" | "clear_review" | "clear_holiday" | "clear_lock",
+    note?: string,
+  ) {
+    try {
+      const targetSheet = await resolveDailyReviewSheet(entry);
+      await dayReviewMutation.mutateAsync({ id: targetSheet.id, day, action, note });
+    } catch (error) {
+      toast({
+        title: "Could not open employee sheet",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    }
+  }
 
   const selectedHours = useMemo(() => {
     if (!selectedTimesheet) {
@@ -696,6 +906,17 @@ export default function AdminTimesheetValidationPage() {
   const selectedReviewWeekNumber = useMemo(() => getISOWeek(reviewWeekStart(selectedReviewDate)), [selectedReviewDate]);
   const deferredReviewWeekStart = useMemo(() => format(reviewWeekStart(deferredReviewDate), "yyyy-MM-dd"), [deferredReviewDate]);
 
+  useEffect(() => {
+    if (!showAllEmployeeSheets) {
+      setExpandedEmptySheetEmployeeId(null);
+    }
+  }, [deferredReviewWeekStart, showAllEmployeeSheets]);
+
+  const dailyReviewWeekEntries = useMemo(
+    () => timesheets.filter((entry) => format(new Date(entry.weekStart), "yyyy-MM-dd") === deferredReviewWeekStart),
+    [deferredReviewWeekStart, timesheets],
+  );
+
   function shiftReviewWeek(days: number) {
     startReviewNavigationTransition(() => {
       setSelectedReviewDate((current) => normalizeReviewDate(addDays(new Date(`${current}T12:00:00`), days)));
@@ -703,10 +924,36 @@ export default function AdminTimesheetValidationPage() {
   }
 
   const dailyReviewEntries = useMemo(
-    () =>
-      timesheets
-        .filter((entry) => format(new Date(entry.weekStart), "yyyy-MM-dd") === deferredReviewWeekStart)
-        .filter((entry) => timesheetHasDisplayContent(entry))
+    () => {
+      const entries: DailyReviewSheetEntry[] = showAllEmployeeSheets
+        ? (() => {
+            const byEmployee = new Map<string, DailyReviewSheetEntry>();
+            for (const entry of dailyReviewWeekEntries) {
+              byEmployee.set(entry.employeeId, entry);
+            }
+
+            for (const employee of employees) {
+              if (byEmployee.has(employee.id)) {
+                continue;
+              }
+
+              byEmployee.set(employee.id, {
+                id: `shell-${employee.id}-${deferredReviewWeekStart}`,
+                employeeId: employee.id,
+                employeeNameSnapshot: employee.name,
+                weekStart: deferredReviewWeekStart,
+                status: "draft",
+                lines: [],
+                reviewShell: true,
+                isMissingSheet: true,
+              });
+            }
+
+            return Array.from(byEmployee.values());
+          })()
+        : dailyReviewWeekEntries.filter((entry) => timesheetHasDisplayContent(entry));
+
+      return entries
         .filter((entry) => {
           const employee = employeeLookup.get(entry.employeeId);
           if (deferredDepartmentFilter !== "all" && normalizeText(employee?.department) !== normalizeText(deferredDepartmentFilter)) {
@@ -726,8 +973,9 @@ export default function AdminTimesheetValidationPage() {
           }
 
           return new Date(right.submittedAt ?? right.reviewedAt ?? right.weekStart).getTime() - new Date(left.submittedAt ?? left.reviewedAt ?? left.weekStart).getTime();
-        }),
-    [deferredDepartmentFilter, deferredReviewEmployeeId, deferredReviewWeekStart, employeeLookup, timesheets],
+        });
+    },
+    [dailyReviewWeekEntries, deferredDepartmentFilter, deferredReviewEmployeeId, deferredReviewWeekStart, employees, employeeLookup, showAllEmployeeSheets],
   );
   const dailyReviewSummary = useMemo(
     () => ({
@@ -736,6 +984,10 @@ export default function AdminTimesheetValidationPage() {
       submitted: dailyReviewEntries.filter((entry) => entry.status === "submitted").length,
     }),
     [dailyReviewEntries],
+  );
+  const hasHiddenEmptyReviewSheets = useMemo(
+    () => dailyReviewWeekEntries.some((entry) => !timesheetHasDisplayContent(entry)),
+    [dailyReviewWeekEntries],
   );
   const selectedDepartmentLabel = selectedDepartmentFilter === "all" ? "All departments" : selectedDepartmentFilter;
   const selectedReviewEmployeeLabel =
@@ -1242,6 +1494,16 @@ export default function AdminTimesheetValidationPage() {
                             </div>
                           </PopoverContent>
                         </Popover>
+                        <Button
+                          type="button"
+                          variant={showAllEmployeeSheets ? "default" : "outline"}
+                          size="sm"
+                          className="h-9 rounded-xl px-3 whitespace-nowrap"
+                          onClick={() => setShowAllEmployeeSheets((current) => !current)}
+                        >
+                          <Users className="mr-2 h-4 w-4" />
+                          {showAllEmployeeSheets ? "Hide empty sheets" : "Show all employee sheets"}
+                        </Button>
                         <CollapsibleTrigger asChild>
                           <Button type="button" variant="ghost" size="sm" className="h-9 rounded-xl border border-border/60 bg-card/70 px-3 text-sm hover:bg-secondary/60">
                             Filter Options
@@ -1309,8 +1571,24 @@ export default function AdminTimesheetValidationPage() {
             <div className={cn("min-h-[55vh] space-y-4 [overflow-anchor:none]", isReviewNavigating && "opacity-90")}>
               {dailyReviewEntries.length === 0 ? (
                 <Card className="border-border/60 bg-card/80 shadow-sm">
-                  <CardContent className="px-5 py-12 text-center text-sm text-muted-foreground">
-                    No saved employee timesheets match the selected date and filters yet.
+                  <CardContent className="space-y-3 px-5 py-12 text-center text-sm text-muted-foreground">
+                    <p>
+                      {hasHiddenEmptyReviewSheets
+                        ? "No filled sheets match the current filters yet."
+                        : "No saved employee timesheets match the selected date and filters yet."}
+                    </p>
+                    {hasHiddenEmptyReviewSheets ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-9 rounded-xl border-border/60 bg-card/80 px-3 whitespace-nowrap"
+                        onClick={() => setShowAllEmployeeSheets(true)}
+                      >
+                        <Users className="mr-2 h-4 w-4" />
+                        Show all employee sheets
+                      </Button>
+                    ) : null}
                   </CardContent>
                 </Card>
               ) : (
@@ -1322,7 +1600,8 @@ export default function AdminTimesheetValidationPage() {
                     selectedDate={deferredReviewDate}
                     taskCatalogLookup={taskCatalogLookup}
                     pendingReviewKey={pendingReviewKey}
-                    onMarkDayReviewed={(day) => dayReviewMutation.mutate({ id: entry.id, day, reviewed: true })}
+                    isExpanded={!entry.isMissingSheet || expandedEmptySheetEmployeeId === entry.employeeId}
+                    onMarkDayReviewed={(day) => void handleDailyReviewAction(entry, day, "reviewed")}
                     onRequestDayUnverify={(day) => setDayUnverifyTarget({ id: entry.id, day })}
                     onRequestDayRevert={(day) =>
                       setDayRevertTarget({
@@ -1330,6 +1609,13 @@ export default function AdminTimesheetValidationPage() {
                         day,
                         note: entry.dailyReviewNotes?.[day]?.trim() ?? "",
                       })
+                    }
+                    onToggleDayHoliday={(day, active) => void handleDailyReviewAction(entry, day, active ? "holiday" : "clear_holiday")}
+                    onToggleDayLock={(day, active) => void handleDailyReviewAction(entry, day, active ? "locked" : "clear_lock")}
+                    onToggleExpanded={() =>
+                      setExpandedEmptySheetEmployeeId((current) =>
+                        current === entry.employeeId ? null : entry.employeeId,
+                      )
                     }
                   />
                 ))
@@ -1496,7 +1782,7 @@ export default function AdminTimesheetValidationPage() {
                   dayReviewMutation.mutate({
                     id: dayUnverifyTarget.id,
                     day: dayUnverifyTarget.day,
-                    reviewed: false,
+                    action: "clear_review",
                   });
                 }}
               >
@@ -1552,7 +1838,7 @@ export default function AdminTimesheetValidationPage() {
                   dayReviewMutation.mutate({
                     id: dayRevertTarget.id,
                     day: dayRevertTarget.day,
-                    reviewed: false,
+                    action: "reverted",
                     note: dayRevertTarget.note.trim(),
                   });
                 }}

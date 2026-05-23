@@ -18,6 +18,8 @@ import { useAuthStore } from "@/store/auth";
 import {
   api,
   type DayKey,
+  type TimesheetDailyReviewHolidays,
+  type TimesheetDailyReviewLocks,
   type TimesheetDailyReviewNotes,
   type TimesheetDailyReviewStatus,
   type TimesheetEntry,
@@ -213,13 +215,19 @@ function normalizeDailyReviewStatus(input?: TimesheetDailyReviewStatus | null) {
   ) as TimesheetDailyReviewStatus;
 }
 
+function normalizeDayFlags<T extends Partial<Record<DayKey, true>>>(input?: T | null) {
+  return Object.fromEntries(
+    DAYS.map(({ key }) => [key, input?.[key] === true ? true : undefined]).filter(([, value]) => value === true),
+  ) as T;
+}
+
 function normalizeDailyReviewNotes(input?: TimesheetDailyReviewNotes | null) {
   return Object.fromEntries(
     DAYS.map(({ key }) => [key, input?.[key]?.trim() ?? ""]).filter(([, value]) => value.length > 0),
   ) as TimesheetDailyReviewNotes;
 }
 
-function clearReviewedDayStatus(
+function clearEditableDayReviewState(
   status: TimesheetDailyReviewStatus | undefined,
   notes: TimesheetDailyReviewNotes | undefined,
   day: DayKey,
@@ -236,14 +244,24 @@ function clearReviewedDayStatus(
   };
 }
 
-function isReviewedDayLocked(status: TimesheetDailyReviewStatus | undefined, day: DayKey) {
-  return status?.[day] === "reviewed";
+function isProtectedDayLocked(
+  status: TimesheetDailyReviewStatus | undefined,
+  holidays: TimesheetDailyReviewHolidays | undefined,
+  locks: TimesheetDailyReviewLocks | undefined,
+  day: DayKey,
+) {
+  return status?.[day] === "reviewed" || holidays?.[day] === true || locks?.[day] === true;
 }
 
-function lineHasReviewedDayContent(line: TimesheetTaskLine, status: TimesheetDailyReviewStatus | undefined) {
+function lineHasProtectedDayContent(
+  line: TimesheetTaskLine,
+  status: TimesheetDailyReviewStatus | undefined,
+  holidays: TimesheetDailyReviewHolidays | undefined,
+  locks: TimesheetDailyReviewLocks | undefined,
+) {
   return DAYS.some(
     ({ key }) =>
-      isReviewedDayLocked(status, key) &&
+      isProtectedDayLocked(status, holidays, locks, key) &&
       (Number(line.hours[key] ?? 0) > 0 || Boolean(line.workNotes?.[key]?.trim())),
   );
 }
@@ -723,7 +741,9 @@ export default function EmployeeTimesheetPage() {
   const readOnly = draft?.status === "submitted" || draft?.status === "approved";
   const isRejected = draft?.status === "rejected";
   const canPersistDraft = hasDraftContent(draft);
-  const activeDayLocked = activeNoteCell ? isReviewedDayLocked(draft?.dailyReviewStatus, activeNoteCell.day) : false;
+  const activeDayLocked = activeNoteCell
+    ? isProtectedDayLocked(draft?.dailyReviewStatus, draft?.dailyReviewHolidays, draft?.dailyReviewLocks, activeNoteCell.day)
+    : false;
 
   function goToWeek(date: Date) {
     setSelectedWeek(weekStartIso(date));
@@ -740,7 +760,7 @@ export default function EmployeeTimesheetPage() {
             ...currentEntry,
             ...(options?.resetReviewedDay
               ? (() => {
-                  const cleared = clearReviewedDayStatus(currentEntry.dailyReviewStatus, currentEntry.dailyReviewNotes, options.resetReviewedDay);
+                  const cleared = clearEditableDayReviewState(currentEntry.dailyReviewStatus, currentEntry.dailyReviewNotes, options.resetReviewedDay);
                   return {
                     dailyReviewStatus: cleared.status,
                     dailyReviewNotes: cleared.notes,
@@ -767,10 +787,10 @@ export default function EmployeeTimesheetPage() {
   );
 
   function openWorkNoteDialog(line: TimesheetTaskLine, day: DayKey) {
-    if (isReviewedDayLocked(draft?.dailyReviewStatus, day)) {
+    if (isProtectedDayLocked(draft?.dailyReviewStatus, draft?.dailyReviewHolidays, draft?.dailyReviewLocks, day)) {
       toast({
         title: "Day locked",
-        description: "This day was already verified by admin and cannot be edited.",
+        description: "This day is protected by admin and cannot be edited.",
       });
       return;
     }
@@ -829,10 +849,10 @@ export default function EmployeeTimesheetPage() {
       return;
     }
 
-    if (isReviewedDayLocked(draft?.dailyReviewStatus, activeNoteCell.day)) {
+    if (isProtectedDayLocked(draft?.dailyReviewStatus, draft?.dailyReviewHolidays, draft?.dailyReviewLocks, activeNoteCell.day)) {
       toast({
         title: "Day locked",
-        description: "This day was already verified by admin and cannot be edited.",
+        description: "This day is protected by admin and cannot be edited.",
       });
       closeWorkNoteDialog();
       return;
@@ -863,10 +883,10 @@ export default function EmployeeTimesheetPage() {
   }
 
   function changeHour(lineId: string, day: DayKey, rawValue: string) {
-    if (isReviewedDayLocked(draft?.dailyReviewStatus, day)) {
+    if (isProtectedDayLocked(draft?.dailyReviewStatus, draft?.dailyReviewHolidays, draft?.dailyReviewLocks, day)) {
       toast({
         title: "Day locked",
-        description: "This day was already verified by admin and cannot be edited.",
+        description: "This day is protected by admin and cannot be edited.",
       });
       return;
     }
@@ -998,18 +1018,32 @@ export default function EmployeeTimesheetPage() {
                       </th>
                       {weekDates.map((day) => {
                         const calendarDay = weekCalendarLookup.get(day.date.toISOString().slice(0, 10));
-                        const isHoliday = Boolean(calendarDay?.holiday);
+                        const isCalendarHoliday = Boolean(calendarDay?.holiday);
+                        const isAdminHoliday = draft?.dailyReviewHolidays?.[day.key] === true;
+                        const isAdminLocked = draft?.dailyReviewLocks?.[day.key] === true;
                         const isLeave = Boolean(calendarDay?.leave);
                         const isPending = calendarDay?.leaveStatus === "pending";
                         const dayReviewState = draft?.dailyReviewStatus?.[day.key];
                         const dayReviewNote = draft?.dailyReviewNotes?.[day.key]?.trim() ?? "";
                         const isDayReviewed = dayReviewState === "reviewed";
                         const isDayReverted = dayReviewState === "reverted";
-                        const dayStatus = isDayReviewed ? "Verify" : isDayReverted ? "Reverted" : "Work";
-                        const dayStatusClass = isDayReviewed
+                        const dayStatus = isAdminHoliday
+                          ? "Holiday"
+                          : isDayReviewed
+                            ? "Verified"
+                            : isDayReverted
+                              ? "Returned"
+                              : isAdminLocked
+                                ? "Locked"
+                                : "Work";
+                        const dayStatusClass = isAdminHoliday
+                          ? "text-emerald-300"
+                          : isDayReviewed
                           ? "text-emerald-400"
                           : isDayReverted
                             ? "text-rose-300/80"
+                            : isAdminLocked
+                              ? "text-slate-400"
                             : "text-muted-foreground";
 
                         return (
@@ -1017,14 +1051,15 @@ export default function EmployeeTimesheetPage() {
                             key={day.key}
                             className={cn(
                               "relative w-[76px] min-w-[76px] border-b border-r border-border/50 px-2 py-2 text-center font-medium last:border-r-0",
-                              isHoliday && "bg-emerald-500/5",
+                              (isCalendarHoliday || isAdminHoliday) && "bg-emerald-500/5",
                               isLeave && "bg-amber-500/5",
                               isPending && "bg-sky-500/5",
                             )}
                           >
-                            {isDayReviewed ? <span className="absolute inset-x-0 top-0 h-1 bg-emerald-400/80" /> : null}
-                            {isDayReverted ? <span className="absolute inset-x-0 top-0 h-1 bg-rose-400/70" /> : null}
-                            {isDayReviewed || isDayReverted ? (
+                            {isAdminHoliday ? <span className="absolute inset-x-0 top-0 h-1 bg-emerald-500/85" /> : null}
+                            {!isAdminHoliday && isDayReviewed ? <span className="absolute inset-x-0 top-0 h-1 bg-emerald-400/80" /> : null}
+                            {!isAdminHoliday && isDayReverted ? <span className="absolute inset-x-0 top-0 h-1 bg-rose-400/70" /> : null}
+                            {isAdminHoliday || isDayReviewed || isDayReverted || isAdminLocked ? (
                               <HoverCard openDelay={120} closeDelay={80}>
                                 <HoverCardTrigger asChild>
                                   <div className="space-y-0.5 pt-0.5">
@@ -1038,23 +1073,43 @@ export default function EmployeeTimesheetPage() {
                                   sideOffset={8}
                                   className={cn(
                                     "w-[240px] rounded-xl border px-3 py-2 text-left text-xs shadow-sm",
-                                    isDayReviewed
+                                    isAdminHoliday
                                       ? "border-emerald-200/70 bg-emerald-50 text-emerald-900 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-100"
-                                      : "border-rose-200/50 bg-background/95 text-foreground dark:border-rose-500/15 dark:bg-slate-950/95 dark:text-slate-100",
+                                      : isDayReviewed
+                                      ? "border-emerald-200/70 bg-emerald-50 text-emerald-900 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-100"
+                                      : isAdminLocked
+                                        ? "border-slate-300/70 bg-slate-50 text-slate-900 dark:border-slate-500/20 dark:bg-slate-900 dark:text-slate-100"
+                                        : "border-rose-200/50 bg-background/95 text-foreground dark:border-rose-500/15 dark:bg-slate-950/95 dark:text-slate-100",
                                   )}
                                 >
                                   <p
                                     className={cn(
                                       "text-[11px] font-semibold uppercase tracking-[0.16em]",
-                                      isDayReviewed ? "text-emerald-600 dark:text-emerald-300" : "text-rose-500 dark:text-rose-300",
+                                      isAdminHoliday
+                                        ? "text-emerald-600 dark:text-emerald-300"
+                                        : isDayReviewed
+                                          ? "text-emerald-600 dark:text-emerald-300"
+                                          : isAdminLocked
+                                            ? "text-slate-600 dark:text-slate-300"
+                                            : "text-rose-500 dark:text-rose-300",
                                     )}
                                   >
-                                    {isDayReviewed ? "Day verified by admin" : "Returned for changes"}
+                                    {isAdminHoliday
+                                      ? "Day marked as holiday"
+                                      : isDayReviewed
+                                        ? "Day verified by admin"
+                                        : isAdminLocked
+                                          ? "Day locked by admin"
+                                          : "Returned for changes"}
                                   </p>
                                   <p className="mt-1 whitespace-pre-line leading-5 text-muted-foreground dark:text-slate-300">
-                                    {isDayReviewed
+                                    {isAdminHoliday
+                                      ? "This day is treated as a holiday. It shows as H and cannot be edited."
+                                      : isDayReviewed
                                       ? "This day was verified by the admin and is ready for the employee to continue working from."
-                                      : dayReviewNote || "The admin returned this day for changes."}
+                                      : isAdminLocked
+                                        ? "This day was locked by the admin and cannot be edited."
+                                        : dayReviewNote || "The admin returned this day for changes."}
                                   </p>
                                 </HoverCardContent>
                               </HoverCard>
@@ -1062,7 +1117,7 @@ export default function EmployeeTimesheetPage() {
                               <div className="space-y-0.5 pt-0.5">
                                 <p className="text-[15px] font-medium leading-tight">{day.label}</p>
                                 <p className="text-[11px] font-normal leading-tight text-muted-foreground">{format(day.date, "dd MMM")}</p>
-                                {isHoliday ? (
+                                {isCalendarHoliday ? (
                                   <p className="text-[10px] font-medium text-emerald-300">{calendarDay?.holidayName ?? "Holiday"}</p>
                                 ) : isPending ? (
                                   <p className="text-[10px] font-medium text-sky-300">Pending</p>
@@ -1098,8 +1153,13 @@ export default function EmployeeTimesheetPage() {
                       const showProjectInput = projectSelectionValue === "__custom__" || projectOptions.length === 0;
                       const hasProjectValue = Boolean(line.project.trim());
                       const showTaskInput = hasProjectValue && (taskSelectionValue === "__custom__" || projectTaskOptions.length === 0);
-                      const rowHasLockedReviewedContent = lineHasReviewedDayContent(line, draft.dailyReviewStatus);
-                      const rowEditDisabled = readOnly || rowHasLockedReviewedContent;
+                      const rowHasProtectedContent = lineHasProtectedDayContent(
+                        line,
+                        draft.dailyReviewStatus,
+                        draft.dailyReviewHolidays,
+                        draft.dailyReviewLocks,
+                      );
+                      const rowEditDisabled = readOnly || rowHasProtectedContent;
 
                       return (
                         <tr
@@ -1243,13 +1303,21 @@ export default function EmployeeTimesheetPage() {
                           {weekDates.map((day) => (
                         (() => {
                           const calendarDay = weekCalendarLookup.get(day.date.toISOString().slice(0, 10));
-                          const isOffDay = Boolean(calendarDay?.holiday || calendarDay?.leave || calendarDay?.leaveStatus === "pending");
+                          const isAdminHoliday = draft.dailyReviewHolidays?.[day.key] === true;
+                          const isOffDay = Boolean(calendarDay?.holiday || calendarDay?.leave || calendarDay?.leaveStatus === "pending" || isAdminHoliday);
                           const outsideTaskWindow = selectedTask ? !isTaskWindowDay(selectedTask, day.date) : false;
                           const hasExistingHours = Number(line.hours[day.key] ?? 0) > 0;
                           const workNotePreview = line.workNotes?.[day.key]?.trim() ?? "";
                           const blockTaskWindowDay = outsideTaskWindow && !hasExistingHours;
-                          const dayLocked = isReviewedDayLocked(draft.dailyReviewStatus, day.key);
-                          const placeholder = calendarDay?.holiday
+                          const dayLocked = isProtectedDayLocked(
+                            draft.dailyReviewStatus,
+                            draft.dailyReviewHolidays,
+                            draft.dailyReviewLocks,
+                            day.key,
+                          );
+                          const placeholder = isAdminHoliday
+                            ? "H"
+                            : calendarDay?.holiday
                             ? calendarDay.holidayName ?? "Holiday"
                             : calendarDay?.leaveStatus === "pending"
                               ? "Pending"
@@ -1276,7 +1344,11 @@ export default function EmployeeTimesheetPage() {
                               }
                             >
                               <div className="mx-auto flex h-[40px] w-full items-center justify-center">
-                                {workNotePreview ? (
+                                {isAdminHoliday ? (
+                                  <div className="flex h-[40px] w-[58px] items-center justify-center rounded-[16px] border border-emerald-200/80 bg-emerald-50 text-sm font-semibold text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-200">
+                                    H
+                                  </div>
+                                ) : workNotePreview ? (
                                   <HoverCard openDelay={120} closeDelay={80}>
                                     <HoverCardTrigger asChild>
                                       <div className="relative">

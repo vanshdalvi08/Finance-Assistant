@@ -20,6 +20,16 @@ export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type TimesheetWorkNotes = Partial<Record<DayKey, string>>;
 export type TimesheetDailyReviewStatus = Partial<Record<DayKey, "reviewed" | "reverted">>;
 export type TimesheetDailyReviewNotes = Partial<Record<DayKey, string>>;
+export type TimesheetDailyReviewHolidays = Partial<Record<DayKey, true>>;
+export type TimesheetDailyReviewLocks = Partial<Record<DayKey, true>>;
+export type TimesheetDayReviewAction =
+  | "reviewed"
+  | "reverted"
+  | "holiday"
+  | "locked"
+  | "clear_review"
+  | "clear_holiday"
+  | "clear_lock";
 type TimeOffKind = "leave" | "holiday";
 
 const DAY_KEYS: DayKey[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -172,6 +182,9 @@ export interface TimesheetEntry {
   reviewNotes?: string;
   dailyReviewStatus?: TimesheetDailyReviewStatus;
   dailyReviewNotes?: TimesheetDailyReviewNotes;
+  dailyReviewHolidays?: TimesheetDailyReviewHolidays;
+  dailyReviewLocks?: TimesheetDailyReviewLocks;
+  reviewShell?: boolean;
   lines: TimesheetTaskLine[];
 }
 
@@ -799,7 +812,7 @@ export interface MonthCalendarDay {
   timeOffRequestId?: string;
   pendingLeave?: boolean;
   pendingHoliday?: boolean;
-  holidaySource?: "company" | "requested";
+  holidaySource?: "company" | "requested" | "admin";
   hours: number;
   expenseCount: number;
 }
@@ -927,9 +940,16 @@ function normalizeTimesheet(entry: TimesheetEntry): TimesheetEntry {
     dailyReviewStatus: Object.fromEntries(
       Object.entries(entry.dailyReviewStatus ?? {}).filter(([, value]) => value === "reviewed" || value === "reverted"),
     ) as TimesheetDailyReviewStatus,
+    dailyReviewHolidays: Object.fromEntries(
+      Object.entries(entry.dailyReviewHolidays ?? {}).filter(([, value]) => value === true),
+    ) as TimesheetDailyReviewHolidays,
+    dailyReviewLocks: Object.fromEntries(
+      Object.entries(entry.dailyReviewLocks ?? {}).filter(([, value]) => value === true),
+    ) as TimesheetDailyReviewLocks,
     dailyReviewNotes: Object.fromEntries(
       Object.entries(entry.dailyReviewNotes ?? {}).filter(([, value]) => typeof value === "string" && value.trim().length > 0),
     ) as TimesheetDailyReviewNotes,
+    reviewShell: Boolean(entry.reviewShell),
     lines: (entry.lines.length ? entry.lines : [{ id: createId("line"), project: "", task: "", subTask: "", notes: "", workNotes: {}, hours: blankHours() }]).map((line) => ({
       ...line,
       id: line.id || createId("line"),
@@ -1266,6 +1286,7 @@ async function fallbackGetEmployeeMonthCalendar({ employeeId, month }: { employe
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
 
   const daily = new Map<string, { hours: number; expenseCount: number }>();
+  const adminHolidaysByDate = new Set<string>();
   for (const entry of timesheets.filter((item) => item.employeeId === employeeId && item.weekStart.slice(0, 7) <= month)) {
     const weekStart = new Date(entry.weekStart);
     entry.lines.forEach((line) => {
@@ -1283,6 +1304,20 @@ async function fallbackGetEmployeeMonthCalendar({ employeeId, month }: { employe
         daily.set(iso, bucket);
       });
     });
+
+    DAY_KEYS.forEach((dayKey, offset) => {
+      if (entry.dailyReviewHolidays?.[dayKey] !== true) {
+        return;
+      }
+
+      const dayDate = new Date(weekStart);
+      dayDate.setDate(weekStart.getDate() + offset);
+      if (dayDate.getFullYear() !== year || dayDate.getMonth() !== monthIndex) {
+        return;
+      }
+
+      adminHolidaysByDate.add(dayDate.toISOString().slice(0, 10));
+    });
   }
 
   for (const expense of expenses.filter((item) => item.employeeId === employeeId && item.date.slice(0, 7) === month)) {
@@ -1298,10 +1333,11 @@ async function fallbackGetEmployeeMonthCalendar({ employeeId, month }: { employe
     const iso = date.toISOString().slice(0, 10);
     const bucket = daily.get(iso) ?? { hours: 0, expenseCount: 0 };
     const holiday = holidays.find((item) => normalizeIsoDate(item.date) === iso);
+    const adminHoliday = adminHolidaysByDate.has(iso);
     const leaveRequest = leaveRequests.find((item) => dayRange(item.startDate, item.endDate).includes(iso));
     const isWeekend = date.getDay() === 0 || date.getDay() === 6;
     const worked = bucket.hours > 0;
-    const isHoliday = Boolean(holiday || (leaveRequest?.kind === "holiday" && leaveRequest.status !== "rejected"));
+    const isHoliday = Boolean(holiday || adminHoliday || (leaveRequest?.kind === "holiday" && leaveRequest.status !== "rejected"));
     const isLeave = Boolean(leaveRequest && leaveRequest.kind !== "holiday" && leaveRequest.status === "approved");
     const isPending = Boolean(leaveRequest && leaveRequest.status === "pending");
 
@@ -1313,11 +1349,12 @@ async function fallbackGetEmployeeMonthCalendar({ employeeId, month }: { employe
       leave: isLeave,
       leaveStatus: leaveRequest?.status,
       holiday: isHoliday,
-      holidayName: holiday?.name ?? (leaveRequest?.kind === "holiday" ? leaveRequest.reason || "Holiday" : undefined),
+      holidayName: holiday?.name ?? (adminHoliday ? "Holiday" : leaveRequest?.kind === "holiday" ? leaveRequest.reason || "Holiday" : undefined),
       leaveReason: leaveRequest?.reason,
       timeOffKind: leaveRequest?.kind,
-      timeOffSource: holiday ? "admin" : leaveRequest ? "employee" : undefined,
+      timeOffSource: holiday || adminHoliday ? "admin" : leaveRequest ? "employee" : undefined,
       timeOffRequestId: leaveRequest?.id,
+      holidaySource: holiday ? "company" : adminHoliday ? "admin" : leaveRequest?.kind === "holiday" && leaveRequest.status !== "rejected" ? "requested" : undefined,
       pendingLeave: isPending && !isHoliday,
       hours: Number(bucket.hours.toFixed(1)),
       expenseCount: bucket.expenseCount,
@@ -1802,9 +1839,9 @@ export const api = {
   saveTimesheet: async (entry: TimesheetEntry) =>
     normalizeTimesheet((await businessPost<{ timesheet: TimesheetEntry }>("/timesheets", normalizeTimesheet(entry))).timesheet),
 
-  setTimesheetDayReviewStatus: async (id: string, day: DayKey, reviewed: boolean, note?: string) =>
+  setTimesheetDayReviewStatus: async (id: string, day: DayKey, action: TimesheetDayReviewAction, note?: string) =>
     normalizeTimesheet(
-      (await businessPost<{ timesheet: TimesheetEntry }>(`/timesheets/${id}/daily-review/${day}`, { reviewed, note }, "PATCH")).timesheet,
+      (await businessPost<{ timesheet: TimesheetEntry }>(`/timesheets/${id}/daily-review/${day}`, { action, note }, "PATCH")).timesheet,
     ),
 
   submitTimesheetEntry: async (entry: TimesheetEntry) =>

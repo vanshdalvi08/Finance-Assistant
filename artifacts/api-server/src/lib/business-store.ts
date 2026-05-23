@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { db, usersTable } from "@workspace/db";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   auditTrailTable,
   businessStateTable,
@@ -27,6 +27,8 @@ import {
   type PurchaseOrder as DbPurchaseOrder,
   type InsertPurchaseOrder as DbInsertPurchaseOrder,
   type Salary as DbSalary,
+  type TimesheetDailyReviewHolidays,
+  type TimesheetDailyReviewLocks,
   type TimesheetDailyReviewStatus,
   type TimesheetDailyReviewNotes,
   type Timesheet as DbTimesheet,
@@ -228,6 +230,9 @@ export interface TimesheetEntry {
   reviewNotes?: string;
   dailyReviewStatus?: TimesheetDailyReviewStatus;
   dailyReviewNotes?: TimesheetDailyReviewNotes;
+  dailyReviewHolidays?: TimesheetDailyReviewHolidays;
+  dailyReviewLocks?: TimesheetDailyReviewLocks;
+  reviewShell?: boolean;
   lines: TimesheetTaskLine[];
   createdAt: string;
   updatedAt: string;
@@ -620,6 +625,18 @@ function normalizeDailyReviewStatus(input?: Partial<Record<DayKey, string>> | nu
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
+function normalizeDailyReviewDayFlags(input?: Partial<Record<DayKey, unknown>> | null): Partial<Record<DayKey, true>> | undefined {
+  if (!input) {
+    return undefined;
+  }
+
+  const normalized = Object.fromEntries(
+    DAY_KEYS.map((day) => [day, input[day] === true ? true : undefined]).filter(([, value]) => value === true),
+  ) as Partial<Record<DayKey, true>>;
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
 function normalizeDailyReviewNotes(input?: Partial<Record<DayKey, string>> | null): TimesheetDailyReviewNotes | undefined {
   if (!input) {
     return undefined;
@@ -669,6 +686,10 @@ export function reconcileDailyReviewState(
   };
 }
 
+export function dayHasTimesheetContent(lines: TimesheetTaskLine[], day: DayKey) {
+  return dayContentSignature(lines, day) !== "[]";
+}
+
 export function findChangedReviewedDays(
   currentStatus: Partial<Record<DayKey, string>> | null | undefined,
   previousLines: TimesheetTaskLine[],
@@ -682,6 +703,27 @@ export function findChangedReviewedDays(
   return DAY_KEYS.filter(
     (day) => normalizedStatus[day] === "reviewed" && dayContentSignature(previousLines, day) !== dayContentSignature(nextLines, day),
   );
+}
+
+export function findChangedProtectedDays(
+  currentStatus: Partial<Record<DayKey, string>> | null | undefined,
+  currentHolidays: Partial<Record<DayKey, unknown>> | null | undefined,
+  currentLocks: Partial<Record<DayKey, unknown>> | null | undefined,
+  previousLines: TimesheetTaskLine[],
+  nextLines: TimesheetTaskLine[],
+): DayKey[] {
+  const normalizedStatus = normalizeDailyReviewStatus(currentStatus);
+  const normalizedHolidays = normalizeDailyReviewDayFlags(currentHolidays);
+  const normalizedLocks = normalizeDailyReviewDayFlags(currentLocks);
+
+  return DAY_KEYS.filter((day) => {
+    const protectedDay =
+      normalizedStatus?.[day] === "reviewed"
+      || normalizedHolidays?.[day] === true
+      || normalizedLocks?.[day] === true;
+
+    return protectedDay && dayContentSignature(previousLines, day) !== dayContentSignature(nextLines, day);
+  });
 }
 
 export function reconcileDailyReviewStatus(
@@ -1231,6 +1273,9 @@ function timesheetFromRow(row: DbTimesheet): TimesheetEntry {
     reviewNotes: row.reviewNotes?.trim() || undefined,
     dailyReviewStatus: normalizeDailyReviewStatus(row.dailyReviewStatus),
     dailyReviewNotes: normalizeDailyReviewNotes(row.dailyReviewNotes),
+    dailyReviewHolidays: normalizeDailyReviewDayFlags((row as DbTimesheet & { dailyReviewHolidays?: Partial<Record<DayKey, unknown>> }).dailyReviewHolidays),
+    dailyReviewLocks: normalizeDailyReviewDayFlags((row as DbTimesheet & { dailyReviewLocks?: Partial<Record<DayKey, unknown>> }).dailyReviewLocks),
+    reviewShell: Boolean((row as DbTimesheet & { reviewShell?: unknown }).reviewShell),
     lines: Array.isArray(row.lines) && row.lines.length > 0
       ? row.lines.map((line) => ({
           id: line.id ?? createId("line"),
@@ -1273,6 +1318,9 @@ function timesheetFromNormalizedRow(
     reviewNotes: row.reviewNotes?.trim() || undefined,
     dailyReviewStatus: normalizeDailyReviewStatus(row.dailyReviewStatus),
     dailyReviewNotes: normalizeDailyReviewNotes(row.dailyReviewNotes),
+    dailyReviewHolidays: normalizeDailyReviewDayFlags((row as DbTimesheet & { dailyReviewHolidays?: Partial<Record<DayKey, unknown>> }).dailyReviewHolidays),
+    dailyReviewLocks: normalizeDailyReviewDayFlags((row as DbTimesheet & { dailyReviewLocks?: Partial<Record<DayKey, unknown>> }).dailyReviewLocks),
+    reviewShell: Boolean((row as DbTimesheet & { reviewShell?: unknown }).reviewShell),
     lines: lines
       .filter((line) => line.timesheetId === row.id)
       .sort((left, right) => {
@@ -1357,6 +1405,9 @@ function timesheetToRow(entry: TimesheetEntry) {
     reviewNotes: entry.reviewNotes?.trim() || null,
     dailyReviewStatus: normalizeDailyReviewStatus(entry.dailyReviewStatus) ?? {},
     dailyReviewNotes: normalizeDailyReviewNotes(entry.dailyReviewNotes) ?? {},
+    dailyReviewHolidays: normalizeDailyReviewDayFlags(entry.dailyReviewHolidays) ?? {},
+    dailyReviewLocks: normalizeDailyReviewDayFlags(entry.dailyReviewLocks) ?? {},
+    reviewShell: Boolean(entry.reviewShell),
     lines: (entry.lines ?? []).map((line) => ({
       id: line.id ?? createId("line"),
       project: line.project?.trim() || "",
@@ -1732,6 +1783,9 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
       reviewNotes: entry.reviewNotes?.trim() || undefined,
       dailyReviewStatus: normalizeDailyReviewStatus(entry.dailyReviewStatus),
       dailyReviewNotes: normalizeDailyReviewNotes(entry.dailyReviewNotes),
+      dailyReviewHolidays: normalizeDailyReviewDayFlags(entry.dailyReviewHolidays),
+      dailyReviewLocks: normalizeDailyReviewDayFlags(entry.dailyReviewLocks),
+      reviewShell: Boolean(entry.reviewShell),
       lines: Array.isArray(entry.lines) && entry.lines.length > 0 ? entry.lines.map((line) => ({
         id: line.id ?? createId("line"),
         project: String(line.project ?? "").trim(),
@@ -1891,6 +1945,8 @@ export async function ensureSchema() {
           data: stripNormalizedStore(createDefaultStore()) as Record<string, unknown>,
         });
       }
+
+      await db.execute(sql.raw('ALTER TABLE "timesheets" ADD COLUMN IF NOT EXISTS "review_shell" boolean NOT NULL DEFAULT false'));
     })();
   }
 
@@ -2639,7 +2695,7 @@ export async function saveTimesheetFast(input: {
     assertTaskHourLimits(normalizedEntry, current.projectBudgets, current.timesheets);
     const existing = current.timesheets.find((timesheet) => timesheet.id === normalizedEntry.id);
 
-    if (normalizedEntry.status === "draft" && !hasPersistedTimesheetContent(normalizedEntry)) {
+    if (normalizedEntry.status === "draft" && !hasPersistedTimesheetContent(normalizedEntry) && !normalizedEntry.reviewShell) {
       if (!existing) {
         return null;
       }
@@ -2715,7 +2771,7 @@ export async function saveTimesheetFast(input: {
 export async function setTimesheetDayReviewStatusFast(input: {
   id: string;
   day: DayKey;
-  reviewed: boolean;
+  action: "reviewed" | "reverted" | "holiday" | "locked" | "clear_review" | "clear_holiday" | "clear_lock";
   note?: string;
   tenantId: string;
   actorName: string;
@@ -2734,20 +2790,51 @@ export async function setTimesheetDayReviewStatusFast(input: {
 
     const nextDailyReviewStatus = { ...(existing.dailyReviewStatus ?? {}) };
     const nextDailyReviewNotes = { ...(existing.dailyReviewNotes ?? {}) };
-    if (input.reviewed) {
-      nextDailyReviewStatus[input.day] = "reviewed";
-      delete nextDailyReviewNotes[input.day];
-    } else {
-      const note = input.note?.trim();
-      if (note) {
-        nextDailyReviewStatus[input.day] = "reverted";
-        nextDailyReviewNotes[input.day] = note;
-      } else {
+    const nextDailyReviewHolidays = { ...(existing.dailyReviewHolidays ?? {}) };
+    const nextDailyReviewLocks = { ...(existing.dailyReviewLocks ?? {}) };
+    const note = input.note?.trim();
+
+    if (input.action === "holiday" && dayHasTimesheetContent(existing.lines, input.day)) {
+      throw new Error(`Cannot mark ${input.day.toUpperCase()} as holiday because the employee already logged hours or work notes for that day.`);
+    }
+
+    switch (input.action) {
+      case "reviewed":
+        nextDailyReviewStatus[input.day] = "reviewed";
+        delete nextDailyReviewNotes[input.day];
+        delete nextDailyReviewHolidays[input.day];
+        break;
+      case "reverted":
+        if (note) {
+          nextDailyReviewStatus[input.day] = "reverted";
+          nextDailyReviewNotes[input.day] = note;
+          delete nextDailyReviewHolidays[input.day];
+        } else {
+          delete nextDailyReviewStatus[input.day];
+          delete nextDailyReviewNotes[input.day];
+        }
+        break;
+      case "holiday":
+        nextDailyReviewHolidays[input.day] = true;
         delete nextDailyReviewStatus[input.day];
         delete nextDailyReviewNotes[input.day];
-      }
+        break;
+      case "locked":
+        nextDailyReviewLocks[input.day] = true;
+        break;
+      case "clear_review":
+        delete nextDailyReviewStatus[input.day];
+        delete nextDailyReviewNotes[input.day];
+        break;
+      case "clear_holiday":
+        delete nextDailyReviewHolidays[input.day];
+        break;
+      case "clear_lock":
+        delete nextDailyReviewLocks[input.day];
+        break;
     }
-    const hasAllDaysReviewed = DAY_KEYS.every((day) => nextDailyReviewStatus[day] === "reviewed");
+
+    const hasAllDaysReviewed = DAY_KEYS.every((day) => nextDailyReviewStatus[day] === "reviewed" || nextDailyReviewHolidays[day] === true);
     const shouldAutoSubmit = hasAllDaysReviewed && (existing.status === "draft" || existing.status === "rejected");
     if (shouldAutoSubmit) {
       assertWorkflowTransition("timesheetSubmission", existing.status, "submitted");
@@ -2764,6 +2851,8 @@ export async function setTimesheetDayReviewStatusFast(input: {
           reviewNotes: shouldAutoSubmit ? undefined : existing.reviewNotes,
           dailyReviewStatus: nextDailyReviewStatus,
           dailyReviewNotes: nextDailyReviewNotes,
+          dailyReviewHolidays: nextDailyReviewHolidays,
+          dailyReviewLocks: nextDailyReviewLocks,
           updatedAt: nowIso(),
         },
       ],
@@ -2777,40 +2866,61 @@ export async function setTimesheetDayReviewStatusFast(input: {
       entityType: "timesheet",
       entityId: existing.id,
       summary:
-        input.reviewed && shouldAutoSubmit
+        input.action === "reviewed" && shouldAutoSubmit
           ? `Marked ${input.day.toUpperCase()} for a timesheet and auto-submitted the week.`
-          : input.reviewed
+          : input.action === "reviewed"
             ? `Marked ${input.day.toUpperCase()} for a timesheet.`
-            : input.note?.trim()
+            : input.action === "reverted"
               ? `Reverted ${input.day.toUpperCase()} for a timesheet.`
-              : `Removed review mark for ${input.day.toUpperCase()} on a timesheet.`,
+              : input.action === "holiday"
+                ? `Marked ${input.day.toUpperCase()} as a holiday on a timesheet.`
+            : input.action === "locked"
+                  ? `Locked ${input.day.toUpperCase()} on a timesheet.`
+                  : input.action === "clear_holiday"
+                    ? `Removed holiday marker for ${input.day.toUpperCase()} on a timesheet.`
+                    : input.action === "clear_lock"
+                      ? `Removed lock for ${input.day.toUpperCase()} on a timesheet.`
+                      : `Removed review mark for ${input.day.toUpperCase()} on a timesheet.`,
       requestId: input.requestId,
       details: {
         entityLabel: existing.employeeNameSnapshot,
         requestId: input.requestId,
         changedFields: shouldAutoSubmit
-          ? ["dailyReviewStatus", "dailyReviewNotes", "status", "submittedAt"]
-          : ["dailyReviewStatus", "dailyReviewNotes"],
+          ? ["dailyReviewStatus", "dailyReviewNotes", "dailyReviewHolidays", "dailyReviewLocks", "status", "submittedAt"]
+          : ["dailyReviewStatus", "dailyReviewNotes", "dailyReviewHolidays", "dailyReviewLocks"],
         before: {
           status: existing.status,
           submittedAt: existing.submittedAt ?? null,
           dailyReviewStatus: existing.dailyReviewStatus ?? {},
           dailyReviewNotes: existing.dailyReviewNotes ?? {},
+          dailyReviewHolidays: existing.dailyReviewHolidays ?? {},
+          dailyReviewLocks: existing.dailyReviewLocks ?? {},
         },
         after: {
           status: updatedEntry.status,
           submittedAt: updatedEntry.submittedAt ?? null,
           dailyReviewStatus: updatedEntry.dailyReviewStatus ?? {},
           dailyReviewNotes: updatedEntry.dailyReviewNotes ?? {},
+          dailyReviewHolidays: updatedEntry.dailyReviewHolidays ?? {},
+          dailyReviewLocks: updatedEntry.dailyReviewLocks ?? {},
         },
           context: {
-            operation: input.reviewed
-              ? shouldAutoSubmit
-                ? "timesheet_day_review_mark_and_auto_submit"
-                : "timesheet_day_review_mark"
-              : input.note?.trim()
-                ? "timesheet_day_review_revert"
-                : "timesheet_day_review_undo",
+            operation:
+              input.action === "reviewed"
+                ? shouldAutoSubmit
+                  ? "timesheet_day_review_mark_and_auto_submit"
+                  : "timesheet_day_review_mark"
+                : input.action === "reverted"
+                  ? "timesheet_day_review_revert"
+                  : input.action === "holiday"
+                    ? "timesheet_day_review_mark_holiday"
+                    : input.action === "locked"
+                      ? "timesheet_day_review_lock"
+                      : input.action === "clear_holiday"
+                        ? "timesheet_day_review_clear_holiday"
+                        : input.action === "clear_lock"
+                          ? "timesheet_day_review_clear_lock"
+                          : "timesheet_day_review_clear_review",
             day: input.day,
             autoSubmitted: shouldAutoSubmit,
           },

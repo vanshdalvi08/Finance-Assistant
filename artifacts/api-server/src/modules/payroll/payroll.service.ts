@@ -17,7 +17,7 @@ import {
 import { assertEmployeeSelfAccess, assertTenantAccess } from "../../lib/policies";
 import { hashSha256 } from "../../lib/security";
 import { DEFAULT_TENANT_ID } from "../../lib/tenants";
-import { assertFinancialAccount, availableFundsByAccount } from "../../lib/financial-accounts";
+import { assertFinancialAccount, availableFundsByAccount, preferredFinancialAccount } from "../../lib/financial-accounts";
 
 export type SalaryActor = {
   userId?: string;
@@ -224,7 +224,7 @@ export async function saveSalary(
       throw new SalaryServiceError("invalid_input", "Salary amount must be greater than zero.");
     }
     const status = input.status ?? existing?.status ?? "pending";
-    const selectedAccountId = input.accountId?.trim() || existing?.accountId;
+    const selectedAccountId = input.accountId?.trim() || existing?.accountId || preferredFinancialAccount(current, actor.tenantId)?.id;
     if (status === "paid") {
       if (!selectedAccountId) {
         throw new SalaryServiceError("invalid_input", "Select a financial account before marking salary as paid.");
@@ -375,7 +375,7 @@ export async function paySalary(
         return current;
       }
 
-      const selectedAccountId = options?.accountId?.trim() || existing.accountId;
+      const selectedAccountId = options?.accountId?.trim() || existing.accountId || preferredFinancialAccount(current, actor.tenantId)?.id;
       if (!selectedAccountId) {
         throw new SalaryServiceError("invalid_input", "Select a financial account before paying salary.");
       }

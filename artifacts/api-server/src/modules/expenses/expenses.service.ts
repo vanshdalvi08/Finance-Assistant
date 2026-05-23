@@ -17,7 +17,7 @@ import { assertEmployeeSelfAccess, assertTenantAccess } from "../../lib/policies
 import { hashSha256 } from "../../lib/security";
 import { assertWorkflowTransition } from "../../lib/workflow-state";
 import { assertActorRoleAccess } from "../../lib/policies";
-import { assertFinancialAccount, availableFundsByAccount } from "../../lib/financial-accounts";
+import { assertFinancialAccount, availableFundsByAccount, preferredFinancialAccount } from "../../lib/financial-accounts";
 
 export type ExpenseActor = {
   userId?: string;
@@ -226,7 +226,7 @@ export async function saveExpense(input: ExpenseInput, actor: ExpenseActor, requ
     const selectedAccountId =
       requesterRole === "employee"
         ? existing?.accountId
-        : input.accountId?.trim() || existing?.accountId;
+        : input.accountId?.trim() || existing?.accountId || preferredFinancialAccount(current, actor.tenantId)?.id;
     if (status === "approved") {
       if (!selectedAccountId) {
         throw new ExpensesServiceError("invalid_input", "Select a Paid Through account before approving this expense.");
@@ -381,7 +381,7 @@ export async function setExpenseStatus(
       const selectedAccountId =
         nextStatus === "approved"
           ? options?.accountId?.trim() || existing.accountId
-          : existing.accountId;
+          : existing.accountId || preferredFinancialAccount(current, actor.tenantId)?.id;
       if (nextStatus === "approved") {
         if (!selectedAccountId) {
           throw new ExpensesServiceError("invalid_input", "Select a Paid Through account before approving this expense.");

@@ -948,7 +948,7 @@ interface MonthCalendarDay {
   timeOffKind?: LeaveRequestKind;
   timeOffSource?: "admin" | "employee";
   timeOffRequestId?: string;
-  holidaySource?: "company" | "requested";
+  holidaySource?: "company" | "requested" | "admin";
   leaveStatus?: LeaveRequestStatus;
   leaveReason?: string;
   pendingLeave: boolean;
@@ -981,6 +981,7 @@ function buildMonthCalendar(store: BusinessStore, employeeId: string, month: str
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
   const daily = new Map<string, { hours: number; expenseCount: number }>();
   const holidaysByDate = new Map<string, HolidayRecord>();
+  const adminHolidaysByDate = new Set<string>();
   const leaveRequestsByDate = new Map<string, LeaveRequestRecord>();
 
   for (const holiday of store.holidays.filter((item) => (item.tenantId ?? DEFAULT_TENANT_ID) === tenantId && monthKeyFromDate(item.date) === month)) {
@@ -1019,6 +1020,20 @@ function buildMonthCalendar(store: BusinessStore, employeeId: string, month: str
         daily.set(iso, bucket);
       });
     });
+
+    DAY_KEYS.forEach((key, offset) => {
+      if (entry.dailyReviewHolidays?.[key] !== true) {
+        return;
+      }
+
+      const dayDate = new Date(weekStart);
+      dayDate.setDate(weekStart.getDate() + offset);
+      if (dayDate.getFullYear() !== year || dayDate.getMonth() !== monthIndex) {
+        return;
+      }
+
+      adminHolidaysByDate.add(dayDate.toISOString().slice(0, 10));
+    });
   }
 
   for (const expense of store.expenses.filter((item) => item.employeeId === employeeId && monthKeyFromDate(item.date) === month)) {
@@ -1044,6 +1059,7 @@ function buildMonthCalendar(store: BusinessStore, employeeId: string, month: str
     const iso = date.toISOString().slice(0, 10);
     const bucket = daily.get(iso) ?? { hours: 0, expenseCount: 0 };
     const holiday = holidaysByDate.get(iso);
+    const adminHoliday = adminHolidaysByDate.has(iso);
     const leaveRequest = leaveRequestsByDate.get(iso);
     const isWeekend = date.getDay() === 0 || date.getDay() === 6;
     const worked = bucket.hours > 0;
@@ -1051,8 +1067,8 @@ function buildMonthCalendar(store: BusinessStore, employeeId: string, month: str
     const pendingHolidayRequest = Boolean(leaveRequest && leaveRequest.status === "pending" && leaveRequest.kind === "holiday");
     const approvedLeaveRequest = Boolean(leaveRequest && leaveRequest.status === "approved" && leaveRequest.kind === "leave");
     const pendingLeaveRequest = Boolean(leaveRequest && leaveRequest.status === "pending" && leaveRequest.kind === "leave");
-    const isHoliday = Boolean(holiday || approvedHolidayRequest);
-    const leave = Boolean(approvedLeaveRequest && !holiday);
+    const isHoliday = Boolean(holiday || adminHoliday || approvedHolidayRequest);
+    const leave = Boolean(approvedLeaveRequest && !holiday && !adminHoliday);
     const pendingLeave = Boolean(pendingLeaveRequest && !isHoliday);
     if (worked) daysWorked += 1;
     if (leave) leaveDays += 1;
@@ -1071,10 +1087,11 @@ function buildMonthCalendar(store: BusinessStore, employeeId: string, month: str
       worked,
       leave,
       holiday: isHoliday,
-      holidayName: holiday?.name ?? (approvedHolidayRequest ? "Requested Holiday" : undefined),
+      holidayName: holiday?.name ?? (adminHoliday ? "Holiday" : approvedHolidayRequest ? "Requested Holiday" : undefined),
       timeOffKind: leaveRequest?.kind ?? undefined,
-      timeOffSource: holiday ? "admin" : leaveRequest ? "employee" : undefined,
+      timeOffSource: holiday || adminHoliday ? "admin" : leaveRequest ? "employee" : undefined,
       timeOffRequestId: leaveRequest?.id,
+      holidaySource: holiday ? "company" : adminHoliday ? "admin" : approvedHolidayRequest || pendingHolidayRequest ? "requested" : undefined,
       leaveStatus: leaveRequest?.status ?? undefined,
       leaveReason: leaveRequest?.reason ?? undefined,
       pendingLeave,
