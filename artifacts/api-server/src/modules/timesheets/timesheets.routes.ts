@@ -645,7 +645,7 @@ function buildMonthCalendar(
     const pendingHolidayRequest = Boolean(leaveRequest && leaveRequest.status === "pending" && leaveRequest.kind === "holiday");
     const approvedLeaveRequest = Boolean(leaveRequest && leaveRequest.status === "approved" && leaveRequest.kind === "leave");
     const pendingLeaveRequest = Boolean(leaveRequest && leaveRequest.status === "pending" && leaveRequest.kind === "leave");
-    const isHoliday = Boolean(holiday || adminHoliday || approvedHolidayRequest);
+    const isHoliday = Boolean(holiday || adminHoliday || approvedHolidayRequest || approvedLeaveRequest);
     const leave = Boolean(approvedLeaveRequest && !holiday && !adminHoliday);
     const pendingLeave = Boolean(pendingLeaveRequest && !isHoliday);
     if (worked) daysWorked += 1;
@@ -665,11 +665,25 @@ function buildMonthCalendar(
       worked,
       leave,
       holiday: isHoliday,
-      holidayName: holiday?.name ?? (adminHoliday ? "Holiday" : leaveRequest?.kind === "holiday" ? leaveRequest.reason || "Holiday" : undefined),
+      holidayName:
+        holiday?.name ??
+        (adminHoliday
+          ? "Holiday"
+          : leaveRequest?.kind === "holiday"
+            ? leaveRequest.reason || "Holiday"
+            : leaveRequest?.kind === "leave" && leaveRequest.status === "approved"
+              ? leaveRequest.reason || "Leave"
+              : undefined),
       timeOffKind: leaveRequest?.kind,
       timeOffSource: holiday || adminHoliday ? "admin" : leaveRequest ? "employee" : undefined,
       timeOffRequestId: leaveRequest?.id,
-      holidaySource: holiday ? "company" : adminHoliday ? "admin" : approvedHolidayRequest || pendingHolidayRequest ? "requested" : undefined,
+      holidaySource: holiday
+        ? "company"
+        : adminHoliday
+          ? "admin"
+          : approvedHolidayRequest || pendingHolidayRequest || (leaveRequest?.kind === "leave" && leaveRequest.status === "approved")
+            ? "requested"
+            : undefined,
       leaveStatus: leaveRequest?.status,
       leaveReason: leaveRequest?.reason,
       pendingLeave,
@@ -1273,6 +1287,21 @@ router.patch("/timesheets/:id/daily-review/:day", requireTenantRole("admin"), as
   if (!updated) {
     respondNotFound(response, "Timesheet not found");
     return;
+  }
+
+  if (action === "reviewed") {
+    const reviewedEmployee = await loadEmployeeProfile(existing.employeeId, tenantId);
+    appEvents.emit("timesheet_day_reviewed", {
+      tenantId,
+      timesheet: updated,
+      employee: reviewedEmployee,
+      day: day.data,
+      reviewedAt: updated.updatedAt ?? nowIso(),
+      reviewedBy: {
+        userId: request.auth?.user.id,
+        name: request.auth?.user.name ?? "Admin",
+      },
+    });
   }
 
   if (action === "reverted" && body.data.note) {

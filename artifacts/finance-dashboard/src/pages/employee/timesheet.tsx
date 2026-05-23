@@ -1304,7 +1304,8 @@ export default function EmployeeTimesheetPage() {
                         (() => {
                           const calendarDay = weekCalendarLookup.get(day.date.toISOString().slice(0, 10));
                           const isAdminHoliday = draft.dailyReviewHolidays?.[day.key] === true;
-                          const isOffDay = Boolean(calendarDay?.holiday || calendarDay?.leave || calendarDay?.leaveStatus === "pending" || isAdminHoliday);
+                          const isHoliday = Boolean(calendarDay?.holiday || isAdminHoliday);
+                          const isOffDay = Boolean(isHoliday || calendarDay?.leave || calendarDay?.leaveStatus === "pending");
                           const outsideTaskWindow = selectedTask ? !isTaskWindowDay(selectedTask, day.date) : false;
                           const hasExistingHours = Number(line.hours[day.key] ?? 0) > 0;
                           const workNotePreview = line.workNotes?.[day.key]?.trim() ?? "";
@@ -1315,7 +1316,7 @@ export default function EmployeeTimesheetPage() {
                             draft.dailyReviewLocks,
                             day.key,
                           );
-                          const placeholder = isAdminHoliday
+                          const placeholder = isHoliday
                             ? "H"
                             : calendarDay?.holiday
                             ? calendarDay.holidayName ?? "Holiday"
@@ -1344,7 +1345,7 @@ export default function EmployeeTimesheetPage() {
                               }
                             >
                               <div className="mx-auto flex h-[40px] w-full items-center justify-center">
-                                {isAdminHoliday ? (
+                                {isHoliday ? (
                                   <div className="flex h-[40px] w-[58px] items-center justify-center rounded-[16px] border border-emerald-200/80 bg-emerald-50 text-sm font-semibold text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-200">
                                     H
                                   </div>

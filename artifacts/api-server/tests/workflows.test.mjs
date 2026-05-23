@@ -592,6 +592,51 @@ test("admin holiday shows up in the employee month calendar", { concurrency: fal
   }
 });
 
+test("approved leave shows up as a holiday in the employee month calendar", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-timesheet-approved-leave");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+  const employeeToken = await login(employee.email, createdEmployee.temporaryPassword);
+
+  const leaveCreate = await api("/business/leave-requests", {
+    method: "POST",
+    token: employeeToken,
+    body: {
+      startDate: "2026-05-12",
+      endDate: "2026-05-12",
+      reason: "Phase 2 approved leave",
+    },
+  });
+  assert.equal(leaveCreate.status, 201, JSON.stringify(leaveCreate.json));
+  const leaveId = leaveCreate.json.leaveRequest.id;
+
+  try {
+    const approveResponse = await api(`/business/leave-requests/${leaveId}/status`, {
+      method: "PATCH",
+      token: adminToken,
+      body: { status: "approved", reviewNote: "approved" },
+    });
+    assert.equal(approveResponse.status, 200, JSON.stringify(approveResponse.json));
+
+    const calendarResponse = await api(`/business/month-calendar?employeeId=${employee.id}&month=2026-05`, {
+      method: "GET",
+      token: employeeToken,
+    });
+    assert.equal(calendarResponse.status, 200, JSON.stringify(calendarResponse.json));
+
+    const leaveDay = calendarResponse.json.monthCalendar.days.find((day) => day.date.startsWith("2026-05-12"));
+    assert.ok(leaveDay, "Expected the month calendar to include 2026-05-12");
+    assert.equal(leaveDay.holiday, true);
+    assert.equal(leaveDay.holidaySource, "requested");
+    assert.equal(leaveDay.timeOffSource, "employee");
+    assert.equal(leaveDay.leaveStatus, "approved");
+  } finally {
+    await api(`/business/leave-requests/${leaveId}`, { method: "DELETE", token: adminToken });
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
 test("reviewing all 7 days auto-submits the week to the admin queue", { concurrency: false }, async () => {
   const adminToken = await login("admin@yojak.in", "yojak123");
   const suffix = randomSuffix("phase2-timesheet-auto-submit");

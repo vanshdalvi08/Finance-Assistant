@@ -1,7 +1,52 @@
-import { appEvents, type TimesheetApprovedEvent } from "../../lib/events";
+import { and, eq } from "drizzle-orm";
+import { db } from "@workspace/db";
+import { idempotencyKeysTable } from "@workspace/db/schema";
+import { appEvents, type TimesheetApprovedEvent, type TimesheetDayReviewedEvent } from "../../lib/events";
 import { logger } from "../../lib/logger";
+import { hashSha256 } from "../../lib/security";
 import { appendTimesheetRow, isGoogleSheetsEnabledForTenant } from "./sheets.service";
-import { buildDailyReviewRowsFromApprovedTimesheet, buildWeeklyApprovalRows } from "./sheets.rows";
+import { buildDailyReviewRowFromReviewedDay, buildWeeklyApprovalRows } from "./sheets.rows";
+
+async function claimDailyReviewExportIdempotency(event: TimesheetDayReviewedEvent, requestHash: string) {
+  const key = `timesheet-daily-review-sheet:${event.timesheet.id}:${event.day}`;
+  const keyHash = hashSha256(key);
+  const createdAt = new Date();
+  const insertedRows = await db
+    .insert(idempotencyKeysTable)
+    .values({
+      id: `idem_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`,
+      tenantId: event.tenantId,
+      scope: "timesheet_daily_review_sheet",
+      keyHash,
+      requestHash,
+      status: "processing",
+      createdById: event.reviewedBy.userId ?? null,
+      createdAt,
+      updatedAt: createdAt,
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  if (insertedRows[0]) {
+    return { row: insertedRows[0], created: true };
+  }
+
+  const existingRows = await db
+    .select()
+    .from(idempotencyKeysTable)
+    .where(and(eq(idempotencyKeysTable.tenantId, event.tenantId), eq(idempotencyKeysTable.scope, "timesheet_daily_review_sheet"), eq(idempotencyKeysTable.keyHash, keyHash)))
+    .limit(1);
+
+  const row = existingRows[0];
+  if (!row) {
+    throw new Error("Unable to acquire idempotency lock for this timesheet day review export.");
+  }
+  if (row.requestHash !== requestHash) {
+    throw new Error("This idempotency key is already used for a different timesheet day review export payload.");
+  }
+
+  return { row, created: false };
+}
 
 async function handleTimesheetApproved(event: TimesheetApprovedEvent) {
   if (!(await isGoogleSheetsEnabledForTenant(event.tenantId))) {
@@ -9,15 +54,14 @@ async function handleTimesheetApproved(event: TimesheetApprovedEvent) {
   }
 
   const weeklyRows = buildWeeklyApprovalRows(event);
-  const dailyRows = buildDailyReviewRowsFromApprovedTimesheet(event);
 
-  if (weeklyRows.length === 0 && dailyRows.length === 0) {
+  if (weeklyRows.length === 0) {
     logger.warn({ timesheetId: event.timesheet.id, tenantId: event.tenantId }, "Skipping Google Sheets sync for empty approved timesheet");
     return;
   }
 
   try {
-    for (const row of [...weeklyRows, ...dailyRows]) {
+    for (const row of weeklyRows) {
       await appendTimesheetRow(row);
     }
   } catch (error) {
@@ -32,6 +76,67 @@ async function handleTimesheetApproved(event: TimesheetApprovedEvent) {
   }
 }
 
+async function handleTimesheetDayReviewed(event: TimesheetDayReviewedEvent) {
+  if (!(await isGoogleSheetsEnabledForTenant(event.tenantId))) {
+    return;
+  }
+
+  const row = buildDailyReviewRowFromReviewedDay(event);
+  if (!row) {
+    return;
+  }
+
+  const requestHash = hashSha256(
+    JSON.stringify({
+      timesheetId: event.timesheet.id,
+      day: event.day,
+      reviewedAt: event.reviewedAt,
+      employeeId: event.timesheet.employeeId,
+      hours: row.totalHours,
+      workNote: row.workNote,
+    }),
+  );
+
+  const idempotencyClaim = await claimDailyReviewExportIdempotency(event, requestHash);
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      return;
+    }
+    logger.warn(
+      { timesheetId: event.timesheet.id, tenantId: event.tenantId, day: event.day },
+      "Skipping Google Sheets sync because a daily review export is already in progress",
+    );
+    return;
+  }
+
+  try {
+    await appendTimesheetRow(row);
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: event.timesheet.id,
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+  } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    logger.error(
+      {
+        err: error,
+        tenantId: event.tenantId,
+        timesheetId: event.timesheet.id,
+        day: event.day,
+      },
+      "Google Sheets daily review append failed",
+    );
+  }
+}
+
 declare global {
   // eslint-disable-next-line no-var
   var __timesheetGoogleSheetsListenerRegistered__: boolean | undefined;
@@ -41,6 +146,9 @@ if (!globalThis.__timesheetGoogleSheetsListenerRegistered__) {
   globalThis.__timesheetGoogleSheetsListenerRegistered__ = true;
   appEvents.on("timesheet_approved", (event) => {
     void handleTimesheetApproved(event);
+  });
+  appEvents.on("timesheet_day_reviewed", (event) => {
+    void handleTimesheetDayReviewed(event);
   });
 }
 

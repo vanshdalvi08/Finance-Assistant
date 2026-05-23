@@ -1065,7 +1065,7 @@ function buildMonthCalendar(store: BusinessStore, employeeId: string, month: str
     const pendingHolidayRequest = Boolean(leaveRequest && leaveRequest.status === "pending" && leaveRequest.kind === "holiday");
     const approvedLeaveRequest = Boolean(leaveRequest && leaveRequest.status === "approved" && leaveRequest.kind === "leave");
     const pendingLeaveRequest = Boolean(leaveRequest && leaveRequest.status === "pending" && leaveRequest.kind === "leave");
-    const isHoliday = Boolean(holiday || adminHoliday || approvedHolidayRequest);
+    const isHoliday = Boolean(holiday || adminHoliday || approvedHolidayRequest || approvedLeaveRequest);
     const leave = Boolean(approvedLeaveRequest && !holiday && !adminHoliday);
     const pendingLeave = Boolean(pendingLeaveRequest && !isHoliday);
     if (worked) daysWorked += 1;
@@ -1085,11 +1085,25 @@ function buildMonthCalendar(store: BusinessStore, employeeId: string, month: str
       worked,
       leave,
       holiday: isHoliday,
-      holidayName: holiday?.name ?? (adminHoliday ? "Holiday" : approvedHolidayRequest ? "Requested Holiday" : undefined),
+      holidayName:
+        holiday?.name ??
+        (adminHoliday
+          ? "Holiday"
+          : approvedHolidayRequest
+            ? "Requested Holiday"
+            : approvedLeaveRequest
+              ? leaveRequest?.reason || "Leave"
+              : undefined),
       timeOffKind: leaveRequest?.kind ?? undefined,
       timeOffSource: holiday || adminHoliday ? "admin" : leaveRequest ? "employee" : undefined,
       timeOffRequestId: leaveRequest?.id,
-      holidaySource: holiday ? "company" : adminHoliday ? "admin" : approvedHolidayRequest || pendingHolidayRequest ? "requested" : undefined,
+      holidaySource: holiday
+        ? "company"
+        : adminHoliday
+          ? "admin"
+          : approvedHolidayRequest || pendingHolidayRequest || approvedLeaveRequest
+            ? "requested"
+            : undefined,
       leaveStatus: leaveRequest?.status ?? undefined,
       leaveReason: leaveRequest?.reason ?? undefined,
       pendingLeave,

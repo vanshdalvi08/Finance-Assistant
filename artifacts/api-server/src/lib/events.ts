@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { TimesheetEntry, UserProfile } from "./business-store";
+import type { DayKey, TimesheetEntry, UserProfile } from "./business-store";
 
 export interface TimesheetApprovedEvent {
   tenantId: string;
@@ -11,8 +11,21 @@ export interface TimesheetApprovedEvent {
   };
 }
 
+export interface TimesheetDayReviewedEvent {
+  tenantId: string;
+  timesheet: TimesheetEntry;
+  employee: UserProfile | null;
+  day: DayKey;
+  reviewedAt: string;
+  reviewedBy: {
+    userId?: string;
+    name: string;
+  };
+}
+
 type AppEventMap = {
   timesheet_approved: TimesheetApprovedEvent;
+  timesheet_day_reviewed: TimesheetDayReviewedEvent;
 };
 
 class TypedAppEvents extends EventEmitter {
