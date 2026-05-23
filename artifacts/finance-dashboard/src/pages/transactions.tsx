@@ -54,7 +54,6 @@ export default function Transactions() {
   const [filterType, setFilterType] = useState<string>(
     initialType && ["fund", "expense", "salary"].includes(initialType) ? initialType : "all",
   );
-  const [filterAccountId, setFilterAccountId] = useState("all");
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
   const [filterAmountMin, setFilterAmountMin] = useState("");
@@ -71,7 +70,6 @@ export default function Transactions() {
     queryKey: ["adminOverview"],
     queryFn: api.getAdminOverview,
   });
-  const accountOptions = useMemo(() => overview?.financialAccounts ?? [], [overview?.financialAccounts]);
 
   const sorted = useMemo(
     () => [...transactions].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()),
@@ -81,7 +79,6 @@ export default function Transactions() {
   const filtered = useMemo(() => {
     return sorted.filter((transaction) => {
       if (filterType !== "all" && transaction.type !== filterType) return false;
-      if (filterAccountId !== "all" && transaction.accountId !== filterAccountId) return false;
       if (filterDateFrom && transaction.date < filterDateFrom) return false;
       if (filterDateTo && transaction.date > `${filterDateTo}T23:59:59Z`) return false;
 
@@ -100,7 +97,7 @@ export default function Transactions() {
 
       return true;
     });
-  }, [sorted, filterType, filterAccountId, filterDateFrom, filterDateTo, filterAmountMin, filterAmountMax, search]);
+  }, [sorted, filterType, filterDateFrom, filterDateTo, filterAmountMin, filterAmountMax, search]);
 
   const monthGroups = useMemo(() => {
     const groups = new Map<
@@ -152,7 +149,6 @@ export default function Transactions() {
 
   function clearFilters() {
     setFilterType("all");
-    setFilterAccountId("all");
     setFilterDateFrom("");
     setFilterDateTo("");
     setFilterAmountMin("");
@@ -262,23 +258,6 @@ export default function Transactions() {
                 </div>
 
                 <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Account</Label>
-                  <Select value={filterAccountId} onValueChange={setFilterAccountId}>
-                    <SelectTrigger className="h-10 rounded-xl border-border/60 bg-card/70 text-xs">
-                      <SelectValue placeholder="All Accounts" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All Accounts</SelectItem>
-                      {accountOptions.map((account) => (
-                        <SelectItem key={account.id} value={account.id}>
-                          {account.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-1">
                   <Label className="text-xs text-muted-foreground">From Date</Label>
                   <Input
                     type="date"
@@ -372,7 +351,6 @@ export default function Transactions() {
                           <TableRow className="border-border/50 hover:bg-transparent">
                             <TableHead className="pl-0">Description</TableHead>
                             <TableHead>Type</TableHead>
-                            <TableHead>Account</TableHead>
                             <TableHead>Category</TableHead>
                             <TableHead>Project</TableHead>
                             <TableHead>Date</TableHead>
@@ -398,15 +376,6 @@ export default function Transactions() {
                                   <Badge variant="outline" className={config.badge}>
                                     {config.label}
                                   </Badge>
-                                </TableCell>
-                                <TableCell>
-                                  {transaction.accountName ? (
-                                    <Badge variant="outline" className="border-border/60 bg-secondary/40 text-muted-foreground">
-                                      {transaction.accountName}
-                                    </Badge>
-                                  ) : (
-                                    <span className="text-muted-foreground">-</span>
-                                  )}
                                 </TableCell>
                                 <TableCell className="text-muted-foreground">{transaction.category}</TableCell>
                                 <TableCell className="text-muted-foreground">{transaction.project || "-"}</TableCell>

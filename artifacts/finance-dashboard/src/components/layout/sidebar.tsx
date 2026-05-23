@@ -21,7 +21,6 @@ import {
   ScrollText,
   Settings,
   ShieldCheck,
-  WalletCards,
   UserRound,
   Users,
   Wallet,
@@ -86,10 +85,7 @@ const adminGroups: AdminNavGroup[] = [
   {
     id: "settings",
     label: "Settings",
-    items: [
-      { href: "/settings", label: "Settings", icon: Settings },
-      { href: "/settings/financial-accounts", label: "Financial Accounts", icon: WalletCards },
-    ],
+    items: [{ href: "/settings", label: "Settings", icon: Settings }],
   },
 ];
 

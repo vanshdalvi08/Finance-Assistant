@@ -1,14 +1,15 @@
 import { useMemo, useState } from "react";
+import { Link } from "wouter";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { DashboardCard } from "@/components/dashboard-card";
-import { api, type FinancialAccountBalance } from "@/lib/api";
+import { api } from "@/lib/api";
 import { useQuery } from "@tanstack/react-query";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowDownRight, ArrowUpRight, IndianRupee, Wallet, Receipt } from "lucide-react";
+import { ArrowDownRight, ArrowRight, ArrowUpRight, IndianRupee, Wallet, Receipt } from "lucide-react";
 import { format } from "date-fns";
 
 function getMonthWindow(offset: number) {
@@ -41,21 +42,6 @@ function monthKey(date: string) {
 
 function formatMonthLabel(value: string) {
   return format(new Date(`${value}-01T00:00:00`), "MMMM yyyy");
-}
-
-function accountScopeLabel(account: FinancialAccountBalance) {
-  switch (account.accountType) {
-    case "personal":
-      return "Personal";
-    case "mixed_use":
-      return "Mixed";
-    case "reserve":
-      return "Reserve";
-    case "cash":
-      return "Cash";
-    default:
-      return "Operational";
-  }
 }
 
 function buildFinanceChartData(
@@ -103,7 +89,6 @@ export default function Dashboard() {
   const { data: salaries = [] } = useQuery({ queryKey: ["salaries"], queryFn: api.getSalaries });
   const { data: overview } = useQuery({ queryKey: ["adminOverview"], queryFn: api.getAdminOverview });
   const [selectedPeriod, setSelectedPeriod] = useState("all");
-  const [selectedBalanceView, setSelectedBalanceView] = useState("operational");
   const approvedExpenses = expenses.filter((expense) => expense.status === "approved");
   const paidSalaries = salaries.filter((salary) => salary.status === "paid");
 
@@ -147,21 +132,9 @@ export default function Dashboard() {
         .filter((salary) => isSameMonth(salary.paidAt ?? salary.date, selectedMonth))
         .reduce((sum, salary) => sum + salary.amount, 0)
     : overview?.totalSalaryPaid ?? paidSalaries.reduce((sum, salary) => sum + salary.amount, 0);
-  const availableFunds = useMemo(() => {
-    if (!overview) {
-      return 0;
-    }
-
-    if (selectedBalanceView === "all") {
-      return overview.allAccountsBalance ?? overview.currentBalance;
-    }
-
-    if (selectedBalanceView === "operational") {
-      return overview.operationalBalance ?? overview.currentBalance;
-    }
-
-    return overview.financialAccounts.find((account) => account.id === selectedBalanceView)?.balance ?? 0;
-  }, [overview, selectedBalanceView]);
+  const availableFunds = selectedMonth
+    ? totalFunds - totalExpenses - totalSalaryPaid
+    : overview?.currentBalance ?? totalFunds - totalExpenses - totalSalaryPaid;
   const recentTransactions = (
     selectedMonth
       ? transactions.filter((transaction) => isSameMonth(transaction.date, selectedMonth))
@@ -218,11 +191,11 @@ export default function Dashboard() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
-          <Card className="relative h-full overflow-hidden border-emerald-500/15 bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.08),transparent_34%),hsl(var(--card))] shadow-[0_0_0_1px_rgba(16,185,129,0.05),0_6px_18px_rgba(0,0,0,0.08)]">
+          <Card className="relative overflow-hidden border-emerald-500/15 bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.08),transparent_34%),hsl(var(--card))] shadow-[0_0_0_1px_rgba(16,185,129,0.05),0_6px_18px_rgba(0,0,0,0.08)]">
             <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-emerald-400/60 to-transparent" />
-            <CardContent className="flex h-full flex-col justify-between p-6">
+            <CardContent className="p-6">
               <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0 flex-1 space-y-3">
+                <div className="min-w-0 flex-1 space-y-2">
                   <div className="flex items-center gap-2">
                     <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.45)]" />
                     <p className="text-sm font-medium text-muted-foreground">Available Funds</p>
@@ -230,23 +203,15 @@ export default function Dashboard() {
                   <p className="text-3xl font-bold tracking-tight">
                     {availableFunds.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
                   </p>
-                  <Select value={selectedBalanceView} onValueChange={setSelectedBalanceView}>
-                    <SelectTrigger className="h-8 w-[170px] rounded-full border-emerald-500/15 bg-emerald-500/6 px-3 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="operational">Operational</SelectItem>
-                      <SelectItem value="all">All Accounts</SelectItem>
-                      {(overview?.financialAccounts ?? []).map((account) => (
-                        <SelectItem key={account.id} value={account.id}>
-                          {account.name} - {accountScopeLabel(account)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Link href="/transactions?type=fund">
+                    <button className="inline-flex items-center gap-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground">
+                      View fund transactions
+                      <ArrowRight className="h-4 w-4" />
+                    </button>
+                  </Link>
                 </div>
                 <div className="shrink-0 rounded-lg bg-emerald-500/8 p-2 text-emerald-300">
-                  <Wallet className="h-5 w-5" />
+                  <Wallet className="w-5 h-5" />
                 </div>
               </div>
             </CardContent>

@@ -13,8 +13,6 @@ export type TimesheetDailyReviewLocks = Partial<Record<DayKey, true>>;
 export type ApprovalStatus = "draft" | "submitted" | "approved" | "rejected";
 export type SalaryStatus = "pending" | "paid";
 export type ExpenseGroup = "personal" | "office";
-export type FinancialAccountType = "operational" | "personal" | "mixed_use" | "reserve" | "cash";
-export type FinancialAccountCategory = "bank" | "cash" | "wallet" | "other";
 export type ActorRole = "admin" | "employee" | "client" | "platform_super_admin" | "system";
 export type ProjectStatus = "active" | "archived";
 export type ProjectTaskStatus = "active" | "archived";
@@ -30,7 +28,6 @@ export type AuditEntityType =
   | "employee"
   | "expense"
   | "fund"
-  | "financial-account"
   | "salary"
   | "timesheet"
   | "timesheet-line"
@@ -151,8 +148,6 @@ export const approvalStatusEnum = pgEnum("approval_status", ["draft", "submitted
 export const salaryStatusEnum = pgEnum("salary_status", ["pending", "paid"]);
 export const salarySourceEnum = pgEnum("salary_source", ["manual", "timesheet"]);
 export const expenseGroupEnum = pgEnum("expense_group", ["personal", "office"]);
-export const financialAccountTypeEnum = pgEnum("financial_account_type", ["operational", "personal", "mixed_use", "reserve", "cash"]);
-export const financialAccountCategoryEnum = pgEnum("financial_account_category", ["bank", "cash", "wallet", "other"]);
 export const actorRoleEnum = pgEnum("audit_actor_role", ["admin", "employee", "client", "platform_super_admin", "system"]);
 export const projectStatusEnum = pgEnum("project_status", ["active", "archived"]);
 export const projectTaskStatusEnum = pgEnum("project_task_status", ["active", "archived"]);
@@ -164,7 +159,6 @@ export const auditEntityTypeEnum = pgEnum("audit_entity_type", [
   "employee",
   "expense",
   "fund",
-  "financial-account",
   "salary",
   "timesheet",
   "timesheet-line",
@@ -199,42 +193,11 @@ export const companySettingsTable = pgTable(
   }),
 );
 
-export const financialAccountsTable = pgTable(
-  "financial_accounts",
-  {
-    id: text("id").primaryKey(),
-    tenantId: uuid("tenant_id").notNull().references(() => tenantsTable.id, { onDelete: "cascade" }),
-    name: text("name").notNull(),
-    accountType: financialAccountTypeEnum("account_type").notNull().default("operational"),
-    category: financialAccountCategoryEnum("category").notNull().default("bank"),
-    openingBalance: integer("opening_balance").notNull().default(0),
-    description: text("description").notNull().default(""),
-    includeInOperationalReporting: boolean("include_in_operational_reporting").notNull().default(true),
-    isActive: boolean("is_active").notNull().default(true),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => ({
-    tenantIndex: index("financial_accounts_tenant_index").on(table.tenantId),
-    nameIndex: index("financial_accounts_name_index").on(table.name),
-    activeIndex: index("financial_accounts_active_index").on(table.isActive),
-    accountTypeIndex: index("financial_accounts_account_type_index").on(table.accountType),
-    nonNegativeOpeningBalance: check("financial_accounts_opening_balance_nonnegative_check", sql`${table.openingBalance} >= 0`),
-  }),
-);
-
-export const insertFinancialAccountSchema = createInsertSchema(financialAccountsTable).omit({
-  id: true,
-  createdAt: true,
-  updatedAt: true,
-});
-
 export const fundsTable = pgTable(
   "funds",
   {
     id: text("id").primaryKey(),
     tenantId: uuid("tenant_id").notNull().references(() => tenantsTable.id, { onDelete: "cascade" }),
-    accountId: text("account_id").references(() => financialAccountsTable.id, { onDelete: "set null" }),
     source: text("source").notNull(),
     amount: integer("amount").notNull().default(0),
     date: timestamp("date", { withTimezone: true }).notNull(),
@@ -246,7 +209,6 @@ export const fundsTable = pgTable(
   },
   (table) => ({
     tenantIndex: index("funds_tenant_index").on(table.tenantId),
-    accountIndex: index("funds_account_index").on(table.accountId),
     sourceIndex: index("funds_source_index").on(table.source),
     dateIndex: index("funds_date_index").on(table.date),
     positiveAmount: check("funds_amount_positive_check", sql`${table.amount} > 0`),
@@ -308,7 +270,6 @@ export const expensesTable = pgTable(
   {
     id: text("id").primaryKey(),
     tenantId: uuid("tenant_id").notNull().references(() => tenantsTable.id, { onDelete: "cascade" }),
-    accountId: text("account_id").references(() => financialAccountsTable.id, { onDelete: "set null" }),
     employeeId: uuid("employee_id").references(() => usersTable.id, { onDelete: "set null" }),
     employeeNameSnapshot: text("employee_name_snapshot"),
     project: text("project"),
@@ -328,7 +289,6 @@ export const expensesTable = pgTable(
   },
   (table) => ({
     tenantIndex: index("expenses_tenant_index").on(table.tenantId),
-    accountIndex: index("expenses_account_index").on(table.accountId),
     employeeIndex: index("expenses_employee_index").on(table.employeeId),
     statusIndex: index("expenses_status_index").on(table.status),
     dateIndex: index("expenses_date_index").on(table.date),
@@ -349,7 +309,6 @@ export const salariesTable = pgTable(
   {
     id: text("id").primaryKey(),
     tenantId: uuid("tenant_id").notNull().references(() => tenantsTable.id, { onDelete: "cascade" }),
-    accountId: text("account_id").references(() => financialAccountsTable.id, { onDelete: "set null" }),
     employeeId: uuid("employee_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
     employeeNameSnapshot: text("employee_name_snapshot"),
     amount: integer("amount").notNull().default(0),
@@ -367,7 +326,6 @@ export const salariesTable = pgTable(
   },
   (table) => ({
     tenantIndex: index("salaries_tenant_index").on(table.tenantId),
-    accountIndex: index("salaries_account_index").on(table.accountId),
     employeeIndex: index("salaries_employee_index").on(table.employeeId),
     statusIndex: index("salaries_status_index").on(table.status),
     dateIndex: index("salaries_date_index").on(table.date),
@@ -723,8 +681,6 @@ export const timesheetLinesRelations = relations(timesheetLinesTable, ({ one }) 
 
 export type Fund = typeof fundsTable.$inferSelect;
 export type InsertFund = typeof fundsTable.$inferInsert;
-export type FinancialAccount = typeof financialAccountsTable.$inferSelect;
-export type InsertFinancialAccount = typeof financialAccountsTable.$inferInsert;
 export type ExpenseCategory = typeof expenseCategoriesTable.$inferSelect;
 export type InsertExpenseCategory = typeof expenseCategoriesTable.$inferInsert;
 export type Expense = typeof expensesTable.$inferSelect;

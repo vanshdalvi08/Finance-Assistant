@@ -21,7 +21,6 @@ const dateSchema = z.string().min(1);
 
 const fundSchema = z.object({
   id: businessIdSchema.optional(),
-  accountId: businessIdSchema.optional(),
   source: z.string().trim().min(2),
   amount: z.coerce.number().min(1),
   date: dateSchema,

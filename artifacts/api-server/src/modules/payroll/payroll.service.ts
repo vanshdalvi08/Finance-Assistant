@@ -3,6 +3,8 @@ import { db } from "@workspace/db";
 import { idempotencyKeysTable, type ActorRole } from "@workspace/db/schema";
 import {
   type BusinessStore,
+  type ExpenseRecord,
+  type FundRecord,
   type SalaryRecord,
   createId,
   loadEmployeeProfile,
@@ -17,7 +19,6 @@ import {
 import { assertEmployeeSelfAccess, assertTenantAccess } from "../../lib/policies";
 import { hashSha256 } from "../../lib/security";
 import { DEFAULT_TENANT_ID } from "../../lib/tenants";
-import { assertFinancialAccount, availableFundsByAccount, preferredFinancialAccount } from "../../lib/financial-accounts";
 
 export type SalaryActor = {
   userId?: string;
@@ -29,7 +30,6 @@ export type SalaryActor = {
 
 export type SalaryInput = {
   id?: string;
-  accountId?: string;
   employeeId: string;
   employeeNameSnapshot?: string;
   amount: number;
@@ -53,24 +53,52 @@ export class SalaryServiceError extends Error {
   }
 }
 
+function paidSalaries(store: BusinessStore) {
+  return store.salaries.filter((salary) => salary.status === "paid");
+}
+
+function approveExpenses(store: BusinessStore) {
+  return store.expenses.filter((expense) => expense.status === "approved");
+}
+
+function tenantExpenseFilter(expense: ExpenseRecord, tenantId: string) {
+  return (expense.tenantId ?? DEFAULT_TENANT_ID) === tenantId;
+}
+
+function tenantFundFilter(fund: FundRecord, tenantId: string) {
+  return (fund.tenantId ?? DEFAULT_TENANT_ID) === tenantId;
+}
+
 function tenantSalaryFilter(salary: SalaryRecord, tenantId: string) {
   return (salary.tenantId ?? DEFAULT_TENANT_ID) === tenantId;
 }
 
-function ensureFunds(store: BusinessStore, amount: number, label: string, tenantId: string, accountId: string) {
+function availableFunds(store: BusinessStore, tenantId?: string) {
+  const totalFunds = store.funds
+    .filter((fund) => (tenantId ? tenantFundFilter(fund, tenantId) : true))
+    .reduce((sum, fund) => sum + Math.abs(Number(fund.amount ?? 0)), 0);
+  const spentExpenses = approveExpenses(store)
+    .filter((expense) => (tenantId ? tenantExpenseFilter(expense, tenantId) : true))
+    .reduce((sum, expense) => sum + Math.abs(Number(expense.amount ?? 0)), 0);
+  const spentSalary = paidSalaries(store)
+    .filter((salary) => (tenantId ? tenantSalaryFilter(salary, tenantId) : true))
+    .reduce((sum, salary) => sum + Math.abs(Number(salary.amount ?? 0)), 0);
+  return Math.max(0, Number((totalFunds - spentExpenses - spentSalary).toFixed(2)));
+}
+
+function ensureFunds(store: BusinessStore, amount: number, label: string, tenantId?: string) {
   const required = Math.abs(Number(amount ?? 0));
-  const available = availableFundsByAccount(store, tenantId, accountId);
+  const available = availableFunds(store, tenantId);
   if (required > available) {
     throw new SalaryServiceError(
       "insufficient_funds",
-      `Insufficient funds in the selected account for ${label}. Available balance is ${available.toLocaleString("en-IN")} INR.`,
+      `Insufficient total funds for ${label}. Available balance is ${available.toLocaleString("en-IN")} INR.`,
     );
   }
 }
 
-function summarizeSalary(salary: Pick<SalaryRecord, "accountId" | "employeeId" | "employeeNameSnapshot" | "amount" | "date" | "note" | "status" | "source" | "paidAt" | "weekStart" | "hours" | "rate" | "timesheetId">) {
+function summarizeSalary(salary: Pick<SalaryRecord, "employeeId" | "employeeNameSnapshot" | "amount" | "date" | "note" | "status" | "source" | "paidAt" | "weekStart" | "hours" | "rate" | "timesheetId">) {
   return {
-    accountId: salary.accountId ?? null,
     employeeId: salary.employeeId,
     employeeNameSnapshot: salary.employeeNameSnapshot ?? null,
     amount: salary.amount,
@@ -88,7 +116,6 @@ function summarizeSalary(salary: Pick<SalaryRecord, "accountId" | "employeeId" |
 
 function changedSalaryFields(previous: SalaryRecord | null, next: SalaryRecord) {
   const candidates: Array<keyof ReturnType<typeof summarizeSalary>> = [
-    "accountId",
     "employeeId",
     "employeeNameSnapshot",
     "amount",
@@ -224,13 +251,6 @@ export async function saveSalary(
       throw new SalaryServiceError("invalid_input", "Salary amount must be greater than zero.");
     }
     const status = input.status ?? existing?.status ?? "pending";
-    const selectedAccountId = input.accountId?.trim() || existing?.accountId || preferredFinancialAccount(current, actor.tenantId)?.id;
-    if (status === "paid") {
-      if (!selectedAccountId) {
-        throw new SalaryServiceError("invalid_input", "Select a financial account before marking salary as paid.");
-      }
-      assertFinancialAccount(current, actor.tenantId, selectedAccountId);
-    }
     const additionalRequired =
       status === "paid"
         ? !existing || existing.status !== "paid"
@@ -239,13 +259,12 @@ export async function saveSalary(
         : 0;
 
     if (additionalRequired > 0) {
-      ensureFunds(current, additionalRequired, "this salary payment", actor.tenantId, selectedAccountId!);
+      ensureFunds(current, additionalRequired, "this salary payment", actor.tenantId);
     }
 
     salary = {
       id: input.id ?? existing?.id ?? createId("sal"),
       tenantId: actor.tenantId,
-      accountId: status === "paid" ? selectedAccountId : selectedAccountId,
       employeeId: input.employeeId.trim(),
       employeeNameSnapshot: input.employeeNameSnapshot?.trim() || existing?.employeeNameSnapshot || employee.name,
       amount: nextAmount,
@@ -344,7 +363,7 @@ export async function paySalary(
   id: string,
   note: string | undefined,
   actor: SalaryActor,
-  options?: { idempotencyKey?: string | null; accountId?: string | null },
+  options?: { idempotencyKey?: string | null },
 ): Promise<{ salary: SalaryRecord; wasAlreadyPaid: boolean }> {
   const idempotencyKey = options?.idempotencyKey?.trim() || null;
   const requestHash = idempotencyKey ? requestHashForSalaryPay({ salaryId: id, note }) : null;
@@ -375,18 +394,12 @@ export async function paySalary(
         return current;
       }
 
-      const selectedAccountId = options?.accountId?.trim() || existing.accountId || preferredFinancialAccount(current, actor.tenantId)?.id;
-      if (!selectedAccountId) {
-        throw new SalaryServiceError("invalid_input", "Select a financial account before paying salary.");
-      }
-      assertFinancialAccount(current, actor.tenantId, selectedAccountId);
-      ensureFunds(current, existing.amount, "this salary payment", actor.tenantId, selectedAccountId);
+      ensureFunds(current, existing.amount, "this salary payment", actor.tenantId);
 
       const paidAt = nowIso();
       salary = {
         ...existing,
         tenantId: actor.tenantId,
-        accountId: selectedAccountId,
         status: "paid",
         paidAt,
         date: paidAt,

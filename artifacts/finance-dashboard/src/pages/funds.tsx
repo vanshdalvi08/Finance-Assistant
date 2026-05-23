@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, type ChangeEvent } from "react";
+import { useMemo, useState, type ChangeEvent } from "react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
-import { api, type ChartPoint, type Fund, type Transaction } from "@/lib/api";
+import { api, type AdminOverview, type ChartPoint, type Fund, type Transaction } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AlertDialog,
@@ -17,8 +17,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -96,6 +94,26 @@ function updateChartData(current: ChartPoint[] | undefined, fund: Fund) {
   );
 }
 
+function updateOverview(current: AdminOverview | undefined, fund: Fund) {
+  if (!current) {
+    return current;
+  }
+
+  const fundDate = new Date(fund.date);
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const currentYear = new Date().getFullYear();
+  const fundMonth = getFundMonthKey(fund.date);
+  const safeFundDate = getSafeDate(fund.date);
+
+  return {
+    ...current,
+    totalFunds: current.totalFunds + fund.amount,
+    currentBalance: current.currentBalance + fund.amount,
+    monthToDateFunds: current.monthToDateFunds + (fundMonth === currentMonth ? fund.amount : 0),
+    yearToDateFunds: current.yearToDateFunds + (safeFundDate?.getFullYear() === currentYear ? fund.amount : 0),
+  };
+}
+
 function updateTransactions(current: Transaction[] | undefined, fund: Fund) {
   if (!current) {
     return current;
@@ -111,6 +129,25 @@ function updateTransactions(current: Transaction[] | undefined, fund: Fund) {
   };
 
   return [nextTransaction, ...current.filter((transaction) => transaction.id !== nextTransaction.id)];
+}
+
+function removeOverview(current: AdminOverview | undefined, fund: Fund) {
+  if (!current) {
+    return current;
+  }
+
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const currentYear = new Date().getFullYear();
+  const fundMonth = getFundMonthKey(fund.date);
+  const safeFundDate = getSafeDate(fund.date);
+
+  return {
+    ...current,
+    totalFunds: Math.max(0, current.totalFunds - fund.amount),
+    currentBalance: current.currentBalance - fund.amount,
+    monthToDateFunds: current.monthToDateFunds - (fundMonth === currentMonth ? fund.amount : 0),
+    yearToDateFunds: current.yearToDateFunds - (safeFundDate?.getFullYear() === currentYear ? fund.amount : 0),
+  };
 }
 
 function removeChartData(current: ChartPoint[] | undefined, fund: Fund) {
@@ -145,7 +182,6 @@ export default function Funds() {
   const [receiptFile, setReceiptFile] = useState<UploadedAsset | null>(null);
   const [isUploadingReceipt, setIsUploadingReceipt] = useState(false);
   const [fundToDelete, setFundToDelete] = useState<Fund | null>(null);
-  const [selectedAccountId, setSelectedAccountId] = useState("");
 
   const { data: funds = [] } = useQuery({
     queryKey: ["funds"],
@@ -159,23 +195,6 @@ export default function Funds() {
     queryKey: ["adminOverview"],
     queryFn: api.getAdminOverview,
   });
-  const { data: financialAccounts = [] } = useQuery({
-    queryKey: ["financialAccounts"],
-    queryFn: api.getFinancialAccounts,
-  });
-
-  useEffect(() => {
-    if (selectedAccountId || financialAccounts.length === 0) {
-      return;
-    }
-
-    const preferred = financialAccounts.find((account) => account.accountType === "operational" && account.isActive)
-      ?? financialAccounts.find((account) => account.isActive)
-      ?? financialAccounts[0];
-    if (preferred) {
-      setSelectedAccountId(preferred.id);
-    }
-  }, [financialAccounts, selectedAccountId]);
 
   const totalCapitalInflow = funds.reduce((sum, fund) => sum + fund.amount, 0);
   const simplifiedChartData = useMemo(
@@ -233,7 +252,6 @@ export default function Funds() {
   const addMutation = useMutation({
     mutationFn: async (data: z.infer<typeof fundSchema>) =>
       api.addFund({
-        accountId: selectedAccountId || undefined,
         ...data,
         receiptName: receiptFile?.fileName,
         receiptPath: receiptFile?.path,
@@ -244,8 +262,8 @@ export default function Funds() {
         ...current.filter((fund) => fund.id !== createdFund.id),
       ]);
       queryClient.setQueryData<ChartPoint[]>(["chartData"], (current) => updateChartData(current, createdFund));
+      queryClient.setQueryData<AdminOverview>(["adminOverview"], (current) => updateOverview(current, createdFund));
       queryClient.setQueryData<Transaction[]>(["transactions"], (current) => updateTransactions(current, createdFund));
-      void queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
       toast({ title: "Funds added", description: "Inflow has been recorded successfully." });
       setIsDialogOpen(false);
       setReceiptFile(null);
@@ -266,8 +284,8 @@ export default function Funds() {
     onSuccess: (deletedFund) => {
       queryClient.setQueryData<Fund[]>(["funds"], (current = []) => current.filter((fund) => fund.id !== deletedFund.id));
       queryClient.setQueryData<ChartPoint[]>(["chartData"], (current) => removeChartData(current, deletedFund));
+      queryClient.setQueryData<AdminOverview>(["adminOverview"], (current) => removeOverview(current, deletedFund));
       queryClient.setQueryData<Transaction[]>(["transactions"], (current) => removeTransactions(current, deletedFund));
-      void queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
       setFundToDelete(null);
       toast({
         title: "Fund removed",
@@ -340,23 +358,6 @@ export default function Funds() {
               </DialogHeader>
               <Form {...form}>
                 <form onSubmit={form.handleSubmit((data) => addMutation.mutate(data))} className="space-y-4">
-                  <div className="space-y-2">
-                    <Label>Added To</Label>
-                    <Select value={selectedAccountId} onValueChange={setSelectedAccountId}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select financial account" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {financialAccounts
-                          .filter((account) => account.isActive)
-                          .map((account) => (
-                            <SelectItem key={account.id} value={account.id}>
-                              {account.name}
-                            </SelectItem>
-                          ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
                   <FormField
                     control={form.control}
                     name="source"
@@ -463,7 +464,7 @@ export default function Funds() {
                       </div>
                     ) : null}
                   </div>
-                  <Button type="submit" className="w-full mt-4" disabled={addMutation.isPending || isUploadingReceipt || !selectedAccountId}>
+                  <Button type="submit" className="w-full mt-4" disabled={addMutation.isPending || isUploadingReceipt}>
                     Save Inflow
                   </Button>
                 </form>

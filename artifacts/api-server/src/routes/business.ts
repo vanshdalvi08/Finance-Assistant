@@ -60,7 +60,6 @@ import { resolveExpenseAttachmentUrl } from "../lib/storage";
 import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../lib/notifications";
 import fundsRouter from "../modules/funds/funds.routes";
 import expensesRouter from "../modules/expenses/expenses.routes";
-import financialAccountsRouter from "../modules/financial-accounts/financial-accounts.routes";
 import salaryRouter from "../modules/payroll/payroll.routes";
 import projectsRouter from "../modules/projects/projects.routes";
 import purchaseOrdersRouter from "../modules/purchase-orders/purchase-orders.routes";
@@ -82,7 +81,6 @@ import { assertActorRoleAccess, assertEmployeeSelfAccess, assertTenantAccess } f
 import { hashSha256 } from "../lib/security";
 import { logger } from "../lib/logger";
 import { assertWorkflowTransition, WorkflowStateError } from "../lib/workflow-state";
-import { summarizeFinancialAccounts } from "../lib/financial-accounts";
 
 const router: IRouter = Router();
 const mutationLimiter = rateLimit({
@@ -1179,7 +1177,6 @@ router.use((request, response, next) => {
 });
 router.use(fundsRouter);
 router.use(expensesRouter);
-router.use(financialAccountsRouter);
 router.use(salaryRouter);
 router.use(purchaseOrdersRouter);
 router.use(timesheetsRouter);
@@ -1195,8 +1192,7 @@ router.get("/overview", requireTenantRole("admin"), async (_request, response) =
   const totalFunds = tenantFunds.reduce((sum, fund) => sum + Math.abs(fund.amount), 0);
   const totalExpenses = approved.reduce((sum, expense) => sum + Math.abs(expense.amount), 0);
   const totalSalaryPaid = paidSalaries({ ...store, salaries: tenantSalaries }).reduce((sum, salary) => sum + Math.abs(salary.amount), 0);
-  const accountSummary = summarizeFinancialAccounts(store, tenantId);
-  const currentBalance = accountSummary.operationalBalance;
+  const currentBalance = availableFunds(store, tenantId);
   const currentMonth = new Date().toISOString().slice(0, 7);
   const currentYear = new Date().getFullYear();
 
@@ -1214,9 +1210,6 @@ router.get("/overview", requireTenantRole("admin"), async (_request, response) =
     monthToDateExpenses: approved.filter((expense) => expense.date.slice(0, 7) === currentMonth).reduce((sum, expense) => sum + expense.amount, 0),
     yearToDateFunds: tenantFunds.filter((fund) => new Date(fund.date).getFullYear() === currentYear).reduce((sum, fund) => sum + fund.amount, 0),
     yearToDateExpenses: approved.filter((expense) => new Date(expense.date).getFullYear() === currentYear).reduce((sum, expense) => sum + expense.amount, 0),
-    financialAccounts: accountSummary.accounts,
-    allAccountsBalance: accountSummary.allAccountsBalance,
-    operationalBalance: accountSummary.operationalBalance,
   });
 });
 
@@ -1276,11 +1269,6 @@ router.get("/transactions", requireTenantRole("admin"), async (_request, respons
   const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const employees = await loadEmployees(tenantId);
   const employeeNames = new Map(employees.map((employee) => [employee.id, employee.name]));
-  const accountNames = new Map(
-    store.financialAccounts
-      .filter((account) => account.tenantId === tenantId)
-      .map((account) => [account.id, account.name]),
-  );
   const tenantFunds = store.funds.filter((fund) => tenantFundFilter(fund, tenantId));
   const tenantExpenses = store.expenses.filter((expense) => tenantExpenseFilter(expense, tenantId));
   const tenantSalaries = paidSalaries(store).filter((salary) => tenantSalaryFilter(salary, tenantId));
@@ -1292,8 +1280,6 @@ router.get("/transactions", requireTenantRole("admin"), async (_request, respons
       date: fund.date,
       description: fund.source,
       category: "Funds",
-      accountId: fund.accountId,
-      accountName: fund.accountId ? accountNames.get(fund.accountId) ?? undefined : undefined,
     })),
     ...approveExpenses({ ...store, expenses: tenantExpenses }).map((expense) => ({
       id: `tx_${expense.id}`,
@@ -1302,8 +1288,6 @@ router.get("/transactions", requireTenantRole("admin"), async (_request, respons
       date: expense.date,
       description: expense.description,
       category: expense.category,
-      accountId: expense.accountId,
-      accountName: expense.accountId ? accountNames.get(expense.accountId) ?? undefined : undefined,
     })),
     ...tenantSalaries.map((salary) => ({
       id: `tx_${salary.id}`,
@@ -1312,8 +1296,6 @@ router.get("/transactions", requireTenantRole("admin"), async (_request, respons
       date: salary.paidAt ?? salary.date,
       description: `${salary.employeeNameSnapshot ?? employeeNames.get(salary.employeeId) ?? "Employee"} Salary`,
       category: "Payroll",
-      accountId: salary.accountId,
-      accountName: salary.accountId ? accountNames.get(salary.accountId) ?? undefined : undefined,
     })),
   ].sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime());
 

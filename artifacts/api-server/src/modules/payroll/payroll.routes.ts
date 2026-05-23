@@ -32,7 +32,6 @@ const dateSchema = z.string().min(1);
 
 const salarySchema = z.object({
   id: businessIdSchema.optional(),
-  accountId: businessIdSchema.optional(),
   employeeId: z.string().uuid(),
   employeeNameSnapshot: z.string().trim().optional(),
   amount: z.coerce.number().min(1),
@@ -75,7 +74,6 @@ function requestHashForSalaryMutation(input: z.infer<typeof salarySchema> & { id
   return hashSha256(
     JSON.stringify({
       id: input.id?.trim() ?? "",
-      accountId: input.accountId?.trim() ?? "",
       employeeId: input.employeeId.trim(),
       employeeNameSnapshot: input.employeeNameSnapshot?.trim() ?? "",
       amount: Number(input.amount),
@@ -496,10 +494,7 @@ router.route("/salaries/:id").get(requireTenantRole("admin", "employee"), async 
 });
 
 router.post("/salaries/:id/pay", requireTenantRole("admin"), salaryPaymentLimiter, async (request, response) => {
-  const parsed = z.object({
-    note: z.string().trim().optional(),
-    accountId: businessIdSchema.optional(),
-  }).safeParse(request.body);
+  const parsed = z.object({ note: z.string().trim().optional() }).safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid salary payment payload" });
     return;
@@ -509,7 +504,6 @@ router.post("/salaries/:id/pay", requireTenantRole("admin"), salaryPaymentLimite
   let wasAlreadyPaid = false;
   try {
     const result = await paySalary(routeParam(request.params.id), parsed.data.note, recordActor(request), {
-      accountId: parsed.data.accountId,
       idempotencyKey: idempotencyKeyFrom(request),
     });
     salary = result.salary;

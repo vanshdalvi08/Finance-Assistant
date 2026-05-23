@@ -75,7 +75,6 @@ export interface AdminAccount {
 
 export interface Salary {
   id: string;
-  accountId?: string;
   employeeId: string;
   employeeNameSnapshot?: string;
   amount: number;
@@ -90,26 +89,8 @@ export interface Salary {
   timesheetId?: string;
 }
 
-export interface FinancialAccount {
-  id: string;
-  name: string;
-  accountType: "operational" | "personal" | "mixed_use" | "reserve" | "cash";
-  category: "bank" | "cash" | "wallet" | "other";
-  openingBalance: number;
-  description?: string;
-  includeInOperationalReporting: boolean;
-  isActive: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface FinancialAccountBalance extends FinancialAccount {
-  balance: number;
-}
-
 export interface Fund {
   id: string;
-  accountId?: string;
   source: string;
   amount: number;
   date: string;
@@ -128,7 +109,6 @@ export interface ExpenseCategory {
 
 export interface Expense {
   id: string;
-  accountId?: string;
   employeeId?: string;
   employeeNameSnapshot?: string;
   project?: string;
@@ -154,8 +134,6 @@ export interface Transaction {
   description: string;
   category: string;
   project?: string;
-  accountId?: string;
-  accountName?: string;
 }
 
 export interface TimesheetTaskLine {
@@ -232,7 +210,6 @@ export interface AuditTrailEntry {
     | "employee"
     | "expense"
     | "fund"
-    | "financial-account"
     | "salary"
     | "timesheet"
     | "category"
@@ -395,7 +372,6 @@ interface CategoryInput {
 }
 
 interface AddFundInput {
-  accountId?: string;
   source: string;
   amount: number;
   date: string;
@@ -405,7 +381,6 @@ interface AddFundInput {
 }
 
 interface AddSalaryInput {
-  accountId?: string;
   employeeId: string;
   amount: number;
   note?: string;
@@ -451,7 +426,6 @@ interface UpdateEmployeeInput extends AddEmployeeInput {
 }
 
 interface AddExpenseInput {
-  accountId?: string;
   employeeId?: string;
   employeeNameSnapshot?: string;
   project?: string;
@@ -527,9 +501,6 @@ export interface AdminOverview {
   totalSalaryPaid: number;
   activeEmployees: number;
   currentBalance: number;
-  allAccountsBalance: number;
-  operationalBalance: number;
-  financialAccounts: FinancialAccountBalance[];
   pendingExpenses: number;
   pendingTimesheets: number;
   monthToDateFunds: number;
@@ -980,17 +951,6 @@ function normalizeProjectBudget(project: ProjectBudget): ProjectBudget {
         : [],
     })),
   };
-}
-
-export interface SaveFinancialAccountInput {
-  id?: string;
-  name: string;
-  accountType: FinancialAccount["accountType"];
-  category: FinancialAccount["category"];
-  openingBalance: number;
-  description?: string;
-  includeInOperationalReporting?: boolean;
-  isActive?: boolean;
 }
 
 const TIME_OFF_STORAGE_KEY = "finance.assistant.time-off";
@@ -1715,16 +1675,6 @@ export const api = {
 
   getFunds: async () => (await businessGet<{ funds: Fund[] }>("/funds")).funds,
 
-  getFinancialAccounts: async () => (await businessGet<{ accounts: FinancialAccount[] }>("/financial-accounts")).accounts,
-
-  saveFinancialAccount: async (input: SaveFinancialAccountInput) => {
-    if (input.id) {
-      return (await businessPost<{ account: FinancialAccount }>(`/financial-accounts/${input.id}`, input, "PATCH")).account;
-    }
-
-    return (await businessPost<{ account: FinancialAccount }>("/financial-accounts", input)).account;
-  },
-
   addFund: async (input: AddFundInput) =>
     (await businessPost<{ fund: Fund }>("/funds", input)).fund,
 
@@ -1768,8 +1718,8 @@ export const api = {
   addExpense: async (input: AddExpenseInput) =>
     (await businessPost<{ expense: Expense }>("/expenses", input)).expense,
 
-  updateExpenseStatus: async (id: string, status: ApprovalStatus, reviewerNote?: string, accountId?: string) =>
-    (await businessPost<{ expense: Expense }>(`/expenses/${id}/status`, { status, reviewerNote, accountId }, "PATCH")).expense,
+  updateExpenseStatus: async (id: string, status: ApprovalStatus, reviewerNote?: string) =>
+    (await businessPost<{ expense: Expense }>(`/expenses/${id}/status`, { status, reviewerNote }, "PATCH")).expense,
 
   getSalaries: (async (...args: [{ employeeId?: string }?]) => {
     const scope = args[0];
@@ -1790,8 +1740,8 @@ export const api = {
       note: input.note ?? "",
     })).salary,
 
-  paySalaryRecord: async (id: string, input?: { note?: string; accountId?: string }) =>
-    (await businessPost<{ salary: Salary }>(`/salaries/${id}/pay`, input ?? {})).salary,
+  paySalaryRecord: async (id: string) =>
+    (await businessPost<{ salary: Salary }>(`/salaries/${id}/pay`, {})).salary,
 
   getTimesheets: async (scope?: { employeeId?: string }) => {
     const path = withQuery("/timesheets", { employeeId: scope?.employeeId });
