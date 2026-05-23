@@ -60,6 +60,7 @@ import { resolveExpenseAttachmentUrl } from "../lib/storage";
 import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../lib/notifications";
 import fundsRouter from "../modules/funds/funds.routes";
 import expensesRouter from "../modules/expenses/expenses.routes";
+import financialAccountsRouter from "../modules/financial-accounts/financial-accounts.routes";
 import salaryRouter from "../modules/payroll/payroll.routes";
 import projectsRouter from "../modules/projects/projects.routes";
 import purchaseOrdersRouter from "../modules/purchase-orders/purchase-orders.routes";
@@ -81,6 +82,7 @@ import { assertActorRoleAccess, assertEmployeeSelfAccess, assertTenantAccess } f
 import { hashSha256 } from "../lib/security";
 import { logger } from "../lib/logger";
 import { assertWorkflowTransition, WorkflowStateError } from "../lib/workflow-state";
+import { summarizeFinancialAccounts } from "../lib/financial-accounts";
 
 const router: IRouter = Router();
 const mutationLimiter = rateLimit({
@@ -946,7 +948,7 @@ interface MonthCalendarDay {
   timeOffKind?: LeaveRequestKind;
   timeOffSource?: "admin" | "employee";
   timeOffRequestId?: string;
-  holidaySource?: "company" | "requested";
+  holidaySource?: "company" | "requested" | "admin";
   leaveStatus?: LeaveRequestStatus;
   leaveReason?: string;
   pendingLeave: boolean;
@@ -979,6 +981,7 @@ function buildMonthCalendar(store: BusinessStore, employeeId: string, month: str
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
   const daily = new Map<string, { hours: number; expenseCount: number }>();
   const holidaysByDate = new Map<string, HolidayRecord>();
+  const adminHolidaysByDate = new Set<string>();
   const leaveRequestsByDate = new Map<string, LeaveRequestRecord>();
 
   for (const holiday of store.holidays.filter((item) => (item.tenantId ?? DEFAULT_TENANT_ID) === tenantId && monthKeyFromDate(item.date) === month)) {
@@ -1017,6 +1020,20 @@ function buildMonthCalendar(store: BusinessStore, employeeId: string, month: str
         daily.set(iso, bucket);
       });
     });
+
+    DAY_KEYS.forEach((key, offset) => {
+      if (entry.dailyReviewHolidays?.[key] !== true) {
+        return;
+      }
+
+      const dayDate = new Date(weekStart);
+      dayDate.setDate(weekStart.getDate() + offset);
+      if (dayDate.getFullYear() !== year || dayDate.getMonth() !== monthIndex) {
+        return;
+      }
+
+      adminHolidaysByDate.add(dayDate.toISOString().slice(0, 10));
+    });
   }
 
   for (const expense of store.expenses.filter((item) => item.employeeId === employeeId && monthKeyFromDate(item.date) === month)) {
@@ -1042,6 +1059,7 @@ function buildMonthCalendar(store: BusinessStore, employeeId: string, month: str
     const iso = date.toISOString().slice(0, 10);
     const bucket = daily.get(iso) ?? { hours: 0, expenseCount: 0 };
     const holiday = holidaysByDate.get(iso);
+    const adminHoliday = adminHolidaysByDate.has(iso);
     const leaveRequest = leaveRequestsByDate.get(iso);
     const isWeekend = date.getDay() === 0 || date.getDay() === 6;
     const worked = bucket.hours > 0;
@@ -1049,8 +1067,8 @@ function buildMonthCalendar(store: BusinessStore, employeeId: string, month: str
     const pendingHolidayRequest = Boolean(leaveRequest && leaveRequest.status === "pending" && leaveRequest.kind === "holiday");
     const approvedLeaveRequest = Boolean(leaveRequest && leaveRequest.status === "approved" && leaveRequest.kind === "leave");
     const pendingLeaveRequest = Boolean(leaveRequest && leaveRequest.status === "pending" && leaveRequest.kind === "leave");
-    const isHoliday = Boolean(holiday || approvedHolidayRequest);
-    const leave = Boolean(approvedLeaveRequest && !holiday);
+    const isHoliday = Boolean(holiday || adminHoliday || approvedHolidayRequest);
+    const leave = Boolean(approvedLeaveRequest && !holiday && !adminHoliday);
     const pendingLeave = Boolean(pendingLeaveRequest && !isHoliday);
     if (worked) daysWorked += 1;
     if (leave) leaveDays += 1;
@@ -1069,10 +1087,11 @@ function buildMonthCalendar(store: BusinessStore, employeeId: string, month: str
       worked,
       leave,
       holiday: isHoliday,
-      holidayName: holiday?.name ?? (approvedHolidayRequest ? "Requested Holiday" : undefined),
+      holidayName: holiday?.name ?? (adminHoliday ? "Holiday" : approvedHolidayRequest ? "Requested Holiday" : undefined),
       timeOffKind: leaveRequest?.kind ?? undefined,
-      timeOffSource: holiday ? "admin" : leaveRequest ? "employee" : undefined,
+      timeOffSource: holiday || adminHoliday ? "admin" : leaveRequest ? "employee" : undefined,
       timeOffRequestId: leaveRequest?.id,
+      holidaySource: holiday ? "company" : adminHoliday ? "admin" : approvedHolidayRequest || pendingHolidayRequest ? "requested" : undefined,
       leaveStatus: leaveRequest?.status ?? undefined,
       leaveReason: leaveRequest?.reason ?? undefined,
       pendingLeave,
@@ -1160,6 +1179,7 @@ router.use((request, response, next) => {
 });
 router.use(fundsRouter);
 router.use(expensesRouter);
+router.use(financialAccountsRouter);
 router.use(salaryRouter);
 router.use(purchaseOrdersRouter);
 router.use(timesheetsRouter);
@@ -1175,7 +1195,8 @@ router.get("/overview", requireTenantRole("admin"), async (_request, response) =
   const totalFunds = tenantFunds.reduce((sum, fund) => sum + Math.abs(fund.amount), 0);
   const totalExpenses = approved.reduce((sum, expense) => sum + Math.abs(expense.amount), 0);
   const totalSalaryPaid = paidSalaries({ ...store, salaries: tenantSalaries }).reduce((sum, salary) => sum + Math.abs(salary.amount), 0);
-  const currentBalance = availableFunds(store, tenantId);
+  const accountSummary = summarizeFinancialAccounts(store, tenantId);
+  const currentBalance = accountSummary.operationalBalance;
   const currentMonth = new Date().toISOString().slice(0, 7);
   const currentYear = new Date().getFullYear();
 
@@ -1193,6 +1214,9 @@ router.get("/overview", requireTenantRole("admin"), async (_request, response) =
     monthToDateExpenses: approved.filter((expense) => expense.date.slice(0, 7) === currentMonth).reduce((sum, expense) => sum + expense.amount, 0),
     yearToDateFunds: tenantFunds.filter((fund) => new Date(fund.date).getFullYear() === currentYear).reduce((sum, fund) => sum + fund.amount, 0),
     yearToDateExpenses: approved.filter((expense) => new Date(expense.date).getFullYear() === currentYear).reduce((sum, expense) => sum + expense.amount, 0),
+    financialAccounts: accountSummary.accounts,
+    allAccountsBalance: accountSummary.allAccountsBalance,
+    operationalBalance: accountSummary.operationalBalance,
   });
 });
 
@@ -1252,6 +1276,11 @@ router.get("/transactions", requireTenantRole("admin"), async (_request, respons
   const tenantId = _request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const employees = await loadEmployees(tenantId);
   const employeeNames = new Map(employees.map((employee) => [employee.id, employee.name]));
+  const accountNames = new Map(
+    store.financialAccounts
+      .filter((account) => account.tenantId === tenantId)
+      .map((account) => [account.id, account.name]),
+  );
   const tenantFunds = store.funds.filter((fund) => tenantFundFilter(fund, tenantId));
   const tenantExpenses = store.expenses.filter((expense) => tenantExpenseFilter(expense, tenantId));
   const tenantSalaries = paidSalaries(store).filter((salary) => tenantSalaryFilter(salary, tenantId));
@@ -1263,6 +1292,8 @@ router.get("/transactions", requireTenantRole("admin"), async (_request, respons
       date: fund.date,
       description: fund.source,
       category: "Funds",
+      accountId: fund.accountId,
+      accountName: fund.accountId ? accountNames.get(fund.accountId) ?? undefined : undefined,
     })),
     ...approveExpenses({ ...store, expenses: tenantExpenses }).map((expense) => ({
       id: `tx_${expense.id}`,
@@ -1271,6 +1302,8 @@ router.get("/transactions", requireTenantRole("admin"), async (_request, respons
       date: expense.date,
       description: expense.description,
       category: expense.category,
+      accountId: expense.accountId,
+      accountName: expense.accountId ? accountNames.get(expense.accountId) ?? undefined : undefined,
     })),
     ...tenantSalaries.map((salary) => ({
       id: `tx_${salary.id}`,
@@ -1279,6 +1312,8 @@ router.get("/transactions", requireTenantRole("admin"), async (_request, respons
       date: salary.paidAt ?? salary.date,
       description: `${salary.employeeNameSnapshot ?? employeeNames.get(salary.employeeId) ?? "Employee"} Salary`,
       category: "Payroll",
+      accountId: salary.accountId,
+      accountName: salary.accountId ? accountNames.get(salary.accountId) ?? undefined : undefined,
     })),
   ].sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime());
 

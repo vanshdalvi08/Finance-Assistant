@@ -20,6 +20,16 @@ export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type TimesheetWorkNotes = Partial<Record<DayKey, string>>;
 export type TimesheetDailyReviewStatus = Partial<Record<DayKey, "reviewed" | "reverted">>;
 export type TimesheetDailyReviewNotes = Partial<Record<DayKey, string>>;
+export type TimesheetDailyReviewHolidays = Partial<Record<DayKey, true>>;
+export type TimesheetDailyReviewLocks = Partial<Record<DayKey, true>>;
+export type TimesheetDayReviewAction =
+  | "reviewed"
+  | "reverted"
+  | "holiday"
+  | "locked"
+  | "clear_review"
+  | "clear_holiday"
+  | "clear_lock";
 type TimeOffKind = "leave" | "holiday";
 
 const DAY_KEYS: DayKey[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -65,6 +75,7 @@ export interface AdminAccount {
 
 export interface Salary {
   id: string;
+  accountId?: string;
   employeeId: string;
   employeeNameSnapshot?: string;
   amount: number;
@@ -79,8 +90,26 @@ export interface Salary {
   timesheetId?: string;
 }
 
+export interface FinancialAccount {
+  id: string;
+  name: string;
+  accountType: "operational" | "personal" | "mixed_use" | "reserve" | "cash";
+  category: "bank" | "cash" | "wallet" | "other";
+  openingBalance: number;
+  description?: string;
+  includeInOperationalReporting: boolean;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FinancialAccountBalance extends FinancialAccount {
+  balance: number;
+}
+
 export interface Fund {
   id: string;
+  accountId?: string;
   source: string;
   amount: number;
   date: string;
@@ -99,6 +128,7 @@ export interface ExpenseCategory {
 
 export interface Expense {
   id: string;
+  accountId?: string;
   employeeId?: string;
   employeeNameSnapshot?: string;
   project?: string;
@@ -124,6 +154,8 @@ export interface Transaction {
   description: string;
   category: string;
   project?: string;
+  accountId?: string;
+  accountName?: string;
 }
 
 export interface TimesheetTaskLine {
@@ -150,6 +182,9 @@ export interface TimesheetEntry {
   reviewNotes?: string;
   dailyReviewStatus?: TimesheetDailyReviewStatus;
   dailyReviewNotes?: TimesheetDailyReviewNotes;
+  dailyReviewHolidays?: TimesheetDailyReviewHolidays;
+  dailyReviewLocks?: TimesheetDailyReviewLocks;
+  reviewShell?: boolean;
   lines: TimesheetTaskLine[];
 }
 
@@ -197,6 +232,7 @@ export interface AuditTrailEntry {
     | "employee"
     | "expense"
     | "fund"
+    | "financial-account"
     | "salary"
     | "timesheet"
     | "category"
@@ -359,6 +395,7 @@ interface CategoryInput {
 }
 
 interface AddFundInput {
+  accountId?: string;
   source: string;
   amount: number;
   date: string;
@@ -368,6 +405,7 @@ interface AddFundInput {
 }
 
 interface AddSalaryInput {
+  accountId?: string;
   employeeId: string;
   amount: number;
   note?: string;
@@ -413,6 +451,7 @@ interface UpdateEmployeeInput extends AddEmployeeInput {
 }
 
 interface AddExpenseInput {
+  accountId?: string;
   employeeId?: string;
   employeeNameSnapshot?: string;
   project?: string;
@@ -488,6 +527,9 @@ export interface AdminOverview {
   totalSalaryPaid: number;
   activeEmployees: number;
   currentBalance: number;
+  allAccountsBalance: number;
+  operationalBalance: number;
+  financialAccounts: FinancialAccountBalance[];
   pendingExpenses: number;
   pendingTimesheets: number;
   monthToDateFunds: number;
@@ -770,7 +812,7 @@ export interface MonthCalendarDay {
   timeOffRequestId?: string;
   pendingLeave?: boolean;
   pendingHoliday?: boolean;
-  holidaySource?: "company" | "requested";
+  holidaySource?: "company" | "requested" | "admin";
   hours: number;
   expenseCount: number;
 }
@@ -898,9 +940,16 @@ function normalizeTimesheet(entry: TimesheetEntry): TimesheetEntry {
     dailyReviewStatus: Object.fromEntries(
       Object.entries(entry.dailyReviewStatus ?? {}).filter(([, value]) => value === "reviewed" || value === "reverted"),
     ) as TimesheetDailyReviewStatus,
+    dailyReviewHolidays: Object.fromEntries(
+      Object.entries(entry.dailyReviewHolidays ?? {}).filter(([, value]) => value === true),
+    ) as TimesheetDailyReviewHolidays,
+    dailyReviewLocks: Object.fromEntries(
+      Object.entries(entry.dailyReviewLocks ?? {}).filter(([, value]) => value === true),
+    ) as TimesheetDailyReviewLocks,
     dailyReviewNotes: Object.fromEntries(
       Object.entries(entry.dailyReviewNotes ?? {}).filter(([, value]) => typeof value === "string" && value.trim().length > 0),
     ) as TimesheetDailyReviewNotes,
+    reviewShell: Boolean(entry.reviewShell),
     lines: (entry.lines.length ? entry.lines : [{ id: createId("line"), project: "", task: "", subTask: "", notes: "", workNotes: {}, hours: blankHours() }]).map((line) => ({
       ...line,
       id: line.id || createId("line"),
@@ -931,6 +980,17 @@ function normalizeProjectBudget(project: ProjectBudget): ProjectBudget {
         : [],
     })),
   };
+}
+
+export interface SaveFinancialAccountInput {
+  id?: string;
+  name: string;
+  accountType: FinancialAccount["accountType"];
+  category: FinancialAccount["category"];
+  openingBalance: number;
+  description?: string;
+  includeInOperationalReporting?: boolean;
+  isActive?: boolean;
 }
 
 const TIME_OFF_STORAGE_KEY = "finance.assistant.time-off";
@@ -1226,6 +1286,7 @@ async function fallbackGetEmployeeMonthCalendar({ employeeId, month }: { employe
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
 
   const daily = new Map<string, { hours: number; expenseCount: number }>();
+  const adminHolidaysByDate = new Set<string>();
   for (const entry of timesheets.filter((item) => item.employeeId === employeeId && item.weekStart.slice(0, 7) <= month)) {
     const weekStart = new Date(entry.weekStart);
     entry.lines.forEach((line) => {
@@ -1243,6 +1304,20 @@ async function fallbackGetEmployeeMonthCalendar({ employeeId, month }: { employe
         daily.set(iso, bucket);
       });
     });
+
+    DAY_KEYS.forEach((dayKey, offset) => {
+      if (entry.dailyReviewHolidays?.[dayKey] !== true) {
+        return;
+      }
+
+      const dayDate = new Date(weekStart);
+      dayDate.setDate(weekStart.getDate() + offset);
+      if (dayDate.getFullYear() !== year || dayDate.getMonth() !== monthIndex) {
+        return;
+      }
+
+      adminHolidaysByDate.add(dayDate.toISOString().slice(0, 10));
+    });
   }
 
   for (const expense of expenses.filter((item) => item.employeeId === employeeId && item.date.slice(0, 7) === month)) {
@@ -1258,10 +1333,11 @@ async function fallbackGetEmployeeMonthCalendar({ employeeId, month }: { employe
     const iso = date.toISOString().slice(0, 10);
     const bucket = daily.get(iso) ?? { hours: 0, expenseCount: 0 };
     const holiday = holidays.find((item) => normalizeIsoDate(item.date) === iso);
+    const adminHoliday = adminHolidaysByDate.has(iso);
     const leaveRequest = leaveRequests.find((item) => dayRange(item.startDate, item.endDate).includes(iso));
     const isWeekend = date.getDay() === 0 || date.getDay() === 6;
     const worked = bucket.hours > 0;
-    const isHoliday = Boolean(holiday || (leaveRequest?.kind === "holiday" && leaveRequest.status !== "rejected"));
+    const isHoliday = Boolean(holiday || adminHoliday || (leaveRequest?.kind === "holiday" && leaveRequest.status !== "rejected"));
     const isLeave = Boolean(leaveRequest && leaveRequest.kind !== "holiday" && leaveRequest.status === "approved");
     const isPending = Boolean(leaveRequest && leaveRequest.status === "pending");
 
@@ -1273,11 +1349,12 @@ async function fallbackGetEmployeeMonthCalendar({ employeeId, month }: { employe
       leave: isLeave,
       leaveStatus: leaveRequest?.status,
       holiday: isHoliday,
-      holidayName: holiday?.name ?? (leaveRequest?.kind === "holiday" ? leaveRequest.reason || "Holiday" : undefined),
+      holidayName: holiday?.name ?? (adminHoliday ? "Holiday" : leaveRequest?.kind === "holiday" ? leaveRequest.reason || "Holiday" : undefined),
       leaveReason: leaveRequest?.reason,
       timeOffKind: leaveRequest?.kind,
-      timeOffSource: holiday ? "admin" : leaveRequest ? "employee" : undefined,
+      timeOffSource: holiday || adminHoliday ? "admin" : leaveRequest ? "employee" : undefined,
       timeOffRequestId: leaveRequest?.id,
+      holidaySource: holiday ? "company" : adminHoliday ? "admin" : leaveRequest?.kind === "holiday" && leaveRequest.status !== "rejected" ? "requested" : undefined,
       pendingLeave: isPending && !isHoliday,
       hours: Number(bucket.hours.toFixed(1)),
       expenseCount: bucket.expenseCount,
@@ -1638,8 +1715,21 @@ export const api = {
 
   getFunds: async () => (await businessGet<{ funds: Fund[] }>("/funds")).funds,
 
+  getFinancialAccounts: async () => (await businessGet<{ accounts: FinancialAccount[] }>("/financial-accounts")).accounts,
+
+  saveFinancialAccount: async (input: SaveFinancialAccountInput) => {
+    if (input.id) {
+      return (await businessPost<{ account: FinancialAccount }>(`/financial-accounts/${input.id}`, input, "PATCH")).account;
+    }
+
+    return (await businessPost<{ account: FinancialAccount }>("/financial-accounts", input)).account;
+  },
+
   addFund: async (input: AddFundInput) =>
     (await businessPost<{ fund: Fund }>("/funds", input)).fund,
+
+  deleteFund: async (id: string) =>
+    businessPost<void>(`/funds/${id}`, undefined, "DELETE"),
 
   getCategories: async () => (await businessGet<{ categories: ExpenseCategory[] }>("/categories")).categories,
 
@@ -1678,8 +1768,8 @@ export const api = {
   addExpense: async (input: AddExpenseInput) =>
     (await businessPost<{ expense: Expense }>("/expenses", input)).expense,
 
-  updateExpenseStatus: async (id: string, status: ApprovalStatus, reviewerNote?: string) =>
-    (await businessPost<{ expense: Expense }>(`/expenses/${id}/status`, { status, reviewerNote }, "PATCH")).expense,
+  updateExpenseStatus: async (id: string, status: ApprovalStatus, reviewerNote?: string, accountId?: string) =>
+    (await businessPost<{ expense: Expense }>(`/expenses/${id}/status`, { status, reviewerNote, accountId }, "PATCH")).expense,
 
   getSalaries: (async (...args: [{ employeeId?: string }?]) => {
     const scope = args[0];
@@ -1700,8 +1790,8 @@ export const api = {
       note: input.note ?? "",
     })).salary,
 
-  paySalaryRecord: async (id: string) =>
-    (await businessPost<{ salary: Salary }>(`/salaries/${id}/pay`, {})).salary,
+  paySalaryRecord: async (id: string, input?: { note?: string; accountId?: string }) =>
+    (await businessPost<{ salary: Salary }>(`/salaries/${id}/pay`, input ?? {})).salary,
 
   getTimesheets: async (scope?: { employeeId?: string }) => {
     const path = withQuery("/timesheets", { employeeId: scope?.employeeId });
@@ -1749,9 +1839,9 @@ export const api = {
   saveTimesheet: async (entry: TimesheetEntry) =>
     normalizeTimesheet((await businessPost<{ timesheet: TimesheetEntry }>("/timesheets", normalizeTimesheet(entry))).timesheet),
 
-  setTimesheetDayReviewStatus: async (id: string, day: DayKey, reviewed: boolean, note?: string) =>
+  setTimesheetDayReviewStatus: async (id: string, day: DayKey, action: TimesheetDayReviewAction, note?: string) =>
     normalizeTimesheet(
-      (await businessPost<{ timesheet: TimesheetEntry }>(`/timesheets/${id}/daily-review/${day}`, { reviewed, note }, "PATCH")).timesheet,
+      (await businessPost<{ timesheet: TimesheetEntry }>(`/timesheets/${id}/daily-review/${day}`, { action, note }, "PATCH")).timesheet,
     ),
 
   submitTimesheetEntry: async (entry: TimesheetEntry) =>

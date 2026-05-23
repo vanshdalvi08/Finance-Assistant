@@ -16,7 +16,7 @@ import {
   type TimesheetEntry,
   blankHours,
   createId,
-  findChangedReviewedDays,
+  findChangedProtectedDays,
   loadEmployeeProfile,
   loadEmployees,
   normalizeDate,
@@ -56,6 +56,7 @@ const dateSchema = z.string().min(1);
 const businessIdSchema = z.string().trim().min(1);
 const approvalStatusSchema = z.enum(["draft", "submitted", "approved", "rejected"]);
 const dayKeySchema = z.enum(["mon", "tue", "wed", "thu", "fri", "sat", "sun"]);
+const dailyReviewActionSchema = z.enum(["reviewed", "reverted", "holiday", "locked", "clear_review", "clear_holiday", "clear_lock"]);
 
 const timesheetLineSchema = z.object({
   id: businessIdSchema.optional(),
@@ -108,6 +109,28 @@ const timesheetSchema = z.object({
       sun: z.enum(["reviewed", "reverted"]).optional(),
     })
     .optional(),
+  dailyReviewHolidays: z
+    .object({
+      mon: z.literal(true).optional(),
+      tue: z.literal(true).optional(),
+      wed: z.literal(true).optional(),
+      thu: z.literal(true).optional(),
+      fri: z.literal(true).optional(),
+      sat: z.literal(true).optional(),
+      sun: z.literal(true).optional(),
+    })
+    .optional(),
+  dailyReviewLocks: z
+    .object({
+      mon: z.literal(true).optional(),
+      tue: z.literal(true).optional(),
+      wed: z.literal(true).optional(),
+      thu: z.literal(true).optional(),
+      fri: z.literal(true).optional(),
+      sat: z.literal(true).optional(),
+      sun: z.literal(true).optional(),
+    })
+    .optional(),
   dailyReviewNotes: z
     .object({
       mon: z.string().trim().max(1000).optional(),
@@ -119,7 +142,8 @@ const timesheetSchema = z.object({
       sun: z.string().trim().max(1000).optional(),
     })
     .optional(),
-  lines: z.array(timesheetLineSchema).min(1),
+  reviewShell: z.boolean().optional(),
+  lines: z.array(timesheetLineSchema),
 });
 
 function respondNotFound(response: Response, message: string) {
@@ -395,13 +419,13 @@ function reviewedDayLabel(day: DayKey) {
   return day.charAt(0).toUpperCase() + day.slice(1);
 }
 
-function respondReviewedDaysLocked(response: Response, reviewedDays: DayKey[]) {
-  const labels = reviewedDays.map(reviewedDayLabel).join(", ");
+function respondProtectedDaysLocked(response: Response, protectedDays: DayKey[]) {
+  const labels = protectedDays.map(reviewedDayLabel).join(", ");
   response.status(409).json({
-    message: `Verified day${reviewedDays.length === 1 ? "" : "s"} ${labels} ${
-      reviewedDays.length === 1 ? "is" : "are"
-    } locked. Ask an admin to unverify or return ${reviewedDays.length === 1 ? "that day" : "those days"} before changing hours or work notes.`,
-    lockedDays: reviewedDays,
+    message: `Protected day${protectedDays.length === 1 ? "" : "s"} ${labels} ${
+      protectedDays.length === 1 ? "is" : "are"
+    } locked. Ask an admin to clear the review, holiday, or lock state before changing hours or work notes.`,
+    lockedDays: protectedDays,
   });
 }
 
@@ -446,7 +470,7 @@ interface MonthCalendarDay {
   timeOffKind?: LeaveRequestKind;
   timeOffSource?: "admin" | "employee";
   timeOffRequestId?: string;
-  holidaySource?: "company" | "requested";
+  holidaySource?: "company" | "requested" | "admin";
   leaveStatus?: LeaveRequestStatus;
   leaveReason?: string;
   pendingLeave: boolean;
@@ -531,6 +555,7 @@ function buildMonthCalendar(
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
   const daily = new Map<string, { hours: number; expenseCount: number }>();
   const holidaysByDate = new Map<string, HolidayRecord>();
+  const adminHolidaysByDate = new Set<string>();
   const leaveRequestsByDate = new Map<string, LeaveRequestRecord>();
 
   for (const holiday of store.holidays.filter((item) => (item.tenantId ?? DEFAULT_TENANT_ID) === tenantId && monthKeyFromDate(item.date) === month)) {
@@ -569,6 +594,20 @@ function buildMonthCalendar(
         daily.set(iso, bucket);
       });
     });
+
+    DAY_KEYS.forEach((key, offset) => {
+      if (entry.dailyReviewHolidays?.[key] !== true) {
+        return;
+      }
+
+      const dayDate = new Date(weekStart);
+      dayDate.setDate(weekStart.getDate() + offset);
+      if (dayDate.getFullYear() !== year || dayDate.getMonth() !== monthIndex) {
+        return;
+      }
+
+      adminHolidaysByDate.add(dayDate.toISOString().slice(0, 10));
+    });
   }
 
   for (const expense of store.expenses.filter((item) => item.employeeId === employeeId && monthKeyFromDate(item.date) === month)) {
@@ -598,6 +637,7 @@ function buildMonthCalendar(
     const iso = date.toISOString().slice(0, 10);
     const bucket = daily.get(iso) ?? { hours: 0, expenseCount: 0 };
     const holiday = holidaysByDate.get(iso);
+    const adminHoliday = adminHolidaysByDate.has(iso);
     const leaveRequest = leaveRequestsByDate.get(iso);
     const isWeekend = date.getDay() === 0 || date.getDay() === 6;
     const worked = bucket.hours > 0;
@@ -605,8 +645,8 @@ function buildMonthCalendar(
     const pendingHolidayRequest = Boolean(leaveRequest && leaveRequest.status === "pending" && leaveRequest.kind === "holiday");
     const approvedLeaveRequest = Boolean(leaveRequest && leaveRequest.status === "approved" && leaveRequest.kind === "leave");
     const pendingLeaveRequest = Boolean(leaveRequest && leaveRequest.status === "pending" && leaveRequest.kind === "leave");
-    const isHoliday = Boolean(holiday || approvedHolidayRequest);
-    const leave = Boolean(approvedLeaveRequest && !holiday);
+    const isHoliday = Boolean(holiday || adminHoliday || approvedHolidayRequest);
+    const leave = Boolean(approvedLeaveRequest && !holiday && !adminHoliday);
     const pendingLeave = Boolean(pendingLeaveRequest && !isHoliday);
     if (worked) daysWorked += 1;
     if (leave) leaveDays += 1;
@@ -625,11 +665,11 @@ function buildMonthCalendar(
       worked,
       leave,
       holiday: isHoliday,
-      holidayName: holiday?.name,
+      holidayName: holiday?.name ?? (adminHoliday ? "Holiday" : leaveRequest?.kind === "holiday" ? leaveRequest.reason || "Holiday" : undefined),
       timeOffKind: leaveRequest?.kind,
-      timeOffSource: leaveRequest ? "employee" : undefined,
+      timeOffSource: holiday || adminHoliday ? "admin" : leaveRequest ? "employee" : undefined,
       timeOffRequestId: leaveRequest?.id,
-      holidaySource: holiday ? "company" : approvedHolidayRequest || pendingHolidayRequest ? "requested" : undefined,
+      holidaySource: holiday ? "company" : adminHoliday ? "admin" : approvedHolidayRequest || pendingHolidayRequest ? "requested" : undefined,
       leaveStatus: leaveRequest?.status,
       leaveReason: leaveRequest?.reason,
       pendingLeave,
@@ -895,12 +935,12 @@ router.post("/timesheets", requireTenantRole("admin", "employee"), async (reques
     ),
     hours: { ...blankHours(), ...line.hours },
   }));
-  const lockedReviewedDays =
+  const lockedProtectedDays =
     request.auth?.user.role === "employee" && existing
-      ? findChangedReviewedDays(existing.dailyReviewStatus, existing.lines, lines)
+      ? findChangedProtectedDays(existing.dailyReviewStatus, existing.dailyReviewHolidays, existing.dailyReviewLocks, existing.lines, lines)
       : [];
-  if (lockedReviewedDays.length > 0) {
-    respondReviewedDaysLocked(response, lockedReviewedDays);
+  if (lockedProtectedDays.length > 0) {
+    respondProtectedDaysLocked(response, lockedProtectedDays);
     return;
   }
   const dailyReviewState = reconcileDailyReviewState(
@@ -925,12 +965,16 @@ router.post("/timesheets", requireTenantRole("admin", "employee"), async (reques
     reviewNotes: existing?.reviewNotes,
     dailyReviewStatus: dailyReviewState.status,
     dailyReviewNotes: dailyReviewState.notes,
+    dailyReviewHolidays: existing?.dailyReviewHolidays,
+    dailyReviewLocks: existing?.dailyReviewLocks,
+    reviewShell: existing?.reviewShell ?? parsed.data.reviewShell ?? false,
     lines,
     createdAt: existing?.createdAt ?? nowIso(),
     updatedAt: nowIso(),
   };
 
-  if (entry.status === "draft" && !timesheetHasContent(entry)) {
+  const isReviewShell = Boolean(parsed.data.reviewShell);
+  if (entry.status === "draft" && !timesheetHasContent(entry) && !isReviewShell) {
     if (existing) {
       await saveTimesheetFast({
         entry,
@@ -968,7 +1012,9 @@ router.post("/timesheets", requireTenantRole("admin", "employee"), async (reques
         action: existing ? "saved" : "created",
         entityType: "timesheet",
         entityId: entry.id,
-        summary: `${existing ? "Saved" : "Started"} timesheet draft for week of ${entry.weekStart}.`,
+        summary: isReviewShell
+          ? `${existing ? "Saved" : "Created"} an empty review shell for week of ${entry.weekStart}.`
+          : `${existing ? "Saved" : "Started"} timesheet draft for week of ${entry.weekStart}.`,
       },
     });
   } catch (error) {
@@ -1090,10 +1136,12 @@ router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (r
     ),
     hours: { ...blankHours(), ...line.hours },
   }));
-  const lockedReviewedDays =
-    request.auth?.user.role === "employee" ? findChangedReviewedDays(existing.dailyReviewStatus, existing.lines, lines) : [];
-  if (lockedReviewedDays.length > 0) {
-    respondReviewedDaysLocked(response, lockedReviewedDays);
+  const lockedProtectedDays =
+    request.auth?.user.role === "employee"
+      ? findChangedProtectedDays(existing.dailyReviewStatus, existing.dailyReviewHolidays, existing.dailyReviewLocks, existing.lines, lines)
+      : [];
+  if (lockedProtectedDays.length > 0) {
+    respondProtectedDaysLocked(response, lockedProtectedDays);
     return;
   }
   const dailyReviewState = reconcileDailyReviewState(
@@ -1118,6 +1166,9 @@ router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (r
     reviewNotes: existing.reviewNotes,
     dailyReviewStatus: dailyReviewState.status,
     dailyReviewNotes: dailyReviewState.notes,
+    dailyReviewHolidays: existing.dailyReviewHolidays,
+    dailyReviewLocks: existing.dailyReviewLocks,
+    reviewShell: existing.reviewShell ?? false,
     lines,
     updatedAt: nowIso(),
   };
@@ -1163,9 +1214,22 @@ router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (r
 
 router.patch("/timesheets/:id/daily-review/:day", requireTenantRole("admin"), async (request, response) => {
   const day = dayKeySchema.safeParse(routeParam(request.params.day));
-  const body = z.object({ reviewed: z.boolean(), note: z.string().trim().max(1000).optional() }).safeParse(request.body);
+  const body = z
+    .object({
+      action: dailyReviewActionSchema.optional(),
+      reviewed: z.boolean().optional(),
+      note: z.string().trim().max(1000).optional(),
+    })
+    .safeParse(request.body);
   if (!day.success || !body.success) {
     response.status(400).json({ message: "Invalid daily review payload" });
+    return;
+  }
+  const action =
+    body.data.action
+    ?? (body.data.reviewed === true ? "reviewed" : body.data.note?.trim() ? "reverted" : body.data.reviewed === false ? "clear_review" : null);
+  if (!action) {
+    response.status(400).json({ message: "Invalid daily review action" });
     return;
   }
 
@@ -1186,37 +1250,32 @@ router.patch("/timesheets/:id/daily-review/:day", requireTenantRole("admin"), as
     return;
   }
 
-  const updated = await setTimesheetDayReviewStatusFast({
-    id: existing.id,
-    day: day.data,
-    reviewed: body.data.reviewed,
-    note: body.data.note,
-    tenantId,
-    actorName: request.auth?.user.name ?? "Admin",
-    actorRole: request.auth?.user.role ?? "admin",
-    requestId: String(request.id),
-  });
+  let updated: TimesheetEntry | null;
+  try {
+    updated = await setTimesheetDayReviewStatusFast({
+      id: existing.id,
+      day: day.data,
+      action,
+      note: body.data.note,
+      tenantId,
+      actorName: request.auth?.user.name ?? "Admin",
+      actorRole: request.auth?.user.role ?? "admin",
+      requestId: String(request.id),
+    });
+  } catch (error) {
+    if (error instanceof Error) {
+      response.status(409).json({ message: error.message });
+      return;
+    }
+    throw error;
+  }
 
   if (!updated) {
     respondNotFound(response, "Timesheet not found");
     return;
   }
 
-  if (body.data.reviewed) {
-    const employee = await loadEmployeeProfile(existing.employeeId, tenantId);
-    appEvents.emit("timesheet_daily_review_verified", {
-      tenantId,
-      timesheet: updated,
-      employee,
-      day: day.data,
-      verifiedBy: {
-        userId: request.auth?.user.id,
-        name: request.auth?.user.name ?? "Admin",
-      },
-    });
-  }
-
-  if (!body.data.reviewed && body.data.note) {
+  if (action === "reverted" && body.data.note) {
     const actor = notificationActor(request);
     await deliverNotification(
       notifyEmployee(
@@ -1322,12 +1381,12 @@ router.post("/timesheets/submit", requireTenantRole("admin", "employee"), async 
     ),
     hours: { ...blankHours(), ...line.hours },
   }));
-  const lockedReviewedDays =
+  const lockedProtectedDays =
     request.auth?.user.role === "employee" && existing
-      ? findChangedReviewedDays(existing.dailyReviewStatus, existing.lines, lines)
+      ? findChangedProtectedDays(existing.dailyReviewStatus, existing.dailyReviewHolidays, existing.dailyReviewLocks, existing.lines, lines)
       : [];
-  if (lockedReviewedDays.length > 0) {
-    respondReviewedDaysLocked(response, lockedReviewedDays);
+  if (lockedProtectedDays.length > 0) {
+    respondProtectedDaysLocked(response, lockedProtectedDays);
     return;
   }
   const dailyReviewState = reconcileDailyReviewState(existing?.dailyReviewStatus, existing?.dailyReviewNotes, existing?.lines ?? [], lines);
@@ -1347,6 +1406,9 @@ router.post("/timesheets/submit", requireTenantRole("admin", "employee"), async 
     reviewNotes: undefined,
     dailyReviewStatus: dailyReviewState.status,
     dailyReviewNotes: dailyReviewState.notes,
+    dailyReviewHolidays: existing?.dailyReviewHolidays,
+    dailyReviewLocks: existing?.dailyReviewLocks,
+    reviewShell: existing?.reviewShell ?? false,
     lines,
     createdAt: existing?.createdAt ?? nowIso(),
     updatedAt: nowIso(),

@@ -39,6 +39,7 @@ const approvalStatusSchema = z.enum(["draft", "submitted", "approved", "rejected
 
 const expenseSchema = z.object({
   id: businessIdSchema.optional(),
+  accountId: businessIdSchema.optional(),
   employeeId: z.string().uuid().optional(),
   employeeNameSnapshot: z.string().trim().optional(),
   project: z.string().trim().optional(),
@@ -91,6 +92,7 @@ function requestHashForExpenseMutation(input: z.infer<typeof expenseSchema> & { 
   return hashSha256(
     JSON.stringify({
       id: input.id?.trim() ?? "",
+      accountId: input.accountId?.trim() ?? "",
       employeeId: input.employeeId?.trim() ?? "",
       employeeNameSnapshot: input.employeeNameSnapshot?.trim() ?? "",
       project: input.project?.trim() ?? "",
@@ -516,6 +518,7 @@ router.route("/expenses/:id").get(requireTenantRole("admin", "employee"), async 
 router.patch("/expenses/:id/status", requireTenantRole("admin"), expenseReviewLimiter, async (request, response) => {
   const parsed = z.object({
     status: approvalStatusSchema,
+    accountId: businessIdSchema.optional(),
     reviewerNote: z.string().trim().optional(),
   }).safeParse(request.body);
 
@@ -534,6 +537,7 @@ router.patch("/expenses/:id/status", requireTenantRole("admin"), expenseReviewLi
       parsed.data.reviewerNote,
       recordActor(request),
       {
+        accountId: parsed.data.accountId,
         idempotencyKey: request.get("Idempotency-Key") ?? request.get("X-Idempotency-Key"),
       },
     );

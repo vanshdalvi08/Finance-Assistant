@@ -1,12 +1,24 @@
-import { useMemo, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useState, type ChangeEvent } from "react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
-import { api, type AdminOverview, type ChartPoint, type Fund, type Transaction } from "@/lib/api";
+import { api, type ChartPoint, type Fund, type Transaction } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { DashboardCard } from "@/components/dashboard-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -14,7 +26,7 @@ import * as z from "zod";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import { format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowDownRight, ChevronDown, ChevronRight, Paperclip, Plus, Upload, Wallet, X } from "lucide-react";
+import { ArrowDownRight, ChevronDown, ChevronRight, Paperclip, Plus, Trash2, Upload, Wallet, X } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { uploadFundReceipt, type UploadedAsset } from "@/lib/uploads";
 
@@ -84,26 +96,6 @@ function updateChartData(current: ChartPoint[] | undefined, fund: Fund) {
   );
 }
 
-function updateOverview(current: AdminOverview | undefined, fund: Fund) {
-  if (!current) {
-    return current;
-  }
-
-  const fundDate = new Date(fund.date);
-  const currentMonth = new Date().toISOString().slice(0, 7);
-  const currentYear = new Date().getFullYear();
-  const fundMonth = getFundMonthKey(fund.date);
-  const safeFundDate = getSafeDate(fund.date);
-
-  return {
-    ...current,
-    totalFunds: current.totalFunds + fund.amount,
-    currentBalance: current.currentBalance + fund.amount,
-    monthToDateFunds: current.monthToDateFunds + (fundMonth === currentMonth ? fund.amount : 0),
-    yearToDateFunds: current.yearToDateFunds + (safeFundDate?.getFullYear() === currentYear ? fund.amount : 0),
-  };
-}
-
 function updateTransactions(current: Transaction[] | undefined, fund: Fund) {
   if (!current) {
     return current;
@@ -121,6 +113,29 @@ function updateTransactions(current: Transaction[] | undefined, fund: Fund) {
   return [nextTransaction, ...current.filter((transaction) => transaction.id !== nextTransaction.id)];
 }
 
+function removeChartData(current: ChartPoint[] | undefined, fund: Fund) {
+  if (!current) {
+    return current;
+  }
+
+  const monthKey = getFundMonthKey(fund.date);
+  if (monthKey === "unknown") {
+    return current;
+  }
+
+  return current.map((point) =>
+    point.month === monthKey ? { ...point, funds: Math.max(0, point.funds - fund.amount) } : point,
+  );
+}
+
+function removeTransactions(current: Transaction[] | undefined, fund: Fund) {
+  if (!current) {
+    return current;
+  }
+
+  return current.filter((transaction) => transaction.id !== `txn_${fund.id}`);
+}
+
 export default function Funds() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -129,6 +144,8 @@ export default function Funds() {
   const [openHistoryMonth, setOpenHistoryMonth] = useState<string | null>(null);
   const [receiptFile, setReceiptFile] = useState<UploadedAsset | null>(null);
   const [isUploadingReceipt, setIsUploadingReceipt] = useState(false);
+  const [fundToDelete, setFundToDelete] = useState<Fund | null>(null);
+  const [selectedAccountId, setSelectedAccountId] = useState("");
 
   const { data: funds = [] } = useQuery({
     queryKey: ["funds"],
@@ -142,6 +159,23 @@ export default function Funds() {
     queryKey: ["adminOverview"],
     queryFn: api.getAdminOverview,
   });
+  const { data: financialAccounts = [] } = useQuery({
+    queryKey: ["financialAccounts"],
+    queryFn: api.getFinancialAccounts,
+  });
+
+  useEffect(() => {
+    if (selectedAccountId || financialAccounts.length === 0) {
+      return;
+    }
+
+    const preferred = financialAccounts.find((account) => account.accountType === "operational" && account.isActive)
+      ?? financialAccounts.find((account) => account.isActive)
+      ?? financialAccounts[0];
+    if (preferred) {
+      setSelectedAccountId(preferred.id);
+    }
+  }, [financialAccounts, selectedAccountId]);
 
   const totalCapitalInflow = funds.reduce((sum, fund) => sum + fund.amount, 0);
   const simplifiedChartData = useMemo(
@@ -199,6 +233,7 @@ export default function Funds() {
   const addMutation = useMutation({
     mutationFn: async (data: z.infer<typeof fundSchema>) =>
       api.addFund({
+        accountId: selectedAccountId || undefined,
         ...data,
         receiptName: receiptFile?.fileName,
         receiptPath: receiptFile?.path,
@@ -209,8 +244,8 @@ export default function Funds() {
         ...current.filter((fund) => fund.id !== createdFund.id),
       ]);
       queryClient.setQueryData<ChartPoint[]>(["chartData"], (current) => updateChartData(current, createdFund));
-      queryClient.setQueryData<AdminOverview>(["adminOverview"], (current) => updateOverview(current, createdFund));
       queryClient.setQueryData<Transaction[]>(["transactions"], (current) => updateTransactions(current, createdFund));
+      void queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
       toast({ title: "Funds added", description: "Inflow has been recorded successfully." });
       setIsDialogOpen(false);
       setReceiptFile(null);
@@ -219,6 +254,31 @@ export default function Funds() {
         amount: 0,
         date: new Date().toISOString().split("T")[0],
         note: "",
+      });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (fund: Fund) => {
+      await api.deleteFund(fund.id);
+      return fund;
+    },
+    onSuccess: (deletedFund) => {
+      queryClient.setQueryData<Fund[]>(["funds"], (current = []) => current.filter((fund) => fund.id !== deletedFund.id));
+      queryClient.setQueryData<ChartPoint[]>(["chartData"], (current) => removeChartData(current, deletedFund));
+      queryClient.setQueryData<Transaction[]>(["transactions"], (current) => removeTransactions(current, deletedFund));
+      void queryClient.invalidateQueries({ queryKey: ["adminOverview"] });
+      setFundToDelete(null);
+      toast({
+        title: "Fund removed",
+        description: `${deletedFund.source} was removed from your inflows.`,
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "Could not remove fund",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
       });
     },
   });
@@ -280,6 +340,23 @@ export default function Funds() {
               </DialogHeader>
               <Form {...form}>
                 <form onSubmit={form.handleSubmit((data) => addMutation.mutate(data))} className="space-y-4">
+                  <div className="space-y-2">
+                    <Label>Added To</Label>
+                    <Select value={selectedAccountId} onValueChange={setSelectedAccountId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select financial account" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {financialAccounts
+                          .filter((account) => account.isActive)
+                          .map((account) => (
+                            <SelectItem key={account.id} value={account.id}>
+                              {account.name}
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
                   <FormField
                     control={form.control}
                     name="source"
@@ -386,7 +463,7 @@ export default function Funds() {
                       </div>
                     ) : null}
                   </div>
-                  <Button type="submit" className="w-full mt-4" disabled={addMutation.isPending || isUploadingReceipt}>
+                  <Button type="submit" className="w-full mt-4" disabled={addMutation.isPending || isUploadingReceipt || !selectedAccountId}>
                     Save Inflow
                   </Button>
                 </form>
@@ -479,6 +556,7 @@ export default function Funds() {
                       <TableHead>Receipt</TableHead>
                       <TableHead>Date</TableHead>
                       <TableHead className="text-right">Amount</TableHead>
+                      <TableHead className="w-[56px] text-right"> </TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -509,6 +587,18 @@ export default function Funds() {
                         <TableCell className="text-muted-foreground">{formatFundDate(fund.date)}</TableCell>
                         <TableCell className="text-right font-medium text-primary">
                           +{fund.amount.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                            onClick={() => setFundToDelete(fund)}
+                            title={`Delete ${fund.source}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -574,6 +664,7 @@ export default function Funds() {
                               <TableHead>Receipt</TableHead>
                               <TableHead>Date</TableHead>
                               <TableHead className="text-right">Amount</TableHead>
+                              <TableHead className="w-[56px] text-right"> </TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
@@ -600,6 +691,18 @@ export default function Funds() {
                                 <TableCell className="text-right font-medium text-primary">
                                   +{fund.amount.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
                                 </TableCell>
+                                <TableCell className="text-right">
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                                    onClick={() => setFundToDelete(fund)}
+                                    title={`Delete ${fund.source}`}
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                </TableCell>
                               </TableRow>
                             ))}
                           </TableBody>
@@ -612,6 +715,34 @@ export default function Funds() {
             </CardContent>
           </Card>
         ) : null}
+
+        <AlertDialog open={Boolean(fundToDelete)} onOpenChange={(open) => !open && setFundToDelete(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete this fund entry?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {fundToDelete
+                  ? `This will remove the inflow from ${fundToDelete.source} dated ${formatFundDate(fundToDelete.date)} for ${formatCurrency(fundToDelete.amount)}.`
+                  : "This fund entry will be removed."}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={deleteMutation.isPending}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                disabled={deleteMutation.isPending || !fundToDelete}
+                onClick={(event) => {
+                  event.preventDefault();
+                  if (!fundToDelete) {
+                    return;
+                  }
+                  deleteMutation.mutate(fundToDelete);
+                }}
+              >
+                {deleteMutation.isPending ? "Deleting..." : "Delete Fund"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </DashboardLayout>
   );

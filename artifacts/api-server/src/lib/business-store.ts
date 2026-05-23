@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { db, usersTable } from "@workspace/db";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   auditTrailTable,
   businessStateTable,
   expenseCategoriesTable,
   expensesTable,
+  financialAccountsTable,
   fundsTable,
   projectBudgetsTable,
   projectTasksTable,
@@ -17,6 +18,7 @@ import {
   type AuditTrailEntry as DbAuditTrailEntry,
   type Expense as DbExpense,
   type ExpenseCategory as DbExpenseCategory,
+  type FinancialAccount as DbFinancialAccount,
   type Fund as DbFund,
   type Project as DbProject,
   type ProjectBudget as DbProjectBudget,
@@ -25,6 +27,8 @@ import {
   type PurchaseOrder as DbPurchaseOrder,
   type InsertPurchaseOrder as DbInsertPurchaseOrder,
   type Salary as DbSalary,
+  type TimesheetDailyReviewHolidays,
+  type TimesheetDailyReviewLocks,
   type TimesheetDailyReviewStatus,
   type TimesheetDailyReviewNotes,
   type Timesheet as DbTimesheet,
@@ -41,6 +45,8 @@ export type LeaveRequestStatus = "pending" | "approved" | "rejected";
 export type LeaveRequestKind = "leave" | "holiday";
 export type LeavePolicyPeriod = "monthly" | "quarterly" | "yearly";
 export type LeavePolicyScope = "all" | "selected";
+export type FinancialAccountType = "operational" | "personal" | "mixed_use" | "reserve" | "cash";
+export type FinancialAccountCategory = "bank" | "cash" | "wallet" | "other";
 
 function normalizeProjectTaskHourLimitScope(value: unknown): ProjectTaskHourLimitScope {
   return value === "per_employee" ? "per_employee" : "overall";
@@ -123,6 +129,7 @@ export interface AuditTrailDetailsRecord {
 export interface FundRecord {
   id: string;
   tenantId: string;
+  accountId?: string;
   source: string;
   amount: number;
   date: string;
@@ -130,6 +137,20 @@ export interface FundRecord {
   receiptName?: string;
   receiptPath?: string;
   receiptUrl?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FinancialAccountRecord {
+  id: string;
+  tenantId: string;
+  name: string;
+  accountType: FinancialAccountType;
+  category: FinancialAccountCategory;
+  openingBalance: number;
+  description?: string;
+  includeInOperationalReporting: boolean;
+  isActive: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -146,6 +167,7 @@ export interface ExpenseCategoryRecord {
 export interface ExpenseRecord {
   id: string;
   tenantId: string;
+  accountId?: string;
   employeeId?: string;
   employeeNameSnapshot?: string;
   project?: string;
@@ -167,6 +189,7 @@ export interface ExpenseRecord {
 export interface SalaryRecord {
   id: string;
   tenantId: string;
+  accountId?: string;
   employeeId: string;
   employeeNameSnapshot?: string;
   amount: number;
@@ -207,6 +230,9 @@ export interface TimesheetEntry {
   reviewNotes?: string;
   dailyReviewStatus?: TimesheetDailyReviewStatus;
   dailyReviewNotes?: TimesheetDailyReviewNotes;
+  dailyReviewHolidays?: TimesheetDailyReviewHolidays;
+  dailyReviewLocks?: TimesheetDailyReviewLocks;
+  reviewShell?: boolean;
   lines: TimesheetTaskLine[];
   createdAt: string;
   updatedAt: string;
@@ -317,6 +343,7 @@ export interface AuditTrailEntry {
     | "employee"
     | "expense"
     | "fund"
+    | "financial-account"
     | "salary"
     | "timesheet"
     | "category"
@@ -333,6 +360,7 @@ export interface AuditTrailEntry {
 }
 
 export interface BusinessStore {
+  financialAccounts: FinancialAccountRecord[];
   funds: FundRecord[];
   categories: ExpenseCategoryRecord[];
   expenses: ExpenseRecord[];
@@ -364,6 +392,7 @@ export interface UserProfile {
 }
 
 export const DAY_KEYS: DayKey[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+export const DEFAULT_FINANCIAL_ACCOUNT_NAME = "Operational";
 
 export const DEFAULT_CATEGORIES: ExpenseCategoryRecord[] = [
   { id: "00000000-0000-0000-0000-000000000001", name: "Software", color: "#6366f1", group: "office", createdAt: "1970-01-01T00:00:00.000Z", updatedAt: "1970-01-01T00:00:00.000Z" },
@@ -379,6 +408,50 @@ export const DEFAULT_CATEGORIES: ExpenseCategoryRecord[] = [
   { id: "00000000-0000-0000-0000-000000000015", name: "Transport", color: "#14b8a6", group: "personal", createdAt: "1970-01-01T00:00:00.000Z", updatedAt: "1970-01-01T00:00:00.000Z" },
   { id: "00000000-0000-0000-0000-000000000016", name: "Entertainment", color: "#f59e0b", group: "personal", createdAt: "1970-01-01T00:00:00.000Z", updatedAt: "1970-01-01T00:00:00.000Z" },
 ];
+
+export function normalizeFinancialAccountType(value: unknown): FinancialAccountType {
+  switch (value) {
+    case "personal":
+    case "mixed_use":
+    case "reserve":
+    case "cash":
+      return value;
+    default:
+      return "operational";
+  }
+}
+
+export function normalizeFinancialAccountCategory(value: unknown): FinancialAccountCategory {
+  switch (value) {
+    case "cash":
+    case "wallet":
+    case "other":
+      return value;
+    default:
+      return "bank";
+  }
+}
+
+export function defaultFinancialAccountId(tenantId: string) {
+  return `acct_operational_${tenantId}`;
+}
+
+export function createDefaultFinancialAccount(tenantId: string): FinancialAccountRecord {
+  const now = nowIso();
+  return {
+    id: defaultFinancialAccountId(tenantId),
+    tenantId,
+    name: DEFAULT_FINANCIAL_ACCOUNT_NAME,
+    accountType: "operational",
+    category: "bank",
+    openingBalance: 0,
+    description: "Default operational account",
+    includeInOperationalReporting: true,
+    isActive: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
 
 const STATE_ID = "default";
 let schemaReady: Promise<void> | null = null;
@@ -552,6 +625,18 @@ function normalizeDailyReviewStatus(input?: Partial<Record<DayKey, string>> | nu
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
+function normalizeDailyReviewDayFlags(input?: Partial<Record<DayKey, unknown>> | null): Partial<Record<DayKey, true>> | undefined {
+  if (!input) {
+    return undefined;
+  }
+
+  const normalized = Object.fromEntries(
+    DAY_KEYS.map((day) => [day, input[day] === true ? true : undefined]).filter(([, value]) => value === true),
+  ) as Partial<Record<DayKey, true>>;
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
 function normalizeDailyReviewNotes(input?: Partial<Record<DayKey, string>> | null): TimesheetDailyReviewNotes | undefined {
   if (!input) {
     return undefined;
@@ -601,6 +686,10 @@ export function reconcileDailyReviewState(
   };
 }
 
+export function dayHasTimesheetContent(lines: TimesheetTaskLine[], day: DayKey) {
+  return dayContentSignature(lines, day) !== "[]";
+}
+
 export function findChangedReviewedDays(
   currentStatus: Partial<Record<DayKey, string>> | null | undefined,
   previousLines: TimesheetTaskLine[],
@@ -614,6 +703,27 @@ export function findChangedReviewedDays(
   return DAY_KEYS.filter(
     (day) => normalizedStatus[day] === "reviewed" && dayContentSignature(previousLines, day) !== dayContentSignature(nextLines, day),
   );
+}
+
+export function findChangedProtectedDays(
+  currentStatus: Partial<Record<DayKey, string>> | null | undefined,
+  currentHolidays: Partial<Record<DayKey, unknown>> | null | undefined,
+  currentLocks: Partial<Record<DayKey, unknown>> | null | undefined,
+  previousLines: TimesheetTaskLine[],
+  nextLines: TimesheetTaskLine[],
+): DayKey[] {
+  const normalizedStatus = normalizeDailyReviewStatus(currentStatus);
+  const normalizedHolidays = normalizeDailyReviewDayFlags(currentHolidays);
+  const normalizedLocks = normalizeDailyReviewDayFlags(currentLocks);
+
+  return DAY_KEYS.filter((day) => {
+    const protectedDay =
+      normalizedStatus?.[day] === "reviewed"
+      || normalizedHolidays?.[day] === true
+      || normalizedLocks?.[day] === true;
+
+    return protectedDay && dayContentSignature(previousLines, day) !== dayContentSignature(nextLines, day);
+  });
 }
 
 export function reconcileDailyReviewStatus(
@@ -680,6 +790,7 @@ function calculatePurchaseOrderTaskAmount(hours?: number | null, rate?: number |
 
 function stripNormalizedStore(store: BusinessStore): BusinessStateData {
   const {
+    financialAccounts: _financialAccounts,
     funds: _funds,
     categories: _categories,
     expenses: _expenses,
@@ -693,10 +804,45 @@ function stripNormalizedStore(store: BusinessStore): BusinessStateData {
   return rest;
 }
 
+function financialAccountFromRow(row: DbFinancialAccount): FinancialAccountRecord {
+  return {
+    id: row.id,
+    tenantId: String((row as DbFinancialAccount & { tenantId?: string }).tenantId ?? DEFAULT_TENANT_ID),
+    name: row.name.trim(),
+    accountType: normalizeFinancialAccountType(row.accountType),
+    category: normalizeFinancialAccountCategory(row.category),
+    openingBalance: Math.abs(Number(row.openingBalance ?? 0)),
+    description: row.description?.trim() || undefined,
+    includeInOperationalReporting: Boolean(row.includeInOperationalReporting),
+    isActive: Boolean(row.isActive),
+    createdAt: toIso(row.createdAt),
+    updatedAt: toIso(row.updatedAt),
+  };
+}
+
+function financialAccountToRow(account: FinancialAccountRecord) {
+  return {
+    id: account.id,
+    tenantId: account.tenantId?.trim() || DEFAULT_TENANT_ID,
+    name: account.name.trim(),
+    accountType: normalizeFinancialAccountType(account.accountType),
+    category: normalizeFinancialAccountCategory(account.category),
+    openingBalance: Math.abs(Number(account.openingBalance ?? 0)),
+    description: account.description?.trim() || "",
+    includeInOperationalReporting: Boolean(account.includeInOperationalReporting),
+    isActive: Boolean(account.isActive),
+    createdAt: toDate(account.createdAt),
+    updatedAt: toDate(account.updatedAt),
+  };
+}
+
 function fundFromRow(row: DbFund): FundRecord {
   return {
     id: row.id,
     tenantId: String((row as DbFund & { tenantId?: string }).tenantId ?? DEFAULT_TENANT_ID),
+    accountId: "accountId" in row && typeof (row as { accountId?: unknown }).accountId === "string"
+      ? String((row as { accountId?: string }).accountId ?? "").trim() || undefined
+      : undefined,
     source: row.source.trim(),
     amount: Math.abs(Number(row.amount ?? 0)),
     date: toIso(row.date),
@@ -712,6 +858,7 @@ function fundToRow(fund: FundRecord) {
   return {
     id: fund.id,
     tenantId: fund.tenantId?.trim() || DEFAULT_TENANT_ID,
+    accountId: fund.accountId?.trim() || null,
     source: fund.source.trim(),
     amount: Math.abs(Number(fund.amount ?? 0)),
     date: toDate(fund.date),
@@ -756,6 +903,10 @@ function expenseFromRow(row: DbExpense): ExpenseRecord {
   return {
     id: row.id,
     tenantId,
+    accountId:
+      "accountId" in row && typeof (row as { accountId?: unknown }).accountId === "string"
+        ? String((row as { accountId?: string }).accountId ?? "").trim() || undefined
+        : undefined,
     employeeId: row.employeeId ?? undefined,
     employeeNameSnapshot: row.employeeNameSnapshot?.trim() || undefined,
     project: row.project?.trim() || undefined,
@@ -782,6 +933,7 @@ function expenseToRow(expense: ExpenseRecord) {
   return {
     id: expense.id,
     tenantId: expense.tenantId?.trim() || DEFAULT_TENANT_ID,
+    accountId: expense.accountId?.trim() || null,
     employeeId: expense.employeeId ?? null,
     employeeNameSnapshot: expense.employeeNameSnapshot?.trim() || null,
     project: expense.project?.trim() || null,
@@ -805,6 +957,10 @@ function salaryFromRow(row: DbSalary): SalaryRecord {
   return {
     id: row.id,
     tenantId: String((row as DbSalary & { tenantId?: string }).tenantId ?? DEFAULT_TENANT_ID),
+    accountId:
+      "accountId" in row && typeof (row as { accountId?: unknown }).accountId === "string"
+        ? String((row as { accountId?: string }).accountId ?? "").trim() || undefined
+        : undefined,
     employeeId: row.employeeId,
     employeeNameSnapshot: row.employeeNameSnapshot?.trim() || undefined,
     amount: Math.abs(Number(row.amount ?? 0)),
@@ -826,6 +982,7 @@ function salaryToRow(salary: SalaryRecord) {
   return {
     id: salary.id,
     tenantId: salary.tenantId?.trim() || DEFAULT_TENANT_ID,
+    accountId: salary.accountId?.trim() || null,
     employeeId: salary.employeeId,
     employeeNameSnapshot: salary.employeeNameSnapshot?.trim() || null,
     amount: Math.abs(Number(salary.amount ?? 0)),
@@ -1116,6 +1273,9 @@ function timesheetFromRow(row: DbTimesheet): TimesheetEntry {
     reviewNotes: row.reviewNotes?.trim() || undefined,
     dailyReviewStatus: normalizeDailyReviewStatus(row.dailyReviewStatus),
     dailyReviewNotes: normalizeDailyReviewNotes(row.dailyReviewNotes),
+    dailyReviewHolidays: normalizeDailyReviewDayFlags((row as DbTimesheet & { dailyReviewHolidays?: Partial<Record<DayKey, unknown>> }).dailyReviewHolidays),
+    dailyReviewLocks: normalizeDailyReviewDayFlags((row as DbTimesheet & { dailyReviewLocks?: Partial<Record<DayKey, unknown>> }).dailyReviewLocks),
+    reviewShell: Boolean((row as DbTimesheet & { reviewShell?: unknown }).reviewShell),
     lines: Array.isArray(row.lines) && row.lines.length > 0
       ? row.lines.map((line) => ({
           id: line.id ?? createId("line"),
@@ -1158,6 +1318,9 @@ function timesheetFromNormalizedRow(
     reviewNotes: row.reviewNotes?.trim() || undefined,
     dailyReviewStatus: normalizeDailyReviewStatus(row.dailyReviewStatus),
     dailyReviewNotes: normalizeDailyReviewNotes(row.dailyReviewNotes),
+    dailyReviewHolidays: normalizeDailyReviewDayFlags((row as DbTimesheet & { dailyReviewHolidays?: Partial<Record<DayKey, unknown>> }).dailyReviewHolidays),
+    dailyReviewLocks: normalizeDailyReviewDayFlags((row as DbTimesheet & { dailyReviewLocks?: Partial<Record<DayKey, unknown>> }).dailyReviewLocks),
+    reviewShell: Boolean((row as DbTimesheet & { reviewShell?: unknown }).reviewShell),
     lines: lines
       .filter((line) => line.timesheetId === row.id)
       .sort((left, right) => {
@@ -1242,6 +1405,9 @@ function timesheetToRow(entry: TimesheetEntry) {
     reviewNotes: entry.reviewNotes?.trim() || null,
     dailyReviewStatus: normalizeDailyReviewStatus(entry.dailyReviewStatus) ?? {},
     dailyReviewNotes: normalizeDailyReviewNotes(entry.dailyReviewNotes) ?? {},
+    dailyReviewHolidays: normalizeDailyReviewDayFlags(entry.dailyReviewHolidays) ?? {},
+    dailyReviewLocks: normalizeDailyReviewDayFlags(entry.dailyReviewLocks) ?? {},
+    reviewShell: Boolean(entry.reviewShell),
     lines: (entry.lines ?? []).map((line) => ({
       id: line.id ?? createId("line"),
       project: line.project?.trim() || "",
@@ -1338,7 +1504,8 @@ function timesheetLinesToRows(
 }
 
 async function ensureNormalizedBusinessMigration(store: BusinessStore) {
-  const [fundRows, categoryRows, expenseRows, salaryRows, projectRows, projectTaskRows, timesheetRows, timesheetLineRows, purchaseOrderRows, auditRows] = await Promise.all([
+  const [financialAccountRows, fundRows, categoryRows, expenseRows, salaryRows, projectRows, projectTaskRows, timesheetRows, timesheetLineRows, purchaseOrderRows, auditRows] = await Promise.all([
+    db.select({ id: financialAccountsTable.id }).from(financialAccountsTable).limit(1),
     db.select({ id: fundsTable.id }).from(fundsTable).limit(1),
     db.select({ id: expenseCategoriesTable.id }).from(expenseCategoriesTable).limit(1),
     db.select({ id: expensesTable.id }).from(expensesTable).limit(1),
@@ -1351,6 +1518,7 @@ async function ensureNormalizedBusinessMigration(store: BusinessStore) {
     db.select({ id: auditTrailTable.id }).from(auditTrailTable).limit(1),
   ]);
 
+  const needsFinancialAccounts = financialAccountRows.length === 0 && store.financialAccounts.length > 0;
   const needsFunds = fundRows.length === 0 && store.funds.length > 0;
   const needsCategories = categoryRows.length === 0 && store.categories.length > 0;
   const needsExpenses = expenseRows.length === 0 && store.expenses.length > 0;
@@ -1362,6 +1530,7 @@ async function ensureNormalizedBusinessMigration(store: BusinessStore) {
   const needsPurchaseOrders = purchaseOrderRows.length === 0 && store.purchaseOrders.length > 0;
   const needsAuditTrail = auditRows.length === 0 && store.auditTrail.length > 0;
   if (
+    !needsFinancialAccounts &&
     !needsFunds &&
     !needsCategories &&
     !needsExpenses &&
@@ -1383,6 +1552,10 @@ async function ensureNormalizedBusinessMigration(store: BusinessStore) {
   const timesheetLines = store.timesheets.flatMap((entry) => timesheetLinesToRows(entry, validProjectIds, validTaskIds));
 
   await db.transaction(async (tx) => {
+    if (needsFinancialAccounts) {
+      await tx.insert(financialAccountsTable).values(store.financialAccounts.map(financialAccountToRow));
+    }
+
     if (needsFunds) {
       await tx.insert(fundsTable).values(store.funds.map(fundToRow));
     }
@@ -1425,8 +1598,78 @@ async function ensureNormalizedBusinessMigration(store: BusinessStore) {
   });
 }
 
+function ensureFinancialAccountCoverage(store: BusinessStore): BusinessStore {
+  const tenantIds = new Set<string>();
+  for (const account of store.financialAccounts) tenantIds.add(account.tenantId?.trim() || DEFAULT_TENANT_ID);
+  for (const fund of store.funds) tenantIds.add(fund.tenantId?.trim() || DEFAULT_TENANT_ID);
+  for (const expense of store.expenses) tenantIds.add(expense.tenantId?.trim() || DEFAULT_TENANT_ID);
+  for (const salary of store.salaries) tenantIds.add(salary.tenantId?.trim() || DEFAULT_TENANT_ID);
+
+  const accounts = [...store.financialAccounts];
+  const accountIds = new Set(accounts.map((account) => account.id));
+  const defaultAccountByTenant = new Map<string, string>();
+
+  for (const tenantId of tenantIds) {
+    const existingTenantAccounts = accounts.filter((account) => account.tenantId === tenantId);
+    const operationalAccount = existingTenantAccounts.find((account) => account.accountType === "operational")
+      ?? existingTenantAccounts[0];
+    if (operationalAccount) {
+      defaultAccountByTenant.set(tenantId, operationalAccount.id);
+      continue;
+    }
+
+    const created = createDefaultFinancialAccount(tenantId);
+    accounts.push(created);
+    accountIds.add(created.id);
+    defaultAccountByTenant.set(tenantId, created.id);
+  }
+
+  return {
+    ...store,
+    financialAccounts: accounts,
+    funds: store.funds.map((fund) => {
+      const tenantId = fund.tenantId?.trim() || DEFAULT_TENANT_ID;
+      const fallbackId = defaultAccountByTenant.get(tenantId);
+      const accountId = fund.accountId?.trim();
+      return {
+        ...fund,
+        accountId: accountId && accountIds.has(accountId) ? accountId : fallbackId,
+      };
+    }),
+    expenses: store.expenses.map((expense) => {
+      const tenantId = expense.tenantId?.trim() || DEFAULT_TENANT_ID;
+      const fallbackId = defaultAccountByTenant.get(tenantId);
+      const accountId = expense.accountId?.trim();
+      const shouldBackfill = expense.status === "approved";
+      return {
+        ...expense,
+        accountId: accountId && accountIds.has(accountId)
+          ? accountId
+          : shouldBackfill
+            ? fallbackId
+            : undefined,
+      };
+    }),
+    salaries: store.salaries.map((salary) => {
+      const tenantId = salary.tenantId?.trim() || DEFAULT_TENANT_ID;
+      const fallbackId = defaultAccountByTenant.get(tenantId);
+      const accountId = salary.accountId?.trim();
+      const shouldBackfill = salary.status === "paid";
+      return {
+        ...salary,
+        accountId: accountId && accountIds.has(accountId)
+          ? accountId
+          : shouldBackfill
+            ? fallbackId
+            : undefined,
+      };
+    }),
+  };
+}
+
 export function createDefaultStore(): BusinessStore {
   return {
+    financialAccounts: [],
     funds: [],
     categories: DEFAULT_CATEGORIES.map((category) => ({ ...category })),
     expenses: [],
@@ -1450,13 +1693,27 @@ export function createDefaultStore(): BusinessStore {
 export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessStore {
   const defaults = createDefaultStore();
   if (!input) {
-    return defaults;
+    return ensureFinancialAccountCoverage(defaults);
   }
 
-  return {
+  return ensureFinancialAccountCoverage({
+    financialAccounts: Array.isArray(input.financialAccounts) ? input.financialAccounts.map((account) => ({
+      id: account.id ?? createId("acct"),
+      tenantId: String((account as FinancialAccountRecord).tenantId ?? DEFAULT_TENANT_ID).trim() || DEFAULT_TENANT_ID,
+      name: String(account.name ?? DEFAULT_FINANCIAL_ACCOUNT_NAME).trim() || DEFAULT_FINANCIAL_ACCOUNT_NAME,
+      accountType: normalizeFinancialAccountType(account.accountType),
+      category: normalizeFinancialAccountCategory(account.category),
+      openingBalance: Math.abs(Number(account.openingBalance ?? 0)),
+      description: account.description?.trim() || undefined,
+      includeInOperationalReporting: account.includeInOperationalReporting ?? normalizeFinancialAccountType(account.accountType) === "operational",
+      isActive: account.isActive ?? true,
+      createdAt: normalizeDate(String(account.createdAt ?? nowIso())),
+      updatedAt: normalizeDate(String(account.updatedAt ?? account.createdAt ?? nowIso())),
+    })) : [],
     funds: Array.isArray(input.funds) ? input.funds.map((fund) => ({
       id: fund.id ?? createId("fund"),
       tenantId: String((fund as FundRecord).tenantId ?? DEFAULT_TENANT_ID).trim() || DEFAULT_TENANT_ID,
+      accountId: fund.accountId?.trim() || undefined,
       source: String(fund.source ?? "").trim(),
       amount: Math.abs(Number(fund.amount ?? 0)),
       date: normalizeDate(String(fund.date ?? nowIso())),
@@ -1477,6 +1734,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
     expenses: Array.isArray(input.expenses) ? input.expenses.map((expense) => ({
       id: expense.id ?? createId("exp"),
       tenantId: String((expense as ExpenseRecord).tenantId ?? DEFAULT_TENANT_ID).trim() || DEFAULT_TENANT_ID,
+      accountId: expense.accountId?.trim() || undefined,
       employeeId: expense.employeeId?.trim() || undefined,
       employeeNameSnapshot: expense.employeeNameSnapshot?.trim() || undefined,
       project: expense.project?.trim() || undefined,
@@ -1497,6 +1755,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
     salaries: Array.isArray(input.salaries) ? input.salaries.map((salary) => ({
       id: salary.id ?? createId("sal"),
       tenantId: String((salary as SalaryRecord).tenantId ?? DEFAULT_TENANT_ID).trim() || DEFAULT_TENANT_ID,
+      accountId: salary.accountId?.trim() || undefined,
       employeeId: String(salary.employeeId ?? "").trim(),
       employeeNameSnapshot: salary.employeeNameSnapshot?.trim() || undefined,
       amount: Math.abs(Number(salary.amount ?? 0)),
@@ -1524,6 +1783,9 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
       reviewNotes: entry.reviewNotes?.trim() || undefined,
       dailyReviewStatus: normalizeDailyReviewStatus(entry.dailyReviewStatus),
       dailyReviewNotes: normalizeDailyReviewNotes(entry.dailyReviewNotes),
+      dailyReviewHolidays: normalizeDailyReviewDayFlags(entry.dailyReviewHolidays),
+      dailyReviewLocks: normalizeDailyReviewDayFlags(entry.dailyReviewLocks),
+      reviewShell: Boolean(entry.reviewShell),
       lines: Array.isArray(entry.lines) && entry.lines.length > 0 ? entry.lines.map((line) => ({
         id: line.id ?? createId("line"),
         project: String(line.project ?? "").trim(),
@@ -1657,7 +1919,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
       details: normalizeAuditTrailDetails(entry.details, entry.requestId),
       createdAt: normalizeDate(String(entry.createdAt ?? nowIso())),
     })) : [],
-  };
+  });
 }
 
 export async function ensureSchema() {
@@ -1683,6 +1945,8 @@ export async function ensureSchema() {
           data: stripNormalizedStore(createDefaultStore()) as Record<string, unknown>,
         });
       }
+
+      await db.execute(sql.raw('ALTER TABLE "timesheets" ADD COLUMN IF NOT EXISTS "review_shell" boolean NOT NULL DEFAULT false'));
     })();
   }
 
@@ -1708,6 +1972,7 @@ async function loadStoreFromDatabase(): Promise<BusinessStore> {
   const legacyStore = normalizeStore(stateRows[0]?.data ?? createDefaultStore());
 
   let [
+    financialAccountRows,
     fundRows,
     categoryRows,
     expenseRows,
@@ -1720,6 +1985,7 @@ async function loadStoreFromDatabase(): Promise<BusinessStore> {
     purchaseOrderRows,
     auditRows,
   ] = await Promise.all([
+    db.select().from(financialAccountsTable).orderBy(asc(financialAccountsTable.name), asc(financialAccountsTable.createdAt)),
     db.select().from(fundsTable).orderBy(desc(fundsTable.date), desc(fundsTable.createdAt)),
     db.select().from(expenseCategoriesTable).orderBy(asc(expenseCategoriesTable.group), asc(expenseCategoriesTable.name)),
     db.select().from(expensesTable).orderBy(desc(expensesTable.date), desc(expensesTable.createdAt)),
@@ -1734,6 +2000,8 @@ async function loadStoreFromDatabase(): Promise<BusinessStore> {
   ]);
 
   const effectiveFunds = fundRows.length > 0 ? fundRows.map(fundFromRow) : legacyStore.funds;
+  const effectiveFinancialAccounts =
+    financialAccountRows.length > 0 ? financialAccountRows.map(financialAccountFromRow) : legacyStore.financialAccounts;
   const effectiveCategories = categoryRows.length > 0 ? categoryRows.map(categoryFromRow) : legacyStore.categories;
   const effectiveExpenses = expenseRows.length > 0 ? expenseRows.map(expenseFromRow) : legacyStore.expenses;
   const effectiveSalaries = salaryRows.length > 0 ? salaryRows.map(salaryFromRow) : legacyStore.salaries;
@@ -1743,6 +2011,7 @@ async function loadStoreFromDatabase(): Promise<BusinessStore> {
   const effectivePurchaseOrders = purchaseOrderRows.length > 0 ? purchaseOrderRows.map(purchaseOrderFromRow) : legacyStore.purchaseOrders;
   const effectiveAuditTrail = auditRows.length > 0 ? auditRows.map(auditEntryFromRow) : legacyStore.auditTrail;
 
+  const needsFinancialAccounts = financialAccountRows.length === 0 && effectiveFinancialAccounts.length > 0;
   const needsFunds = fundRows.length === 0 && effectiveFunds.length > 0;
   const needsCategories = categoryRows.length === 0 && effectiveCategories.length > 0;
   const needsExpenses = expenseRows.length === 0 && effectiveExpenses.length > 0;
@@ -1756,6 +2025,7 @@ async function loadStoreFromDatabase(): Promise<BusinessStore> {
 
   if (
     needsFunds ||
+    needsFinancialAccounts ||
     needsCategories ||
     needsExpenses ||
     needsSalaries ||
@@ -1768,6 +2038,7 @@ async function loadStoreFromDatabase(): Promise<BusinessStore> {
   ) {
     await ensureNormalizedBusinessMigration({
       ...legacyStore,
+      financialAccounts: effectiveFinancialAccounts,
       funds: effectiveFunds,
       categories: effectiveCategories,
       expenses: effectiveExpenses,
@@ -1779,6 +2050,7 @@ async function loadStoreFromDatabase(): Promise<BusinessStore> {
     });
 
     [
+      financialAccountRows,
       fundRows,
       categoryRows,
       expenseRows,
@@ -1791,6 +2063,7 @@ async function loadStoreFromDatabase(): Promise<BusinessStore> {
       purchaseOrderRows,
       auditRows,
     ] = await Promise.all([
+      db.select().from(financialAccountsTable).orderBy(asc(financialAccountsTable.name), asc(financialAccountsTable.createdAt)),
       db.select().from(fundsTable).orderBy(desc(fundsTable.date), desc(fundsTable.createdAt)),
       db.select().from(expenseCategoriesTable).orderBy(asc(expenseCategoriesTable.group), asc(expenseCategoriesTable.name)),
       db.select().from(expensesTable).orderBy(desc(expensesTable.date), desc(expensesTable.createdAt)),
@@ -1827,6 +2100,7 @@ async function loadStoreFromDatabase(): Promise<BusinessStore> {
 
   const store = normalizeStore({
     ...legacyStore,
+    financialAccounts: financialAccountRows.map(financialAccountFromRow),
     funds: fundRows.map(fundFromRow),
     categories: categoryRows.map(categoryFromRow),
     expenses: expenseRows.map(expenseFromRow),
@@ -1862,6 +2136,7 @@ export async function readStore(options?: { fresh?: boolean }): Promise<Business
 }
 
 async function persistStoreUnsafe(previousStore: BusinessStore | null, store: BusinessStore): Promise<void> {
+  const financialAccounts = store.financialAccounts.map(financialAccountToRow);
   const funds = store.funds.map(fundToRow);
   const categories = store.categories.map(categoryToRow);
   const expenses = store.expenses.map(expenseToRow);
@@ -1875,6 +2150,7 @@ async function persistStoreUnsafe(previousStore: BusinessStore | null, store: Bu
   const timesheetLines = store.timesheets.flatMap((entry) => timesheetLinesToRows(entry, validProjectIds, validTaskIds));
   const purchaseOrders = store.purchaseOrders.map(purchaseOrderToRow);
   const auditTrail = store.auditTrail.map(auditEntryToRow);
+  const financialAccountsChanged = !previousStore || !sameSlice(previousStore.financialAccounts, store.financialAccounts);
   const fundsChanged = !previousStore || !sameSlice(previousStore.funds, store.funds);
   const categoriesChanged = !previousStore || !sameSlice(previousStore.categories, store.categories);
   const expensesChanged = !previousStore || !sameSlice(previousStore.expenses, store.expenses);
@@ -1886,6 +2162,28 @@ async function persistStoreUnsafe(previousStore: BusinessStore | null, store: Bu
   const businessStateChanged = !previousStore || !sameSlice(stripNormalizedStore(previousStore), stripNormalizedStore(store));
 
   await db.transaction(async (tx) => {
+    if (financialAccountsChanged) {
+      const previousAccounts = new Map(previousStore?.financialAccounts.map((account) => [account.id, account]) ?? []);
+      const nextAccounts = new Map(store.financialAccounts.map((account) => [account.id, account]));
+      const removedIds = [...previousAccounts.keys()].filter((id) => !nextAccounts.has(id));
+      const changedIds = store.financialAccounts
+        .filter((account) => !previousAccounts.has(account.id) || !sameSlice(previousAccounts.get(account.id), account))
+        .map((account) => account.id);
+
+      if (removedIds.length > 0) {
+        await tx.delete(financialAccountsTable).where(inArray(financialAccountsTable.id, removedIds));
+      }
+
+      for (const account of financialAccounts.filter((row) => changedIds.includes(row.id))) {
+        const { id: _accountId, createdAt: _accountCreatedAt, ...updateValues } = account;
+        if (previousAccounts.has(account.id)) {
+          await tx.update(financialAccountsTable).set(updateValues).where(eq(financialAccountsTable.id, account.id));
+        } else {
+          await tx.insert(financialAccountsTable).values(account);
+        }
+      }
+    }
+
     if (auditTrailChanged) {
       const previousIds = new Set(previousStore?.auditTrail.map((entry) => entry.id) ?? []);
       const nextIds = new Set(store.auditTrail.map((entry) => entry.id));
@@ -2397,7 +2695,7 @@ export async function saveTimesheetFast(input: {
     assertTaskHourLimits(normalizedEntry, current.projectBudgets, current.timesheets);
     const existing = current.timesheets.find((timesheet) => timesheet.id === normalizedEntry.id);
 
-    if (normalizedEntry.status === "draft" && !hasPersistedTimesheetContent(normalizedEntry)) {
+    if (normalizedEntry.status === "draft" && !hasPersistedTimesheetContent(normalizedEntry) && !normalizedEntry.reviewShell) {
       if (!existing) {
         return null;
       }
@@ -2473,7 +2771,7 @@ export async function saveTimesheetFast(input: {
 export async function setTimesheetDayReviewStatusFast(input: {
   id: string;
   day: DayKey;
-  reviewed: boolean;
+  action: "reviewed" | "reverted" | "holiday" | "locked" | "clear_review" | "clear_holiday" | "clear_lock";
   note?: string;
   tenantId: string;
   actorName: string;
@@ -2492,20 +2790,51 @@ export async function setTimesheetDayReviewStatusFast(input: {
 
     const nextDailyReviewStatus = { ...(existing.dailyReviewStatus ?? {}) };
     const nextDailyReviewNotes = { ...(existing.dailyReviewNotes ?? {}) };
-    if (input.reviewed) {
-      nextDailyReviewStatus[input.day] = "reviewed";
-      delete nextDailyReviewNotes[input.day];
-    } else {
-      const note = input.note?.trim();
-      if (note) {
-        nextDailyReviewStatus[input.day] = "reverted";
-        nextDailyReviewNotes[input.day] = note;
-      } else {
+    const nextDailyReviewHolidays = { ...(existing.dailyReviewHolidays ?? {}) };
+    const nextDailyReviewLocks = { ...(existing.dailyReviewLocks ?? {}) };
+    const note = input.note?.trim();
+
+    if (input.action === "holiday" && dayHasTimesheetContent(existing.lines, input.day)) {
+      throw new Error(`Cannot mark ${input.day.toUpperCase()} as holiday because the employee already logged hours or work notes for that day.`);
+    }
+
+    switch (input.action) {
+      case "reviewed":
+        nextDailyReviewStatus[input.day] = "reviewed";
+        delete nextDailyReviewNotes[input.day];
+        delete nextDailyReviewHolidays[input.day];
+        break;
+      case "reverted":
+        if (note) {
+          nextDailyReviewStatus[input.day] = "reverted";
+          nextDailyReviewNotes[input.day] = note;
+          delete nextDailyReviewHolidays[input.day];
+        } else {
+          delete nextDailyReviewStatus[input.day];
+          delete nextDailyReviewNotes[input.day];
+        }
+        break;
+      case "holiday":
+        nextDailyReviewHolidays[input.day] = true;
         delete nextDailyReviewStatus[input.day];
         delete nextDailyReviewNotes[input.day];
-      }
+        break;
+      case "locked":
+        nextDailyReviewLocks[input.day] = true;
+        break;
+      case "clear_review":
+        delete nextDailyReviewStatus[input.day];
+        delete nextDailyReviewNotes[input.day];
+        break;
+      case "clear_holiday":
+        delete nextDailyReviewHolidays[input.day];
+        break;
+      case "clear_lock":
+        delete nextDailyReviewLocks[input.day];
+        break;
     }
-    const hasAllDaysReviewed = DAY_KEYS.every((day) => nextDailyReviewStatus[day] === "reviewed");
+
+    const hasAllDaysReviewed = DAY_KEYS.every((day) => nextDailyReviewStatus[day] === "reviewed" || nextDailyReviewHolidays[day] === true);
     const shouldAutoSubmit = hasAllDaysReviewed && (existing.status === "draft" || existing.status === "rejected");
     if (shouldAutoSubmit) {
       assertWorkflowTransition("timesheetSubmission", existing.status, "submitted");
@@ -2522,6 +2851,8 @@ export async function setTimesheetDayReviewStatusFast(input: {
           reviewNotes: shouldAutoSubmit ? undefined : existing.reviewNotes,
           dailyReviewStatus: nextDailyReviewStatus,
           dailyReviewNotes: nextDailyReviewNotes,
+          dailyReviewHolidays: nextDailyReviewHolidays,
+          dailyReviewLocks: nextDailyReviewLocks,
           updatedAt: nowIso(),
         },
       ],
@@ -2535,40 +2866,61 @@ export async function setTimesheetDayReviewStatusFast(input: {
       entityType: "timesheet",
       entityId: existing.id,
       summary:
-        input.reviewed && shouldAutoSubmit
+        input.action === "reviewed" && shouldAutoSubmit
           ? `Marked ${input.day.toUpperCase()} for a timesheet and auto-submitted the week.`
-          : input.reviewed
+          : input.action === "reviewed"
             ? `Marked ${input.day.toUpperCase()} for a timesheet.`
-            : input.note?.trim()
+            : input.action === "reverted"
               ? `Reverted ${input.day.toUpperCase()} for a timesheet.`
-              : `Removed review mark for ${input.day.toUpperCase()} on a timesheet.`,
+              : input.action === "holiday"
+                ? `Marked ${input.day.toUpperCase()} as a holiday on a timesheet.`
+            : input.action === "locked"
+                  ? `Locked ${input.day.toUpperCase()} on a timesheet.`
+                  : input.action === "clear_holiday"
+                    ? `Removed holiday marker for ${input.day.toUpperCase()} on a timesheet.`
+                    : input.action === "clear_lock"
+                      ? `Removed lock for ${input.day.toUpperCase()} on a timesheet.`
+                      : `Removed review mark for ${input.day.toUpperCase()} on a timesheet.`,
       requestId: input.requestId,
       details: {
         entityLabel: existing.employeeNameSnapshot,
         requestId: input.requestId,
         changedFields: shouldAutoSubmit
-          ? ["dailyReviewStatus", "dailyReviewNotes", "status", "submittedAt"]
-          : ["dailyReviewStatus", "dailyReviewNotes"],
+          ? ["dailyReviewStatus", "dailyReviewNotes", "dailyReviewHolidays", "dailyReviewLocks", "status", "submittedAt"]
+          : ["dailyReviewStatus", "dailyReviewNotes", "dailyReviewHolidays", "dailyReviewLocks"],
         before: {
           status: existing.status,
           submittedAt: existing.submittedAt ?? null,
           dailyReviewStatus: existing.dailyReviewStatus ?? {},
           dailyReviewNotes: existing.dailyReviewNotes ?? {},
+          dailyReviewHolidays: existing.dailyReviewHolidays ?? {},
+          dailyReviewLocks: existing.dailyReviewLocks ?? {},
         },
         after: {
           status: updatedEntry.status,
           submittedAt: updatedEntry.submittedAt ?? null,
           dailyReviewStatus: updatedEntry.dailyReviewStatus ?? {},
           dailyReviewNotes: updatedEntry.dailyReviewNotes ?? {},
+          dailyReviewHolidays: updatedEntry.dailyReviewHolidays ?? {},
+          dailyReviewLocks: updatedEntry.dailyReviewLocks ?? {},
         },
           context: {
-            operation: input.reviewed
-              ? shouldAutoSubmit
-                ? "timesheet_day_review_mark_and_auto_submit"
-                : "timesheet_day_review_mark"
-              : input.note?.trim()
-                ? "timesheet_day_review_revert"
-                : "timesheet_day_review_undo",
+            operation:
+              input.action === "reviewed"
+                ? shouldAutoSubmit
+                  ? "timesheet_day_review_mark_and_auto_submit"
+                  : "timesheet_day_review_mark"
+                : input.action === "reverted"
+                  ? "timesheet_day_review_revert"
+                  : input.action === "holiday"
+                    ? "timesheet_day_review_mark_holiday"
+                    : input.action === "locked"
+                      ? "timesheet_day_review_lock"
+                      : input.action === "clear_holiday"
+                        ? "timesheet_day_review_clear_holiday"
+                        : input.action === "clear_lock"
+                          ? "timesheet_day_review_clear_lock"
+                          : "timesheet_day_review_clear_review",
             day: input.day,
             autoSubmitted: shouldAutoSubmit,
           },

@@ -8,7 +8,7 @@
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test:workflow": "node --test ./tests/workflows.test.mjs && node --test ./tests/rbac.test.mjs",
+    "test:workflow": "node --test ./tests/workflows.test.mjs && node --test ./tests/google-sheets.test.mjs && node --test ./tests/rbac.test.mjs",
     "test:security": "node --test ./tests/security.test.mjs"
   },
   "dependencies": {

@@ -66,6 +66,16 @@ async function selectSeededWeek(page: Page) {
   await page.locator('input[type="date"]').first().fill(weekStartDate);
 }
 
+async function selectReviewWeek(page: Page) {
+  const jumpButton = page.getByRole("button", { name: "Jump to Date" });
+  await expect(jumpButton).toBeVisible();
+  await jumpButton.click();
+
+  const dateInput = page.locator('input[type="date"]').first();
+  await expect(dateInput).toBeVisible();
+  await dateInput.fill(weekStartDate);
+}
+
 async function toggleDailyReview(page: Page, trigger: Locator, day: DayKey, note?: string) {
   if (typeof note === "string") {
     await trigger.click();
@@ -401,7 +411,7 @@ test("live daily review persists, resets after employee edits, and supports undo
   await expect(adminPage.getByRole("heading", { name: "Timesheets" })).toBeVisible();
   await adminPage.getByRole("button", { name: "Daily Review", exact: true }).click();
 
-  await adminPage.locator('input[type="date"]').first().fill(weekStartDate);
+  await selectReviewWeek(adminPage);
   const employeeCard = employeeCardFor(adminPage, employeeName);
   await expect(employeeCard).toBeVisible({ timeout: 15000 });
 
@@ -422,7 +432,7 @@ test("live daily review persists, resets after employee edits, and supports undo
   await expect(employeePage.getByRole("heading", { name: "My Timesheet" })).toBeVisible();
   await selectSeededWeek(employeePage);
   const mondayHeader = employeePage.locator("thead th").filter({ hasText: "Mon" }).first();
-  await expect(mondayHeader).toContainText("Verify");
+  await expect(mondayHeader).toContainText("Verified");
 
   const lockedEditButton = employeePage.getByRole("button", { name: "Edit work note for Mon" }).first();
   await expect(lockedEditButton).toBeDisabled();
@@ -430,7 +440,7 @@ test("live daily review persists, resets after employee edits, and supports undo
   await adminPage.reload();
   await expect(adminPage.getByRole("heading", { name: "Timesheets" })).toBeVisible();
   await adminPage.getByRole("button", { name: "Daily Review", exact: true }).click();
-  await adminPage.locator('input[type="date"]').first().fill(weekStartDate);
+  await selectReviewWeek(adminPage);
   const employeeCardAfterReload = employeeCardFor(adminPage, employeeName);
   await expect(employeeCardAfterReload).toBeVisible({ timeout: 15000 });
 
@@ -498,7 +508,7 @@ test("live daily review persists, resets after employee edits, and supports undo
   await adminPage.reload();
   await expect(adminPage.getByRole("heading", { name: "Timesheets" })).toBeVisible();
   await adminPage.getByRole("button", { name: "Daily Review", exact: true }).click();
-  await adminPage.locator('input[type="date"]').first().fill(weekStartDate);
+  await selectReviewWeek(adminPage);
   const employeeCardReviewedAgain = employeeCardFor(adminPage, employeeName);
   await expect(employeeCardReviewedAgain).toBeVisible({ timeout: 15000 });
 
@@ -596,7 +606,7 @@ test("live daily review keeps reviewed days intact when the employee adds a new 
   await adminPage.goto(`${FRONTEND_ORIGIN}/admin/timesheets`);
   await expect(adminPage.getByRole("heading", { name: "Timesheets" })).toBeVisible();
   await adminPage.getByRole("button", { name: "Daily Review", exact: true }).click();
-  await adminPage.locator('input[type="date"]').first().fill(weekStartDate);
+  await selectReviewWeek(adminPage);
 
   const employeeCard = employeeCardFor(adminPage, employeeName);
   await expect(employeeCard).toBeVisible({ timeout: 15000 });
@@ -620,8 +630,8 @@ test("live daily review keeps reviewed days intact when the employee adds a new 
 
   const mondayHeader = employeePage.locator("thead th").filter({ hasText: "Mon" }).first();
   const tuesdayHeader = employeePage.locator("thead th").filter({ hasText: "Tue" }).first();
-  await expect(mondayHeader).toContainText("Verify");
-  await expect(tuesdayHeader).toContainText("Verify");
+  await expect(mondayHeader).toContainText("Verified");
+  await expect(tuesdayHeader).toContainText("Verified");
 
   await employeePage.getByRole("button", { name: "Add Task" }).click();
   const secondRow = employeePage.locator("tbody tr").nth(1);
@@ -649,8 +659,8 @@ test("live daily review keeps reviewed days intact when the employee adds a new 
 
   await employeePage.reload();
   await selectSeededWeek(employeePage);
-  await expect(mondayHeader).toContainText("Verify");
-  await expect(tuesdayHeader).toContainText("Verify");
+  await expect(mondayHeader).toContainText("Verified");
+  await expect(tuesdayHeader).toContainText("Verified");
 
   expect(employeePageErrors).toEqual([]);
   expect(adminPageErrors).toEqual([]);
@@ -762,7 +772,7 @@ test("live daily review keeps employee states isolated, supports multiple review
   await adminBrowserSession.page.goto(`${FRONTEND_ORIGIN}/admin/timesheets`);
   await expect(adminBrowserSession.page.getByRole("heading", { name: "Timesheets" })).toBeVisible();
   await adminBrowserSession.page.getByRole("button", { name: "Daily Review", exact: true }).click();
-  await adminBrowserSession.page.locator('input[type="date"]').first().fill(weekStartDate);
+  await selectReviewWeek(adminBrowserSession.page);
 
   const firstEmployeeCard = employeeCardFor(adminBrowserSession.page, firstEmployee.name);
   const secondEmployeeCard = employeeCardFor(adminBrowserSession.page, secondEmployee.name);
@@ -813,7 +823,7 @@ test("live daily review keeps employee states isolated, supports multiple review
   await adminBrowserSession.page.goto(`${FRONTEND_ORIGIN}/admin/timesheets`);
   await expect(adminBrowserSession.page.getByRole("heading", { name: "Timesheets" })).toBeVisible();
   await adminBrowserSession.page.getByRole("button", { name: "Daily Review", exact: true }).click();
-  await adminBrowserSession.page.locator('input[type="date"]').first().fill(weekStartDate);
+  await selectReviewWeek(adminBrowserSession.page);
 
   const firstEmployeeCardAfterRestart = employeeCardFor(adminBrowserSession.page, firstEmployee.name);
   const secondEmployeeCardAfterRestart = employeeCardFor(adminBrowserSession.page, secondEmployee.name);
@@ -953,11 +963,12 @@ test("live daily review filters by department, employee, and date and preserves 
   await adminBrowserSession.page.goto(`${FRONTEND_ORIGIN}/admin/timesheets`);
   await expect(adminBrowserSession.page.getByRole("heading", { name: "Timesheets" })).toBeVisible();
   await adminBrowserSession.page.getByRole("button", { name: "Daily Review", exact: true }).click();
-  await adminBrowserSession.page.locator('input[type="date"]').first().fill(weekStartDate);
+  await selectReviewWeek(adminBrowserSession.page);
 
   const engineeringACard = employeeCardFor(adminBrowserSession.page, employees[0].name);
   const engineeringBCard = employeeCardFor(adminBrowserSession.page, employees[1].name);
   const operationsCard = employeeCardFor(adminBrowserSession.page, employees[2].name);
+  await adminBrowserSession.page.getByRole("button", { name: "Filter Options" }).click();
   const departmentSelect = adminBrowserSession.page.getByRole("combobox").first();
   const employeeSelect = adminBrowserSession.page.getByRole("combobox").nth(1);
   await expect(engineeringACard).toBeVisible({ timeout: 15000 });
@@ -979,10 +990,11 @@ test("live daily review filters by department, employee, and date and preserves 
   await expect(engineeringACard).toHaveCount(0);
   await expect(operationsCard).toHaveCount(0);
 
+  await selectReviewWeek(adminBrowserSession.page);
   await adminBrowserSession.page.locator('input[type="date"]').first().fill("2026-05-15");
   await expect(adminBrowserSession.page.getByText("No saved employee timesheets match the selected date and filters yet.")).toBeVisible();
 
-  await adminBrowserSession.page.locator('input[type="date"]').first().fill(weekStartDate);
+  await selectReviewWeek(adminBrowserSession.page);
   await expect(engineeringBCard).toBeVisible({ timeout: 15000 });
 
   await chooseSelectOption(adminBrowserSession.page, employeeSelect, "All employees");
@@ -1027,7 +1039,8 @@ test("live daily review scales to many employee cards and keeps department filte
   await adminBrowserSession.page.goto(`${FRONTEND_ORIGIN}/admin/timesheets`);
   await expect(adminBrowserSession.page.getByRole("heading", { name: "Timesheets" })).toBeVisible();
   await adminBrowserSession.page.getByRole("button", { name: "Daily Review", exact: true }).click();
-  await adminBrowserSession.page.locator('input[type="date"]').first().fill(weekStartDate);
+  await selectReviewWeek(adminBrowserSession.page);
+  await adminBrowserSession.page.getByRole("button", { name: "Filter Options" }).click();
 
   const visibleCards = seededEmployees.map((employee) => employeeCardFor(adminBrowserSession.page, employee.name));
   for (const card of visibleCards) {
@@ -1110,7 +1123,7 @@ test("live admin visibility rules distinguish submitted weekly sheets from draft
   await expect(adminBrowserSession.page.getByRole("button", { name: draftEmployee.name })).toHaveCount(0);
 
   await adminBrowserSession.page.getByRole("button", { name: "Daily Review", exact: true }).click();
-  await adminBrowserSession.page.locator('input[type="date"]').first().fill(weekStartDate);
+  await selectReviewWeek(adminBrowserSession.page);
 
   const draftCard = employeeCardFor(adminBrowserSession.page, draftEmployee.name);
   const submittedCard = employeeCardFor(adminBrowserSession.page, submittedEmployee.name);

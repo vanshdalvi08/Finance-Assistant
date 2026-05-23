@@ -1,6 +1,6 @@
-import { useState, type ChangeEvent } from "react";
+import { useEffect, useState, type ChangeEvent } from "react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
-import { api, type AdminOverview, type ChartPoint, Expense, ExpenseCategory, type Transaction } from "@/lib/api";
+import { api, Expense, ExpenseCategory, type FinancialAccount } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { DashboardCard } from "@/components/dashboard-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -40,6 +40,21 @@ const expenseSchema = z.object({
 
 type ExpenseForm = z.infer<typeof expenseSchema>;
 
+function accountDisplayName(account: FinancialAccount) {
+  const typeLabel =
+    account.accountType === "mixed_use"
+      ? "Mixed Use"
+      : account.accountType === "operational"
+        ? "Operational"
+        : account.accountType === "reserve"
+          ? "Reserve"
+          : account.accountType === "cash"
+            ? "Cash"
+            : "Personal";
+
+  return `${account.name} • ${typeLabel}`;
+}
+
 function isPendingExpense(status: Expense["status"]) {
   return status === "submitted" || status === "draft";
 }
@@ -57,76 +72,23 @@ function patchExpenseList(current: Expense[] | undefined, nextExpense: Expense) 
   return current.map((expense) => (expense.id === nextExpense.id ? nextExpense : expense));
 }
 
-function patchChartData(current: ChartPoint[] | undefined, expense: Expense) {
-  if (!current) {
-    return current;
-  }
-
-  const monthKey = expense.date.slice(0, 7);
-  const next = current.map((point) =>
-    point.month === monthKey ? { ...point, expenses: point.expenses + expense.amount } : point,
-  );
-
-  if (next.some((point) => point.month === monthKey)) {
-    return next;
-  }
-
-  return [...current, { month: monthKey, funds: 0, expenses: expense.amount, salary: 0 }].sort((left, right) =>
-    left.month.localeCompare(right.month),
-  );
-}
-
-function patchOverviewForExpense(current: AdminOverview | undefined, previous: Expense | undefined, nextExpense: Expense) {
-  if (!current) {
-    return current;
-  }
-
-  const expenseMonth = nextExpense.date.slice(0, 7);
-  const currentMonth = new Date().toISOString().slice(0, 7);
-  const currentYear = new Date().getFullYear();
-  const nextPending = isPendingExpense(nextExpense.status) ? 1 : 0;
-  const previousPending = previous && isPendingExpense(previous.status) ? 1 : 0;
-  const amountDelta = previous ? 0 : nextExpense.amount;
-
-  return {
-    ...current,
-    totalExpenses: current.totalExpenses + amountDelta,
-    currentBalance: current.currentBalance - amountDelta,
-    monthToDateExpenses: current.monthToDateExpenses + (previous ? 0 : expenseMonth === currentMonth ? nextExpense.amount : 0),
-    yearToDateExpenses: current.yearToDateExpenses + (previous ? 0 : new Date(nextExpense.date).getFullYear() === currentYear ? nextExpense.amount : 0),
-    pendingExpenses: current.pendingExpenses + nextPending - previousPending,
-  };
-}
-
-function patchTransactions(current: Transaction[] | undefined, expense: Expense) {
-  if (!current) {
-    return current;
-  }
-
-  const nextTransaction: Transaction = {
-    id: `txn_${expense.id}`,
-    type: "expense",
-    amount: -expense.amount,
-    date: expense.date,
-    description: expense.description,
-    category: expense.category,
-    project: expense.project,
-  };
-
-  return [nextTransaction, ...current.filter((transaction) => transaction.id !== nextTransaction.id)];
-}
-
 function ExpenseTable({
   expenses,
   categories,
   group,
+  accounts = [],
   onReview,
+  onReviewAccountChange,
+  reviewAccountIds = {},
   isReviewing = false,
 }: {
   expenses: Expense[];
   categories: ExpenseCategory[];
   group: "personal" | "office";
-  onReview?: (id: string, status: "approved" | "rejected") => void;
+  accounts?: FinancialAccount[];
+  onReview?: (id: string, status: "approved" | "rejected", accountId?: string) => void;
+  onReviewAccountChange?: (id: string, accountId: string) => void;
+  reviewAccountIds?: Record<string, string>;
   isReviewing?: boolean;
 }) {
   const [filterCategory, setFilterCategory] = useState("all");
@@ -359,14 +321,29 @@ function ExpenseTable({
                       </TableCell>
                       <TableCell className="text-right">
                         {e.status === "submitted" && onReview ? (
-                          <div className="flex justify-end gap-1">
+                          <div className="flex justify-end gap-2">
+                            <Select
+                              value={reviewAccountIds[e.id] ?? e.accountId ?? ""}
+                              onValueChange={(value) => onReviewAccountChange?.(e.id, value)}
+                            >
+                              <SelectTrigger className="h-8 w-[190px] rounded-full border-border/60 bg-background/70 text-xs">
+                                <SelectValue placeholder="Paid Through" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {accounts.filter((account) => account.isActive).map((account) => (
+                                  <SelectItem key={account.id} value={account.id}>
+                                    {accountDisplayName(account)}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
                             <Button
                               type="button"
                               variant="ghost"
                               size="icon"
                               className="h-8 w-8 text-emerald-400 hover:text-emerald-300"
-                              disabled={isReviewing}
-                              onClick={() => onReview(e.id, "approved")}
+                              disabled={isReviewing || !(reviewAccountIds[e.id] ?? e.accountId)}
+                              onClick={() => onReview(e.id, "approved", reviewAccountIds[e.id] ?? e.accountId)}
                             >
                               <Check className="w-4 h-4" />
                             </Button>
@@ -376,7 +353,7 @@ function ExpenseTable({
                               size="icon"
                               className="h-8 w-8 text-rose-400 hover:text-rose-300"
                               disabled={isReviewing}
-                              onClick={() => onReview(e.id, "rejected")}
+                              onClick={() => onReview(e.id, "rejected", reviewAccountIds[e.id] ?? e.accountId)}
                             >
                               <Ban className="w-4 h-4" />
                             </Button>
@@ -479,6 +456,8 @@ export default function Expenses() {
   const [fileSelected, setFileSelected] = useState<string>("");
   const [attachmentPath, setAttachmentPath] = useState<string>("");
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
+  const [selectedAccountId, setSelectedAccountId] = useState("");
+  const [reviewAccountIds, setReviewAccountIds] = useState<Record<string, string>>({});
 
   const { data: expenses = [] } = useQuery({
     queryKey: ["expenses"],
@@ -488,6 +467,23 @@ export default function Expenses() {
     queryKey: ["categories"],
     queryFn: api.getCategories,
   });
+  const { data: financialAccounts = [] } = useQuery({
+    queryKey: ["financialAccounts"],
+    queryFn: api.getFinancialAccounts,
+  });
+
+  useEffect(() => {
+    if (selectedAccountId || financialAccounts.length === 0) {
+      return;
+    }
+
+    const preferred = financialAccounts.find((account) => account.accountType === "operational" && account.isActive)
+      ?? financialAccounts.find((account) => account.isActive)
+      ?? financialAccounts[0];
+    if (preferred) {
+      setSelectedAccountId(preferred.id);
+    }
+  }, [financialAccounts, selectedAccountId]);
 
   const form = useForm<ExpenseForm>({
     resolver: zodResolver(expenseSchema),
@@ -508,14 +504,17 @@ export default function Expenses() {
   const addMutation = useMutation({
     mutationFn: async ({ note: _note, ...data }: ExpenseForm) =>
       api.addExpense({
+        accountId: selectedAccountId || undefined,
         ...data,
         attachmentPath: attachmentPath.trim() || undefined,
       }),
     onSuccess: (createdExpense) => {
       queryClient.setQueryData<Expense[]>(["expenses"], (current) => patchExpenseList(current, createdExpense));
-      queryClient.setQueryData<ChartPoint[]>(["chartData"], (current) => patchChartData(current, createdExpense));
-      queryClient.setQueryData<AdminOverview>(["adminOverview"], (current) => patchOverviewForExpense(current, undefined, createdExpense));
-      queryClient.setQueryData<Transaction[]>(["transactions"], (current) => patchTransactions(current, createdExpense));
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["adminOverview"] }),
+        queryClient.invalidateQueries({ queryKey: ["chartData"] }),
+        queryClient.invalidateQueries({ queryKey: ["transactions"] }),
+      ]);
       toast({ title: "Expense logged", description: "Expense recorded successfully." });
       setIsDialogOpen(false);
       setFileSelected("");
@@ -555,8 +554,8 @@ export default function Expenses() {
     }
   }
   const reviewMutation = useMutation({
-    mutationFn: ({ id, status }: { id: string; status: "approved" | "rejected" }) =>
-      api.updateExpenseStatus(id, status),
+    mutationFn: ({ id, status, accountId }: { id: string; status: "approved" | "rejected"; accountId?: string }) =>
+      api.updateExpenseStatus(id, status, undefined, accountId),
     onSuccess: async (updatedExpense, variables) => {
       queryClient.setQueryData<Expense[]>(["expenses"], (current) => patchExpenseList(current, updatedExpense));
       await Promise.all([
@@ -653,6 +652,24 @@ export default function Expenses() {
                       </FormItem>
                     )}
                   />
+
+                  <div className="space-y-2">
+                    <Label>Paid Through</Label>
+                    <Select value={selectedAccountId} onValueChange={setSelectedAccountId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select financial account" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {financialAccounts
+                          .filter((account) => account.isActive)
+                          .map((account) => (
+                            <SelectItem key={account.id} value={account.id}>
+                              {accountDisplayName(account)}
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
 
                   <div className="grid grid-cols-2 gap-3">
                     <FormField
@@ -793,7 +810,7 @@ export default function Expenses() {
                   <Button
                     type="submit"
                     className="w-full"
-                    disabled={addMutation.isPending || isUploadingAttachment}
+                    disabled={addMutation.isPending || isUploadingAttachment || !selectedAccountId}
                   >
                     Save Expense
                   </Button>
@@ -850,7 +867,12 @@ export default function Expenses() {
             expenses={expenses}
             categories={categories}
             group="office"
-            onReview={(id, status) => reviewMutation.mutate({ id, status })}
+            accounts={financialAccounts}
+            reviewAccountIds={reviewAccountIds}
+            onReviewAccountChange={(id, accountId) =>
+              setReviewAccountIds((current) => ({ ...current, [id]: accountId }))
+            }
+            onReview={(id, status, accountId) => reviewMutation.mutate({ id, status, accountId })}
             isReviewing={reviewMutation.isPending}
           />
         </TabsContent>
@@ -859,7 +881,12 @@ export default function Expenses() {
             expenses={expenses}
             categories={categories}
             group="personal"
-            onReview={(id, status) => reviewMutation.mutate({ id, status })}
+            accounts={financialAccounts}
+            reviewAccountIds={reviewAccountIds}
+            onReviewAccountChange={(id, accountId) =>
+              setReviewAccountIds((current) => ({ ...current, [id]: accountId }))
+            }
+            onReview={(id, status, accountId) => reviewMutation.mutate({ id, status, accountId })}
             isReviewing={reviewMutation.isPending}
           />
         </TabsContent>
