@@ -267,6 +267,13 @@
       "when": 1779494400000,
       "tag": "0037_timesheet_review_shell",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1779796800000,
+      "tag": "0036_salary_snapshot_entries",
+      "breakpoints": true
     }
   ]
 }

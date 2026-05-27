@@ -32,7 +32,8 @@ const dateSchema = z.string().min(1);
 
 const salarySchema = z.object({
   id: businessIdSchema.optional(),
-  employeeId: z.string().uuid(),
+  accountId: businessIdSchema.optional(),
+  employeeId: z.string().uuid().optional(),
   employeeNameSnapshot: z.string().trim().optional(),
   amount: z.coerce.number().min(1),
   date: dateSchema.optional(),
@@ -46,7 +47,29 @@ const salarySchema = z.object({
   timesheetId: businessIdSchema.optional(),
 });
 
-type SalaryCrudIdempotencyScope = "salary_create" | "salary_update" | "salary_delete";
+const historicalSalarySchema = salarySchema.omit({
+  id: true,
+  status: true,
+  source: true,
+  paidAt: true,
+  weekStart: true,
+  hours: true,
+  rate: true,
+  timesheetId: true,
+}).extend({
+  accountId: businessIdSchema,
+  date: dateSchema,
+}).superRefine((input, ctx) => {
+  if (!input.employeeId && !input.employeeNameSnapshot?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["employeeNameSnapshot"],
+      message: "Provide either an employee or a former employee name.",
+    });
+  }
+});
+
+type SalaryCrudIdempotencyScope = "salary_create" | "salary_historical_create" | "salary_update" | "salary_delete";
 
 class SalaryCrudIdempotencyError extends Error {
   code: "conflict";
@@ -74,7 +97,8 @@ function requestHashForSalaryMutation(input: z.infer<typeof salarySchema> & { id
   return hashSha256(
     JSON.stringify({
       id: input.id?.trim() ?? "",
-      employeeId: input.employeeId.trim(),
+      accountId: input.accountId?.trim() ?? "",
+      employeeId: input.employeeId?.trim() ?? "",
       employeeNameSnapshot: input.employeeNameSnapshot?.trim() ?? "",
       amount: Number(input.amount),
       date: input.date?.trim() ?? "",
@@ -86,6 +110,19 @@ function requestHashForSalaryMutation(input: z.infer<typeof salarySchema> & { id
       hours: Number(input.hours ?? 0),
       rate: Number(input.rate ?? 0),
       timesheetId: input.timesheetId?.trim() ?? "",
+    }),
+  );
+}
+
+function requestHashForSalaryHistoricalMutation(input: z.infer<typeof historicalSalarySchema>) {
+  return hashSha256(
+    JSON.stringify({
+      accountId: input.accountId.trim(),
+      employeeId: input.employeeId?.trim() ?? "",
+      employeeNameSnapshot: input.employeeNameSnapshot?.trim() ?? "",
+      amount: Number(input.amount),
+      date: input.date.trim(),
+      note: input.note?.trim() ?? "",
     }),
   );
 }
@@ -312,6 +349,92 @@ router.post("/salaries", requireTenantRole("admin"), async (request, response) =
   response.status(created ? 201 : 200).json({ salary, duplicate: false });
 });
 
+router.post("/salaries/historical", requireTenantRole("admin"), async (request, response) => {
+  const parsed = historicalSalarySchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid historical salary payload" });
+    return;
+  }
+
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForSalaryHistoricalMutation(parsed.data) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimSalaryCrudIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimSalaryCrudIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "salary_historical_create",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleSalaryCrudIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed" && idempotencyClaim.row.responseEntityId) {
+      const replayed = await getSalaryForActor(
+        idempotencyClaim.row.responseEntityId,
+        tenantId,
+        request.auth?.user.role,
+        request.auth?.user.id,
+      );
+      response.json({ salary: replayed, duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This historical salary request is already being processed. Please retry shortly." });
+    return;
+  }
+
+  let salary: SalaryRecord;
+  let created = false;
+  try {
+    const result = await saveSalary(
+      {
+        ...parsed.data,
+        accountId: parsed.data.accountId.trim(),
+        employeeId: parsed.data.employeeId?.trim() || undefined,
+        employeeNameSnapshot: parsed.data.employeeNameSnapshot?.trim() || undefined,
+        status: "paid",
+        source: "manual",
+        paidAt: parsed.data.date,
+      },
+      recordActor(request),
+    );
+    salary = result.salary;
+    created = result.created;
+  } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    if (handleServiceError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim?.created) {
+    await db
+      .update(idempotencyKeysTable)
+      .set({
+        status: "completed",
+        responseEntityId: salary.id,
+        updatedAt: new Date(),
+      })
+      .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+  }
+
+  response.status(created ? 201 : 200).json({ salary, duplicate: false });
+});
+
 router.route("/salaries/:id").get(requireTenantRole("admin", "employee"), async (request, response) => {
   try {
     const salary = await getSalaryForActor(
@@ -494,7 +617,10 @@ router.route("/salaries/:id").get(requireTenantRole("admin", "employee"), async 
 });
 
 router.post("/salaries/:id/pay", requireTenantRole("admin"), salaryPaymentLimiter, async (request, response) => {
-  const parsed = z.object({ note: z.string().trim().optional() }).safeParse(request.body);
+  const parsed = z.object({
+    note: z.string().trim().optional(),
+    accountId: businessIdSchema.optional(),
+  }).safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid salary payment payload" });
     return;
@@ -504,6 +630,7 @@ router.post("/salaries/:id/pay", requireTenantRole("admin"), salaryPaymentLimite
   let wasAlreadyPaid = false;
   try {
     const result = await paySalary(routeParam(request.params.id), parsed.data.note, recordActor(request), {
+      accountId: parsed.data.accountId,
       idempotencyKey: idempotencyKeyFrom(request),
     });
     salary = result.salary;

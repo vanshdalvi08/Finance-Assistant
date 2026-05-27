@@ -24,20 +24,16 @@ import { cn } from "@/lib/utils";
 
 const TYPE_CONFIG = {
   fund: {
-    label: "Fund Inflow",
+    label: "Fund",
     badge: "border-primary/20 bg-primary/10 text-primary",
   },
   salary: {
-    label: "Salary",
+    label: "Payroll",
     badge: "border-orange-500/20 bg-orange-500/10 text-orange-300",
   },
   expense: {
     label: "Expense",
     badge: "border-rose-500/20 bg-rose-500/10 text-rose-300",
-  },
-  "purchase-order": {
-    label: "Budget Sheet",
-    badge: "border-primary/20 bg-primary/10 text-primary",
   },
 } as const;
 
@@ -54,6 +50,7 @@ export default function Transactions() {
   const [filterType, setFilterType] = useState<string>(
     initialType && ["fund", "expense", "salary"].includes(initialType) ? initialType : "all",
   );
+  const [filterAccountId, setFilterAccountId] = useState("all");
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
   const [filterAmountMin, setFilterAmountMin] = useState("");
@@ -71,6 +68,8 @@ export default function Transactions() {
     queryFn: api.getAdminOverview,
   });
 
+  const accountOptions = useMemo(() => overview?.financialAccounts ?? [], [overview?.financialAccounts]);
+
   const sorted = useMemo(
     () => [...transactions].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()),
     [transactions],
@@ -79,6 +78,7 @@ export default function Transactions() {
   const filtered = useMemo(() => {
     return sorted.filter((transaction) => {
       if (filterType !== "all" && transaction.type !== filterType) return false;
+      if (filterAccountId !== "all" && transaction.accountId !== filterAccountId) return false;
       if (filterDateFrom && transaction.date < filterDateFrom) return false;
       if (filterDateTo && transaction.date > `${filterDateTo}T23:59:59Z`) return false;
 
@@ -97,7 +97,7 @@ export default function Transactions() {
 
       return true;
     });
-  }, [sorted, filterType, filterDateFrom, filterDateTo, filterAmountMin, filterAmountMax, search]);
+  }, [sorted, filterType, filterAccountId, filterDateFrom, filterDateTo, filterAmountMin, filterAmountMax, search]);
 
   const monthGroups = useMemo(() => {
     const groups = new Map<
@@ -108,8 +108,7 @@ export default function Transactions() {
     for (const transaction of filtered) {
       const key = format(new Date(transaction.date), "yyyy-MM");
       const existing =
-        groups.get(key) ??
-        {
+        groups.get(key) ?? {
           key,
           label: format(new Date(transaction.date), "MMMM yyyy"),
           transactions: [],
@@ -134,8 +133,15 @@ export default function Transactions() {
       ? openMonthKey
       : monthGroups[0]?.key ?? null;
 
-  const hasFilter =
-    filterType !== "all" || filterDateFrom || filterDateTo || filterAmountMin || filterAmountMax || search;
+  const hasFilter = Boolean(
+    filterType !== "all" ||
+      filterAccountId !== "all" ||
+      filterDateFrom ||
+      filterDateTo ||
+      filterAmountMin ||
+      filterAmountMax ||
+      search,
+  );
 
   const totalInflow = filtered
     .filter((transaction) => transaction.type === "fund")
@@ -146,9 +152,16 @@ export default function Transactions() {
     .reduce((sum, transaction) => sum + Math.abs(transaction.amount), 0);
 
   const availableFunds = overview?.currentBalance ?? totalInflow - totalOutflow;
+  const netMovement = totalInflow - totalOutflow;
+  const recordsInView = filtered.length;
+  const accountsInView = useMemo(
+    () => new Set(filtered.map((transaction) => transaction.accountId).filter((value): value is string => Boolean(value))).size,
+    [filtered],
+  );
 
   function clearFilters() {
     setFilterType("all");
+    setFilterAccountId("all");
     setFilterDateFrom("");
     setFilterDateTo("");
     setFilterAmountMin("");
@@ -161,9 +174,10 @@ export default function Transactions() {
       <div className="space-y-6">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Transactions</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              A clean ledger of inflows, payouts, and approved operating movement.
+            <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Operations ledger</p>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight">Transactions</h1>
+            <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+              A single admin ledger for every fund inflow, expense outflow, and salary payment recorded across the company.
             </p>
           </div>
           <div className="relative w-full max-w-sm">
@@ -177,50 +191,75 @@ export default function Transactions() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-          <Card className="border-emerald-500/10 bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.08),transparent_36%),hsl(var(--card))] shadow-[0_0_0_1px_rgba(16,185,129,0.04),0_4px_12px_rgba(0,0,0,0.04)]">
-            <CardContent className="px-5 py-5">
-              <div className="mb-3 flex items-center justify-between">
-                <p className="text-xs uppercase tracking-[0.14em] text-muted-foreground">Available Funds</p>
-                <div className="rounded-lg bg-emerald-500/10 p-2 text-emerald-300">
-                  <Wallet className="h-4 w-4" />
+        <Card className="border-border/50 bg-card/70 shadow-sm">
+          <CardContent className="p-0">
+            <div className="grid gap-px md:grid-cols-4">
+              <div className="flex min-h-[126px] flex-col justify-between gap-3 bg-card/80 px-5 py-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Ledger balance</p>
+                    <p className="mt-2 text-3xl font-semibold tracking-tight">{formatCurrency(availableFunds)}</p>
+                  </div>
+                  <div className="rounded-xl bg-emerald-500/10 p-2 text-emerald-300">
+                    <Wallet className="h-4 w-4" />
+                  </div>
                 </div>
+                <p className="text-xs text-muted-foreground">Current balance across all active financial accounts.</p>
               </div>
-              <p className="text-3xl font-bold tracking-tight">{formatCurrency(availableFunds)}</p>
-              <p className="mt-2 text-xs text-muted-foreground">Live balance after approved expenses and paid salary.</p>
-            </CardContent>
-          </Card>
 
-          <Card className="border-border/50 bg-card/60">
-            <CardContent className="px-5 py-5">
-              <div className="mb-3 flex items-center justify-between">
-                <p className="text-xs uppercase tracking-[0.14em] text-muted-foreground">Inflow</p>
-                <div className="rounded-lg bg-primary/10 p-2 text-primary">
-                  <BanknoteArrowUp className="h-4 w-4" />
+              <div className="flex min-h-[126px] flex-col justify-between gap-3 bg-card/80 px-5 py-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Inflow</p>
+                    <p className="mt-2 text-3xl font-semibold tracking-tight text-emerald-300">+{formatCurrency(totalInflow)}</p>
+                  </div>
+                  <div className="rounded-xl bg-primary/10 p-2 text-primary">
+                    <BanknoteArrowUp className="h-4 w-4" />
+                  </div>
                 </div>
+                <p className="text-xs text-muted-foreground">Funds added to the ledger in the current view.</p>
               </div>
-              <p className="text-3xl font-bold tracking-tight text-primary">+{formatCurrency(totalInflow)}</p>
-              <p className="mt-2 text-xs text-muted-foreground">{filtered.length} records in the current view.</p>
-            </CardContent>
-          </Card>
 
-          <Card className="border-border/50 bg-card/60">
-            <CardContent className="px-5 py-5">
-              <div className="mb-3 flex items-center justify-between">
-                <p className="text-xs uppercase tracking-[0.14em] text-muted-foreground">Outflow</p>
-                <div className="rounded-lg bg-rose-500/10 p-2 text-rose-300">
-                  <BanknoteArrowDown className="h-4 w-4" />
+              <div className="flex min-h-[126px] flex-col justify-between gap-3 bg-card/80 px-5 py-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Outflow</p>
+                    <p className="mt-2 text-3xl font-semibold tracking-tight text-rose-300">-{formatCurrency(totalOutflow)}</p>
+                  </div>
+                  <div className="rounded-xl bg-rose-500/10 p-2 text-rose-300">
+                    <BanknoteArrowDown className="h-4 w-4" />
+                  </div>
                 </div>
+                <p className="text-xs text-muted-foreground">Expenses and payroll entries in the current view.</p>
               </div>
-              <p className="text-3xl font-bold tracking-tight text-rose-300">-{formatCurrency(totalOutflow)}</p>
-              <p className="mt-2 text-xs text-muted-foreground">Expenses, payroll, and approved operational deductions.</p>
-            </CardContent>
-          </Card>
-        </div>
+
+              <div className="flex min-h-[126px] flex-col justify-between gap-3 bg-card/80 px-5 py-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Net movement</p>
+                    <p className={cn("mt-2 text-3xl font-semibold tracking-tight", netMovement >= 0 ? "text-primary" : "text-rose-300")}>
+                      {netMovement >= 0 ? "+" : "-"}
+                      {formatCurrency(Math.abs(netMovement))}
+                    </p>
+                  </div>
+                  <div className="rounded-xl bg-secondary/70 p-2 text-muted-foreground">
+                    <Wallet className="h-4 w-4" />
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {recordsInView} record{recordsInView === 1 ? "" : "s"} across {accountsInView} account{accountsInView === 1 ? "" : "s"}.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
 
         <Card className="border-border/50">
-          <CardHeader className="flex flex-row items-center justify-between pb-3">
-            <CardTitle className="text-base">Ledger Filters</CardTitle>
+          <CardHeader className="flex flex-row items-center justify-between gap-4 pb-3">
+            <div>
+              <CardTitle className="text-base">Ledger filters</CardTitle>
+              <p className="mt-1 text-sm text-muted-foreground">Narrow the ledger by type, account, date, or amount.</p>
+            </div>
             <div className="flex items-center gap-2">
               {hasFilter ? (
                 <Button variant="ghost" size="sm" onClick={clearFilters} className="h-8 gap-1 text-xs">
@@ -240,7 +279,7 @@ export default function Transactions() {
           </CardHeader>
           {showFilters ? (
             <CardContent className="space-y-4 px-5 pb-5 pt-0">
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
                 <div className="space-y-1">
                   <Label className="text-xs text-muted-foreground">Type</Label>
                   <Select value={filterType} onValueChange={setFilterType}>
@@ -249,10 +288,26 @@ export default function Transactions() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All Types</SelectItem>
-                      <SelectItem value="fund">Fund Inflow</SelectItem>
+                      <SelectItem value="fund">Fund</SelectItem>
                       <SelectItem value="expense">Expenses</SelectItem>
-                      <SelectItem value="salary">Salary</SelectItem>
-                      <SelectItem value="purchase-order">Budget Sheets</SelectItem>
+                      <SelectItem value="salary">Payroll</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Account</Label>
+                  <Select value={filterAccountId} onValueChange={setFilterAccountId}>
+                    <SelectTrigger className="h-10 rounded-xl border-border/60 bg-card/70 text-xs">
+                      <SelectValue placeholder="All Accounts" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Accounts</SelectItem>
+                      {accountOptions.map((account) => (
+                        <SelectItem key={account.id} value={account.id}>
+                          {account.name}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -311,12 +366,16 @@ export default function Transactions() {
           <div className="space-y-4">
             {monthGroups.map((group) => {
               const isOpen = group.key === activeMonthKey;
+              const groupAccounts = new Set(
+                group.transactions.map((transaction) => transaction.accountId).filter((value): value is string => Boolean(value)),
+              ).size;
+              const groupNet = group.inflow - group.outflow;
 
               return (
-                <Card key={group.key} className="border-border/50">
+                <Card key={group.key} className="overflow-hidden border-border/50 bg-card/70 shadow-sm">
                   <button
                     type="button"
-                    className="flex w-full items-center justify-between gap-4 px-5 py-4 text-left"
+                    className="flex w-full items-center justify-between gap-4 border-b border-border/50 px-5 py-4 text-left transition-colors hover:bg-card/70"
                     onClick={() => setOpenMonthKey((current) => (current === group.key ? null : group.key))}
                   >
                     <div className="space-y-1">
@@ -327,34 +386,43 @@ export default function Transactions() {
                           <ChevronRight className="h-4 w-4 text-muted-foreground" />
                         )}
                         <p className="font-medium text-foreground">{group.label}</p>
+                        <Badge variant="outline" className="border-border/60 bg-secondary/40 text-xs text-muted-foreground">
+                          {group.transactions.length} record{group.transactions.length === 1 ? "" : "s"}
+                        </Badge>
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        {group.transactions.length} transaction{group.transactions.length !== 1 ? "s" : ""}
+                        {groupAccounts} account{groupAccounts === 1 ? "" : "s"} in this month · {formatCurrency(groupNet)} net movement
                       </p>
                     </div>
                     <div className="flex flex-wrap items-center gap-5 text-sm">
                       <div className="text-right">
                         <p className="text-xs text-muted-foreground">Inflow</p>
-                        <p className="mt-1 font-medium text-primary">{formatCurrency(group.inflow)}</p>
+                        <p className="mt-1 font-medium text-emerald-300">{formatCurrency(group.inflow)}</p>
                       </div>
                       <div className="text-right">
                         <p className="text-xs text-muted-foreground">Outflow</p>
                         <p className="mt-1 font-medium text-rose-300">{formatCurrency(group.outflow)}</p>
                       </div>
+                      <div className="text-right">
+                        <p className="text-xs text-muted-foreground">Net</p>
+                        <p className={cn("mt-1 font-medium", groupNet >= 0 ? "text-primary" : "text-rose-300")}>
+                          {groupNet >= 0 ? "+" : "-"}
+                          {formatCurrency(Math.abs(groupNet))}
+                        </p>
+                      </div>
                     </div>
                   </button>
 
                   {isOpen ? (
-                    <CardContent className="px-5 pb-5 pt-0">
+                    <CardContent className="px-0 pb-0 pt-0">
                       <Table>
                         <TableHeader>
-                          <TableRow className="border-border/50 hover:bg-transparent">
-                            <TableHead className="pl-0">Description</TableHead>
-                            <TableHead>Type</TableHead>
+                          <TableRow className="border-border/50 bg-muted/20 hover:bg-transparent">
+                            <TableHead className="pl-5">Entry</TableHead>
+                            <TableHead>Account</TableHead>
                             <TableHead>Category</TableHead>
-                            <TableHead>Project</TableHead>
                             <TableHead>Date</TableHead>
-                            <TableHead className="pr-0 text-right">Amount</TableHead>
+                            <TableHead className="pr-5 text-right">Amount</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -364,27 +432,38 @@ export default function Transactions() {
 
                             return (
                               <TableRow key={transaction.id} className="border-border/50 hover:bg-card/40">
-                                <TableCell className="pl-0">
-                                  <div className="space-y-1">
+                                <TableCell className="pl-5">
+                                  <div className="space-y-2">
                                     <p className="font-medium text-foreground">{transaction.description}</p>
-                                    <p className="text-xs text-muted-foreground">
-                                      {format(new Date(transaction.date), "MMM dd, yyyy · HH:mm")}
-                                    </p>
+                                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                      <Badge variant="outline" className={cn("h-6 border px-2 text-[11px]", config.badge)}>
+                                        {config.label}
+                                      </Badge>
+                                      {transaction.project ? (
+                                        <span className="rounded-full border border-border/60 bg-secondary/40 px-2 py-1">
+                                          {transaction.project}
+                                        </span>
+                                      ) : null}
+                                      <span>{format(new Date(transaction.date), "MMM dd, yyyy • HH:mm")}</span>
+                                    </div>
                                   </div>
                                 </TableCell>
-                                <TableCell>
-                                  <Badge variant="outline" className={config.badge}>
-                                    {config.label}
-                                  </Badge>
+                                <TableCell className="text-muted-foreground">
+                                  {transaction.accountName ? (
+                                    <Badge variant="outline" className="border-border/60 bg-secondary/40 text-muted-foreground">
+                                      {transaction.accountName}
+                                    </Badge>
+                                  ) : (
+                                    <span>-</span>
+                                  )}
                                 </TableCell>
                                 <TableCell className="text-muted-foreground">{transaction.category}</TableCell>
-                                <TableCell className="text-muted-foreground">{transaction.project || "-"}</TableCell>
                                 <TableCell className="text-muted-foreground">
                                   {format(new Date(transaction.date), "dd MMM yyyy")}
                                 </TableCell>
                                 <TableCell
                                   className={cn(
-                                    "pr-0 text-right font-semibold tabular-nums",
+                                    "pr-5 text-right font-semibold tabular-nums",
                                     isPositive ? "text-primary" : "text-foreground",
                                   )}
                                 >

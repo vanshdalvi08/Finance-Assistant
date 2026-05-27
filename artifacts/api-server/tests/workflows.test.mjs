@@ -807,11 +807,25 @@ test("approved expense cannot be rejected afterward", { concurrency: false }, as
   const employeesResponse = await api("/admin/employees", { token: adminToken });
   const employee = employeesResponse.json.employees[0];
   const today = "2026-04-11";
+  const fundCreate = await api("/business/funds", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      source: `Expense review fund ${randomSuffix("fund")}`,
+      amount: 100,
+      date: today,
+      note: "expense-review-fund",
+    },
+  });
+  assert.equal(fundCreate.status, 201, JSON.stringify(fundCreate.json));
+  const accountId = fundCreate.json.fund.accountId;
+  assert.ok(accountId, "Expected a financial account id from fund creation");
 
   const createResponse = await api("/business/expenses", {
     method: "POST",
     token: adminToken,
     body: {
+      accountId,
       employeeId: employee.id,
       employeeNameSnapshot: employee.name,
       category: "Phase2",
@@ -841,6 +855,7 @@ test("approved expense cannot be rejected afterward", { concurrency: false }, as
     assert.equal(rejectResponse.status, 409, JSON.stringify(rejectResponse.json));
   } finally {
     await api(`/business/expenses/${expenseId}`, { method: "DELETE", token: adminToken });
+    await api(`/business/funds/${fundCreate.json.fund.id}`, { method: "DELETE", token: adminToken });
   }
 });
 
@@ -849,11 +864,25 @@ test("expense review retries stay idempotent with key reuse protection", { concu
   const employeesResponse = await api("/admin/employees", { token: adminToken });
   const employee = employeesResponse.json.employees[0];
   const today = "2026-04-11";
+  const fundCreate = await api("/business/funds", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      source: `Expense review fund ${randomSuffix("fund")}`,
+      amount: 100,
+      date: today,
+      note: "expense-review-fund",
+    },
+  });
+  assert.equal(fundCreate.status, 201, JSON.stringify(fundCreate.json));
+  const accountId = fundCreate.json.fund.accountId;
+  assert.ok(accountId, "Expected a financial account id from fund creation");
 
   const createResponse = await api("/business/expenses", {
     method: "POST",
     token: adminToken,
     body: {
+      accountId,
       employeeId: employee.id,
       employeeNameSnapshot: employee.name,
       category: "Phase2",
@@ -895,6 +924,7 @@ test("expense review retries stay idempotent with key reuse protection", { concu
     assert.ok([403, 409].includes(approveConflict.status), JSON.stringify(approveConflict.json));
   } finally {
     await api(`/business/expenses/${expenseId}`, { method: "DELETE", token: adminToken });
+    await api(`/business/funds/${fundCreate.json.fund.id}`, { method: "DELETE", token: adminToken });
   }
 });
 
@@ -1308,6 +1338,19 @@ test("salary and PO payment retries stay idempotent with key reuse protection", 
   const employee = createdEmployee.user;
   const salaryPayKey = randomSuffix("salary-pay");
   const poPayKey = randomSuffix("po-pay");
+  const fundCreate = await api("/business/funds", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      source: `Salary payment fund ${randomSuffix("fund")}`,
+      amount: 1000,
+      date: "2026-04-11",
+      note: "salary-payment-fund",
+    },
+  });
+  assert.equal(fundCreate.status, 201, JSON.stringify(fundCreate.json));
+  const accountId = fundCreate.json.fund.accountId;
+  assert.ok(accountId, "Expected a financial account id from fund creation");
 
   const salaryCreate = await api("/business/salaries", {
     method: "POST",
@@ -1330,13 +1373,13 @@ test("salary and PO payment retries stay idempotent with key reuse protection", 
       method: "POST",
       token: adminToken,
       headers: { "Idempotency-Key": salaryPayKey },
-      body: { note: "first pay" },
+      body: { note: "first pay", accountId },
     });
     const salaryPay2 = await api(`/business/salaries/${salaryId}/pay`, {
       method: "POST",
       token: adminToken,
       headers: { "Idempotency-Key": salaryPayKey },
-      body: { note: "first pay" },
+      body: { note: "first pay", accountId },
     });
     assert.equal(salaryPay1.status, 200, JSON.stringify(salaryPay1.json));
     assert.equal(salaryPay2.status, 200, JSON.stringify(salaryPay2.json));
@@ -1347,7 +1390,7 @@ test("salary and PO payment retries stay idempotent with key reuse protection", 
       method: "POST",
       token: adminToken,
       headers: { "Idempotency-Key": salaryPayKey },
-      body: { note: "different note" },
+      body: { note: "different note", accountId },
     });
     assert.equal(salaryPayConflict.status, 409, JSON.stringify(salaryPayConflict.json));
 
@@ -1396,6 +1439,7 @@ test("salary and PO payment retries stay idempotent with key reuse protection", 
   } finally {
     await api(`/business/salaries/${salaryId}`, { method: "DELETE", token: adminToken });
     await api(`/business/purchase-orders/${poId}`, { method: "DELETE", token: adminToken });
+    await api(`/business/funds/${fundCreate.json.fund.id}`, { method: "DELETE", token: adminToken });
     await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
   }
 });
@@ -1793,6 +1837,72 @@ test("expense create/update/delete retries stay idempotent with key reuse protec
   }
 });
 
+test("historical expense create retries stay idempotent with key reuse protection", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const createdEmployee = await createEmployee(adminToken, randomSuffix("expense-historical-employee"));
+  const employee = createdEmployee.user;
+  const fundCreate = await api("/business/funds", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      source: `Historical expense fund ${randomSuffix("fund")}`,
+      amount: 500,
+      date: "2026-04-11",
+      note: "historical-expense-fund",
+    },
+  });
+  assert.equal(fundCreate.status, 201, JSON.stringify(fundCreate.json));
+  const accountId = fundCreate.json.fund.accountId;
+  assert.ok(accountId, "Expected a financial account id from fund creation");
+
+  const createKey = randomSuffix("historical-expense-create");
+  const createPayload = {
+    accountId,
+    employeeId: employee.id,
+    employeeNameSnapshot: employee.name,
+    category: `Historical Expense ${randomSuffix("category")}`,
+    group: "office",
+    amount: 25,
+    date: "2026-04-11",
+    description: "Historical expense backfill",
+    note: "historical-expense-create",
+  };
+  const createResponse1 = await api("/business/expenses/historical", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: createPayload,
+  });
+  assert.equal(createResponse1.status, 201, JSON.stringify(createResponse1.json));
+  assert.equal(createResponse1.json.duplicate, false);
+  const expenseId = createResponse1.json.expense.id;
+
+  const createResponse2 = await api("/business/expenses/historical", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: createPayload,
+  });
+  assert.equal(createResponse2.status, 200, JSON.stringify(createResponse2.json));
+  assert.equal(createResponse2.json.duplicate, true);
+  assert.equal(createResponse2.json.expense.id, expenseId);
+
+  const createConflict = await api("/business/expenses/historical", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: { ...createPayload, amount: 26 },
+  });
+  assert.equal(createConflict.status, 409, JSON.stringify(createConflict.json));
+
+  try {
+    await api(`/business/expenses/${expenseId}`, { method: "DELETE", token: adminToken });
+  } finally {
+    await api(`/business/funds/${fundCreate.json.fund.id}`, { method: "DELETE", token: adminToken });
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
 test("salary create/update/delete retries stay idempotent with key reuse protection", { concurrency: false }, async () => {
   const adminToken = await login("admin@yojak.in", "yojak123");
   const createdEmployee = await createEmployee(adminToken, randomSuffix("salary-idem-employee"));
@@ -1906,6 +2016,67 @@ test("salary create/update/delete retries stay idempotent with key reuse protect
   } finally {
     await api(`/business/salaries/${secondSalaryId}`, { method: "DELETE", token: adminToken });
     await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("historical salary create retries stay idempotent with key reuse protection", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const fundCreate = await api("/business/funds", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      source: `Historical salary fund ${randomSuffix("fund")}`,
+      amount: 1000,
+      date: "2026-04-11",
+      note: "historical-salary-fund",
+    },
+  });
+  assert.equal(fundCreate.status, 201, JSON.stringify(fundCreate.json));
+  const accountId = fundCreate.json.fund.accountId;
+  assert.ok(accountId, "Expected a financial account id from fund creation");
+
+  const createKey = randomSuffix("historical-salary-create");
+  const createPayload = {
+    accountId,
+    employeeNameSnapshot: `Former Employee ${randomSuffix("salary")}`,
+    amount: 320,
+    date: "2026-04-11",
+    note: "historical-salary-create",
+  };
+  const createResponse1 = await api("/business/salaries/historical", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: createPayload,
+  });
+  assert.equal(createResponse1.status, 201, JSON.stringify(createResponse1.json));
+  assert.equal(createResponse1.json.duplicate, false);
+  const salaryId = createResponse1.json.salary.id;
+  assert.equal(createResponse1.json.salary.status, "paid");
+  assert.equal(createResponse1.json.salary.employeeId ?? null, null);
+
+  const createResponse2 = await api("/business/salaries/historical", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: createPayload,
+  });
+  assert.equal(createResponse2.status, 200, JSON.stringify(createResponse2.json));
+  assert.equal(createResponse2.json.duplicate, true);
+  assert.equal(createResponse2.json.salary.id, salaryId);
+
+  const createConflict = await api("/business/salaries/historical", {
+    method: "POST",
+    token: adminToken,
+    headers: { "Idempotency-Key": createKey },
+    body: { ...createPayload, amount: 321 },
+  });
+  assert.equal(createConflict.status, 409, JSON.stringify(createConflict.json));
+
+  try {
+    await api(`/business/salaries/${salaryId}`, { method: "DELETE", token: adminToken });
+  } finally {
+    await api(`/business/funds/${fundCreate.json.fund.id}`, { method: "DELETE", token: adminToken });
   }
 });
 

@@ -55,6 +55,14 @@ const expenseSchema = z.object({
   reviewerNote: z.string().trim().optional(),
 });
 
+const historicalExpenseSchema = expenseSchema.omit({
+  id: true,
+  status: true,
+  reviewerNote: true,
+}).extend({
+  accountId: businessIdSchema,
+});
+
 function respondNotFound(response: Response, message: string) {
   response.status(404).json({ message });
 }
@@ -68,7 +76,7 @@ function idempotencyKeyFrom(request: Request) {
   return header?.trim() || undefined;
 }
 
-type ExpenseCrudIdempotencyScope = "expense_create" | "expense_update" | "expense_delete";
+type ExpenseCrudIdempotencyScope = "expense_create" | "expense_historical_create" | "expense_update" | "expense_delete";
 
 class ExpenseCrudIdempotencyError extends Error {
   code: "conflict";
@@ -105,6 +113,26 @@ function requestHashForExpenseMutation(input: z.infer<typeof expenseSchema> & { 
       reimbursable: Boolean(input.reimbursable ?? false),
       status: input.status ?? "",
       reviewerNote: input.reviewerNote?.trim() ?? "",
+    }),
+  );
+}
+
+function requestHashForExpenseHistoricalMutation(input: z.infer<typeof historicalExpenseSchema>) {
+  return hashSha256(
+    JSON.stringify({
+      accountId: input.accountId.trim(),
+      employeeId: input.employeeId?.trim() ?? "",
+      employeeNameSnapshot: input.employeeNameSnapshot?.trim() ?? "",
+      project: input.project?.trim() ?? "",
+      category: input.category.trim(),
+      group: input.group,
+      amount: Number(input.amount),
+      date: input.date.trim(),
+      description: input.description.trim(),
+      note: input.note?.trim() ?? "",
+      attachmentName: input.attachmentName?.trim() ?? "",
+      attachmentPath: input.attachmentPath?.trim() ?? "",
+      reimbursable: Boolean(input.reimbursable ?? false),
     }),
   );
 }
@@ -336,6 +364,92 @@ router.post("/expenses", requireTenantRole("admin", "employee"), expenseSubmitLi
         actor.id ? [actor.id] : [],
       ),
     );
+  }
+
+  if (idempotencyClaim?.created) {
+    await db
+      .update(idempotencyKeysTable)
+      .set({
+        status: "completed",
+        responseEntityId: expense.id,
+        updatedAt: new Date(),
+      })
+      .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+  }
+
+  response.status(created ? 201 : 200).json({ expense: await serializeExpense(expense), duplicate: false });
+});
+
+router.post("/expenses/historical", requireTenantRole("admin"), expenseSubmitLimiter, async (request, response) => {
+  const parsed = historicalExpenseSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid historical expense payload" });
+    return;
+  }
+
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForExpenseHistoricalMutation(parsed.data) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimExpenseCrudIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimExpenseCrudIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "expense_historical_create",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleExpenseCrudIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed" && idempotencyClaim.row.responseEntityId) {
+      const replayed = await getExpenseForTenant(
+        idempotencyClaim.row.responseEntityId,
+        tenantId,
+        request.auth?.user.id,
+        request.auth?.user.role,
+      );
+      response.json({ expense: await serializeExpense(replayed), duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This historical expense request is already being processed. Please retry shortly." });
+    return;
+  }
+
+  let expense: ExpenseRecord;
+  let created = false;
+  try {
+    const result = await saveExpense(
+      {
+        ...parsed.data,
+        accountId: parsed.data.accountId.trim(),
+        employeeId: parsed.data.employeeId?.trim() || undefined,
+        employeeNameSnapshot: parsed.data.employeeNameSnapshot?.trim() || undefined,
+        status: "approved",
+      },
+      recordActor(request),
+      request.auth?.user.id,
+      request.auth?.user.role,
+    );
+    expense = result.expense;
+    created = result.created;
+  } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    if (handleServiceError(error, response)) {
+      return;
+    }
+    throw error;
   }
 
   if (idempotencyClaim?.created) {

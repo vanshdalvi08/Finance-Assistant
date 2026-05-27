@@ -1,6 +1,6 @@
-import { useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useState, type ChangeEvent } from "react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
-import { api, type AdminOverview, type ChartPoint, Expense, ExpenseCategory, type Transaction } from "@/lib/api";
+import { api, Expense, ExpenseCategory, type FinancialAccount } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { DashboardCard } from "@/components/dashboard-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -26,6 +26,7 @@ import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { useAuthStore } from "@/store/auth";
 
 const expenseSchema = z.object({
   group: z.enum(["personal", "office"]),
@@ -39,6 +40,22 @@ const expenseSchema = z.object({
 });
 
 type ExpenseForm = z.infer<typeof expenseSchema>;
+type ExpenseEntryMode = "review_flow" | "historical_paid";
+
+function accountDisplayName(account: FinancialAccount) {
+  const typeLabel =
+    account.accountType === "mixed_use"
+      ? "Mixed Use"
+      : account.accountType === "operational"
+        ? "Operational"
+        : account.accountType === "reserve"
+          ? "Reserve"
+          : account.accountType === "cash"
+            ? "Cash"
+            : "Personal";
+
+  return `${account.name} • ${typeLabel}`;
+}
 
 function isPendingExpense(status: Expense["status"]) {
   return status === "submitted" || status === "draft";
@@ -57,76 +74,23 @@ function patchExpenseList(current: Expense[] | undefined, nextExpense: Expense) 
   return current.map((expense) => (expense.id === nextExpense.id ? nextExpense : expense));
 }
 
-function patchChartData(current: ChartPoint[] | undefined, expense: Expense) {
-  if (!current) {
-    return current;
-  }
-
-  const monthKey = expense.date.slice(0, 7);
-  const next = current.map((point) =>
-    point.month === monthKey ? { ...point, expenses: point.expenses + expense.amount } : point,
-  );
-
-  if (next.some((point) => point.month === monthKey)) {
-    return next;
-  }
-
-  return [...current, { month: monthKey, funds: 0, expenses: expense.amount, salary: 0 }].sort((left, right) =>
-    left.month.localeCompare(right.month),
-  );
-}
-
-function patchOverviewForExpense(current: AdminOverview | undefined, previous: Expense | undefined, nextExpense: Expense) {
-  if (!current) {
-    return current;
-  }
-
-  const expenseMonth = nextExpense.date.slice(0, 7);
-  const currentMonth = new Date().toISOString().slice(0, 7);
-  const currentYear = new Date().getFullYear();
-  const nextPending = isPendingExpense(nextExpense.status) ? 1 : 0;
-  const previousPending = previous && isPendingExpense(previous.status) ? 1 : 0;
-  const amountDelta = previous ? 0 : nextExpense.amount;
-
-  return {
-    ...current,
-    totalExpenses: current.totalExpenses + amountDelta,
-    currentBalance: current.currentBalance - amountDelta,
-    monthToDateExpenses: current.monthToDateExpenses + (previous ? 0 : expenseMonth === currentMonth ? nextExpense.amount : 0),
-    yearToDateExpenses: current.yearToDateExpenses + (previous ? 0 : new Date(nextExpense.date).getFullYear() === currentYear ? nextExpense.amount : 0),
-    pendingExpenses: current.pendingExpenses + nextPending - previousPending,
-  };
-}
-
-function patchTransactions(current: Transaction[] | undefined, expense: Expense) {
-  if (!current) {
-    return current;
-  }
-
-  const nextTransaction: Transaction = {
-    id: `txn_${expense.id}`,
-    type: "expense",
-    amount: -expense.amount,
-    date: expense.date,
-    description: expense.description,
-    category: expense.category,
-    project: expense.project,
-  };
-
-  return [nextTransaction, ...current.filter((transaction) => transaction.id !== nextTransaction.id)];
-}
-
 function ExpenseTable({
   expenses,
   categories,
   group,
+  accounts = [],
   onReview,
+  onReviewAccountChange,
+  reviewAccountIds = {},
   isReviewing = false,
 }: {
   expenses: Expense[];
   categories: ExpenseCategory[];
   group: "personal" | "office";
-  onReview?: (id: string, status: "approved" | "rejected") => void;
+  accounts?: FinancialAccount[];
+  onReview?: (id: string, status: "approved" | "rejected", accountId?: string) => void;
+  onReviewAccountChange?: (id: string, accountId: string) => void;
+  reviewAccountIds?: Record<string, string>;
   isReviewing?: boolean;
 }) {
   const [filterCategory, setFilterCategory] = useState("all");
@@ -359,14 +323,29 @@ function ExpenseTable({
                       </TableCell>
                       <TableCell className="text-right">
                         {e.status === "submitted" && onReview ? (
-                          <div className="flex justify-end gap-1">
+                          <div className="flex justify-end gap-2">
+                            <Select
+                              value={reviewAccountIds[e.id] ?? e.accountId ?? ""}
+                              onValueChange={(value) => onReviewAccountChange?.(e.id, value)}
+                            >
+                              <SelectTrigger className="h-8 w-[190px] rounded-full border-border/60 bg-background/70 text-xs">
+                                <SelectValue placeholder="Paid Through" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {accounts.filter((account) => account.isActive).map((account) => (
+                                  <SelectItem key={account.id} value={account.id}>
+                                    {accountDisplayName(account)}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
                             <Button
                               type="button"
                               variant="ghost"
                               size="icon"
                               className="h-8 w-8 text-emerald-400 hover:text-emerald-300"
-                              disabled={isReviewing}
-                              onClick={() => onReview(e.id, "approved")}
+                              disabled={isReviewing || !(reviewAccountIds[e.id] ?? e.accountId)}
+                              onClick={() => onReview(e.id, "approved", reviewAccountIds[e.id] ?? e.accountId)}
                             >
                               <Check className="w-4 h-4" />
                             </Button>
@@ -376,7 +355,7 @@ function ExpenseTable({
                               size="icon"
                               className="h-8 w-8 text-rose-400 hover:text-rose-300"
                               disabled={isReviewing}
-                              onClick={() => onReview(e.id, "rejected")}
+                              onClick={() => onReview(e.id, "rejected", reviewAccountIds[e.id] ?? e.accountId)}
                             >
                               <Ban className="w-4 h-4" />
                             </Button>
@@ -474,11 +453,16 @@ function ExpenseTable({
 export default function Expenses() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const role = useAuthStore((state) => state.role);
+  const isAdmin = role === "admin";
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<"personal" | "office">("office");
   const [fileSelected, setFileSelected] = useState<string>("");
   const [attachmentPath, setAttachmentPath] = useState<string>("");
   const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
+  const [selectedAccountId, setSelectedAccountId] = useState("");
+  const [entryMode, setEntryMode] = useState<ExpenseEntryMode>("review_flow");
+  const [reviewAccountIds, setReviewAccountIds] = useState<Record<string, string>>({});
 
   const { data: expenses = [] } = useQuery({
     queryKey: ["expenses"],
@@ -488,6 +472,37 @@ export default function Expenses() {
     queryKey: ["categories"],
     queryFn: api.getCategories,
   });
+  const { data: financialAccounts = [] } = useQuery({
+    queryKey: ["financialAccounts"],
+    queryFn: api.getFinancialAccounts,
+  });
+  const { data: adminOverview } = useQuery({
+    queryKey: ["adminOverview"],
+    queryFn: api.getAdminOverview,
+    enabled: isAdmin,
+  });
+
+  const activeAccounts = useMemo(
+    () => financialAccounts.filter((account) => account.isActive),
+    [financialAccounts],
+  );
+  const accountBalances = useMemo(
+    () => new Map((adminOverview?.financialAccounts ?? []).map((account) => [account.id, account.balance])),
+    [adminOverview?.financialAccounts],
+  );
+
+  useEffect(() => {
+    if (selectedAccountId || financialAccounts.length === 0) {
+      return;
+    }
+
+    const preferred = financialAccounts.find((account) => account.accountType === "operational" && account.isActive)
+      ?? activeAccounts[0]
+      ?? financialAccounts[0];
+    if (preferred) {
+      setSelectedAccountId(preferred.id);
+    }
+  }, [activeAccounts, financialAccounts, selectedAccountId]);
 
   const form = useForm<ExpenseForm>({
     resolver: zodResolver(expenseSchema),
@@ -506,24 +521,42 @@ export default function Expenses() {
   const watchGroup = form.watch("group");
 
   const addMutation = useMutation({
-    mutationFn: async ({ note: _note, ...data }: ExpenseForm) =>
-      api.addExpense({
+    mutationFn: async ({ note: _note, ...data }: ExpenseForm) => {
+      const payload = {
+        accountId: selectedAccountId || undefined,
         ...data,
         attachmentPath: attachmentPath.trim() || undefined,
-      }),
+      };
+
+      return isAdmin && entryMode === "historical_paid"
+        ? api.recordHistoricalExpense(payload)
+        : api.addExpense(payload);
+    },
     onSuccess: (createdExpense) => {
       queryClient.setQueryData<Expense[]>(["expenses"], (current) => patchExpenseList(current, createdExpense));
-      queryClient.setQueryData<ChartPoint[]>(["chartData"], (current) => patchChartData(current, createdExpense));
-      queryClient.setQueryData<AdminOverview>(["adminOverview"], (current) => patchOverviewForExpense(current, undefined, createdExpense));
-      queryClient.setQueryData<Transaction[]>(["transactions"], (current) => patchTransactions(current, createdExpense));
-      toast({ title: "Expense logged", description: "Expense recorded successfully." });
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["adminOverview"] }),
+        queryClient.invalidateQueries({ queryKey: ["chartData"] }),
+        queryClient.invalidateQueries({ queryKey: ["transactions"] }),
+      ]);
+      toast({
+        title: entryMode === "historical_paid" ? "Historical expense recorded" : "Expense logged",
+        description:
+          entryMode === "historical_paid"
+            ? "The older expense was recorded as already paid and posted to the selected account."
+            : "Expense recorded successfully.",
+      });
       setIsDialogOpen(false);
       setFileSelected("");
       setAttachmentPath("");
       setIsUploadingAttachment(false);
+      setEntryMode("review_flow");
       form.reset();
     },
   });
+
+  const selectedAccount = activeAccounts.find((account) => account.id === selectedAccountId) ?? null;
+  const selectedAccountBalance = selectedAccount ? accountBalances.get(selectedAccount.id) ?? null : null;
 
   async function handleAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -555,8 +588,8 @@ export default function Expenses() {
     }
   }
   const reviewMutation = useMutation({
-    mutationFn: ({ id, status }: { id: string; status: "approved" | "rejected" }) =>
-      api.updateExpenseStatus(id, status),
+    mutationFn: ({ id, status, accountId }: { id: string; status: "approved" | "rejected"; accountId?: string }) =>
+      api.updateExpenseStatus(id, status, undefined, accountId),
     onSuccess: async (updatedExpense, variables) => {
       queryClient.setQueryData<Expense[]>(["expenses"], (current) => patchExpenseList(current, updatedExpense));
       await Promise.all([
@@ -603,56 +636,147 @@ export default function Expenses() {
             </p>
           </div>
 
-          <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+          <Dialog
+            open={isDialogOpen}
+            onOpenChange={(open) => {
+              setIsDialogOpen(open);
+              if (!open) {
+                setEntryMode("review_flow");
+              }
+            }}
+          >
             <DialogTrigger asChild>
               <Button>
                 <Plus className="w-4 h-4 mr-2" /> Log Expense
               </Button>
             </DialogTrigger>
-            <DialogContent className="sm:max-w-md">
+            <DialogContent className="sm:max-w-[520px]">
               <DialogHeader>
                 <DialogTitle>Log New Expense</DialogTitle>
               </DialogHeader>
               <Form {...form}>
                 <form
                   onSubmit={form.handleSubmit((d) => addMutation.mutate(d))}
-                  className="space-y-4 pt-1"
+                  className="space-y-2.5 pt-1"
                 >
-                  <FormField
-                    control={form.control}
-                    name="group"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Group</FormLabel>
-                        <Select
-                          onValueChange={(value) => {
-                            field.onChange(value);
-                            form.setValue("category", "");
-                          }}
-                          defaultValue={field.value}
+                  {isAdmin ? (
+                    <div className="space-y-1.5">
+                      <Label>Entry Mode</Label>
+                      <div className="grid grid-cols-2 gap-2 rounded-2xl bg-secondary/10 p-1">
+                        <button
+                          type="button"
+                          onClick={() => setEntryMode("review_flow")}
+                          className={cn(
+                            "rounded-[1.1rem] px-3 py-2 text-left text-xs transition-all",
+                            entryMode === "review_flow"
+                              ? "bg-background shadow-[0_0_0_1px_rgba(59,130,246,0.12)] ring-1 ring-primary/20"
+                              : "text-muted-foreground hover:bg-background/40 hover:text-foreground",
+                          )}
                         >
+                          <div className={cn("font-medium", entryMode === "review_flow" ? "text-primary" : "text-foreground")}>
+                            Review Flow
+                          </div>
+                          <div className="mt-0.5 text-[11px] text-muted-foreground">Current expense</div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEntryMode("historical_paid")}
+                          className={cn(
+                            "rounded-[1.1rem] px-3 py-2 text-left text-xs transition-all",
+                            entryMode === "historical_paid"
+                              ? "bg-background shadow-[0_0_0_1px_rgba(59,130,246,0.12)] ring-1 ring-primary/20"
+                              : "text-muted-foreground hover:bg-background/40 hover:text-foreground",
+                          )}
+                        >
+                          <div className={cn("font-medium", entryMode === "historical_paid" ? "text-primary" : "text-foreground")}>
+                            Historical Paid
+                          </div>
+                          <div className="mt-0.5 text-[11px] text-muted-foreground">Past paid record</div>
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <FormField
+                      control={form.control}
+                      name="group"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Group</FormLabel>
+                          <Select
+                            onValueChange={(value) => {
+                              field.onChange(value);
+                              form.setValue("category", "");
+                            }}
+                            defaultValue={field.value}
+                          >
+                            <FormControl>
+                              <SelectTrigger>
+                                <SelectValue />
+                              </SelectTrigger>
+                            </FormControl>
+                            <SelectContent>
+                              <SelectItem value="personal">
+                                <div className="flex items-center gap-2">
+                                  <Home className="w-3.5 h-3.5" /> Personal
+                                </div>
+                              </SelectItem>
+                              <SelectItem value="office">
+                                <div className="flex items-center gap-2">
+                                  <Building2 className="w-3.5 h-3.5" /> Office
+                                </div>
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={form.control}
+                      name="date"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Date</FormLabel>
                           <FormControl>
-                            <SelectTrigger>
-                              <SelectValue />
-                            </SelectTrigger>
+                            <Input type="date" {...field} />
                           </FormControl>
-                          <SelectContent>
-                            <SelectItem value="personal">
-                              <div className="flex items-center gap-2">
-                                <Home className="w-3.5 h-3.5" /> Personal
-                              </div>
-                            </SelectItem>
-                            <SelectItem value="office">
-                              <div className="flex items-center gap-2">
-                                <Building2 className="w-3.5 h-3.5" /> Office
-                              </div>
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between gap-3">
+                      <Label>{entryMode === "historical_paid" ? "Source Account" : "Paid Through"}</Label>
+                      {selectedAccount && selectedAccountBalance !== null ? (
+                        <span className="text-[11px] text-muted-foreground">
+                          Bal:{" "}
+                          <span className="font-semibold text-foreground">
+                            {selectedAccountBalance.toLocaleString("en-IN", {
+                              style: "currency",
+                              currency: "INR",
+                            })}
+                          </span>
+                        </span>
+                      ) : null}
+                    </div>
+                    <Select value={selectedAccountId} onValueChange={setSelectedAccountId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select financial account" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {activeAccounts.map((account) => (
+                          <SelectItem key={account.id} value={account.id}>
+                            {accountDisplayName(account)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
 
                   <div className="grid grid-cols-2 gap-3">
                     <FormField
@@ -716,70 +840,51 @@ export default function Expenses() {
                     )}
                   />
 
-                  <FormField
-                    control={form.control}
-                    name="project"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>
-                          Project <span className="text-muted-foreground font-normal">(optional)</span>
-                        </FormLabel>
-                        <FormControl>
-                          <Input placeholder="e.g. Client Website Retainer" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                  <div className="grid grid-cols-2 gap-3">
+                    <FormField
+                      control={form.control}
+                      name="project"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>
+                            Project <span className="text-muted-foreground font-normal">(optional)</span>
+                          </FormLabel>
+                          <FormControl>
+                            <Input placeholder="Project / client" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
 
-                  <FormField
-                    control={form.control}
-                    name="date"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Date</FormLabel>
-                        <FormControl>
-                          <Input type="date" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+                    <FormField
+                      control={form.control}
+                      name="note"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>
+                            Note <span className="text-muted-foreground font-normal">(optional)</span>
+                          </FormLabel>
+                          <FormControl>
+                            <Input placeholder="Short note" {...field} />
+                          </FormControl>
+                        </FormItem>
+                      )}
+                    />
+                  </div>
 
-                  <FormField
-                    control={form.control}
-                    name="note"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>
-                          Notes{" "}
-                          <span className="text-muted-foreground font-normal">(optional)</span>
-                        </FormLabel>
-                        <FormControl>
-                          <Textarea
-                            placeholder="Additional details..."
-                            className="resize-none"
-                            rows={2}
-                            {...field}
-                          />
-                        </FormControl>
-                      </FormItem>
-                    )}
-                  />
-
-                  <div className="space-y-1.5">
+                  <div className="space-y-1">
                     <Label className="text-sm font-medium">
-                      Attachment{" "}
-                      <span className="text-muted-foreground font-normal">(optional)</span>
+                      Attachment <span className="text-muted-foreground font-normal">(optional)</span>
                     </Label>
-                    <label className="flex flex-col items-center gap-2 border border-dashed border-border rounded-lg py-4 px-3 cursor-pointer hover:bg-secondary/20 transition-colors">
-                      <Upload className="w-5 h-5 text-muted-foreground" />
-                      <span className="text-xs text-muted-foreground">
+                    <label className="flex h-10 items-center gap-3 rounded-xl border border-dashed border-border px-3 cursor-pointer hover:bg-secondary/20 transition-colors">
+                      <Upload className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      <span className="truncate text-xs text-muted-foreground">
                         {isUploadingAttachment
-                          ? "Uploading to secure storage..."
+                          ? "Uploading..."
                           : fileSelected
                             ? fileSelected
-                            : "Click to upload receipt or invoice"}
+                            : "Upload receipt / invoice"}
                       </span>
                       <input
                         type="file"
@@ -792,10 +897,10 @@ export default function Expenses() {
 
                   <Button
                     type="submit"
-                    className="w-full"
-                    disabled={addMutation.isPending || isUploadingAttachment}
+                    className="mt-1 w-full"
+                    disabled={addMutation.isPending || isUploadingAttachment || !selectedAccountId}
                   >
-                    Save Expense
+                    {entryMode === "historical_paid" ? "Record Paid Expense" : "Save Expense"}
                   </Button>
                 </form>
               </Form>
@@ -850,7 +955,12 @@ export default function Expenses() {
             expenses={expenses}
             categories={categories}
             group="office"
-            onReview={(id, status) => reviewMutation.mutate({ id, status })}
+            accounts={financialAccounts}
+            reviewAccountIds={reviewAccountIds}
+            onReviewAccountChange={(id, accountId) =>
+              setReviewAccountIds((current) => ({ ...current, [id]: accountId }))
+            }
+            onReview={(id, status, accountId) => reviewMutation.mutate({ id, status, accountId })}
             isReviewing={reviewMutation.isPending}
           />
         </TabsContent>
@@ -859,7 +969,12 @@ export default function Expenses() {
             expenses={expenses}
             categories={categories}
             group="personal"
-            onReview={(id, status) => reviewMutation.mutate({ id, status })}
+            accounts={financialAccounts}
+            reviewAccountIds={reviewAccountIds}
+            onReviewAccountChange={(id, accountId) =>
+              setReviewAccountIds((current) => ({ ...current, [id]: accountId }))
+            }
+            onReview={(id, status, accountId) => reviewMutation.mutate({ id, status, accountId })}
             isReviewing={reviewMutation.isPending}
           />
         </TabsContent>
