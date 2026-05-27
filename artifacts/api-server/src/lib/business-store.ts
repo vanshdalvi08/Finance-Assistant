@@ -684,6 +684,22 @@ export function findChangedReviewedDays(
   );
 }
 
+export function findChangedProtectedDays(
+  currentStatus: Partial<Record<DayKey, string>> | null | undefined,
+  currentHolidays: Partial<Record<DayKey, boolean>> | null | undefined,
+  currentLocks: Partial<Record<DayKey, boolean>> | null | undefined,
+  previousLines: TimesheetTaskLine[],
+  nextLines: TimesheetTaskLine[],
+): DayKey[] {
+  const normalizedStatus = normalizeDailyReviewStatus(currentStatus);
+
+  return DAY_KEYS.filter((day) => {
+    const isProtected =
+      normalizedStatus?.[day] === "reviewed" || currentHolidays?.[day] === true || currentLocks?.[day] === true;
+    return isProtected && dayContentSignature(previousLines, day) !== dayContentSignature(nextLines, day);
+  });
+}
+
 export function reconcileDailyReviewStatus(
   currentStatus: Partial<Record<DayKey, string>> | null | undefined,
   previousLines: TimesheetTaskLine[],

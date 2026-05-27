@@ -240,7 +240,7 @@ export async function saveSalary(
       if (!selectedAccountId) {
         throw new SalaryServiceError("invalid_input", "Select a financial account before marking salary as paid.");
       }
-      assertFinancialAccount(current, actor.tenantId, selectedAccountId);
+      assertFinancialAccount(current, actor.tenantId, selectedAccountId, (message) => new SalaryServiceError("invalid_input", message));
     }
     const additionalRequired =
       status === "paid"
@@ -390,7 +390,7 @@ export async function paySalary(
       if (!selectedAccountId) {
         throw new SalaryServiceError("invalid_input", "Select a financial account before paying salary.");
       }
-      assertFinancialAccount(current, actor.tenantId, selectedAccountId);
+      assertFinancialAccount(current, actor.tenantId, selectedAccountId, (message) => new SalaryServiceError("invalid_input", message));
       ensureFunds(current, existing.amount, "this salary payment", actor.tenantId, selectedAccountId);
 
       const paidAt = nowIso();
