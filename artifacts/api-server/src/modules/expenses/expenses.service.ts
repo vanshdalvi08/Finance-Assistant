@@ -199,7 +199,10 @@ export async function saveExpense(input: ExpenseInput, actor: ExpenseActor, requ
     }
 
     if (!existing && (status === "approved" || status === "rejected")) {
-      throw new ExpensesServiceError("invalid_state", "Use the expense review action to approve or reject an expense.");
+      const canCreateApproved = requesterRole === "admin" && status === "approved";
+      if (!canCreateApproved) {
+        throw new ExpensesServiceError("invalid_state", "Use the expense review action to approve or reject an expense.");
+      }
     }
 
     if (existing?.status === "approved") {
@@ -260,7 +263,7 @@ export async function saveExpense(input: ExpenseInput, actor: ExpenseActor, requ
     };
 
     created = !existing;
-    action = existing ? "updated" : "created";
+    action = existing ? "updated" : status === "approved" ? "approved" : "created";
 
     return pushAuditEvent(
       {
@@ -274,7 +277,9 @@ export async function saveExpense(input: ExpenseInput, actor: ExpenseActor, requ
           entityId: expense.id,
           summary: existing
             ? "Updated an expense submission."
-            : `Submitted ${expense.group} expense for ${expense.amount.toLocaleString("en-IN")} INR.`,
+            : status === "approved"
+              ? `Recorded approved ${expense.group} expense for ${expense.amount.toLocaleString("en-IN")} INR.`
+              : `Submitted ${expense.group} expense for ${expense.amount.toLocaleString("en-IN")} INR.`,
           actorUserId: actor.userId,
           requestId: actor.requestId,
           details: {

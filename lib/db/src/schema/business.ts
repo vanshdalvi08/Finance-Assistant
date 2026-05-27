@@ -348,7 +348,7 @@ export const salariesTable = pgTable(
     id: text("id").primaryKey(),
     tenantId: uuid("tenant_id").notNull().references(() => tenantsTable.id, { onDelete: "cascade" }),
     accountId: text("account_id").references(() => financialAccountsTable.id, { onDelete: "set null" }),
-    employeeId: uuid("employee_id").notNull().references(() => usersTable.id, { onDelete: "cascade" }),
+    employeeId: uuid("employee_id").references(() => usersTable.id, { onDelete: "set null" }),
     employeeNameSnapshot: text("employee_name_snapshot"),
     amount: integer("amount").notNull().default(0),
     date: timestamp("date", { withTimezone: true }).notNull(),

@@ -66,7 +66,7 @@ export interface AdminAccount {
 export interface Salary {
   id: string;
   accountId?: string;
-  employeeId: string;
+  employeeId?: string;
   employeeNameSnapshot?: string;
   amount: number;
   date: string;
@@ -393,11 +393,14 @@ interface AddFundInput {
 
 interface AddSalaryInput {
   accountId?: string;
-  employeeId: string;
+  employeeId?: string;
+  employeeNameSnapshot?: string;
   amount: number;
+  date?: string;
   note?: string;
   source?: "manual" | "timesheet";
   status?: "pending" | "paid";
+  paidAt?: string;
   weekStart?: string;
   hours?: number;
   rate?: number;
@@ -1731,6 +1734,9 @@ export const api = {
   addExpense: async (input: AddExpenseInput) =>
     (await businessPost<{ expense: Expense }>("/expenses", input)).expense,
 
+  recordHistoricalExpense: async (input: AddExpenseInput) =>
+    (await businessPost<{ expense: Expense }>("/expenses/historical", input)).expense,
+
   updateExpenseStatus: async (id: string, status: ApprovalStatus, reviewerNote?: string, accountId?: string) =>
     (await businessPost<{ expense: Expense }>(`/expenses/${id}/status`, { status, reviewerNote, accountId }, "PATCH")).expense,
 
@@ -1749,7 +1755,14 @@ export const api = {
   addSalary: async (input: AddSalaryInput) =>
     (await businessPost<{ salary: Salary }>("/salaries", {
       ...input,
-      date: input.weekStart ?? new Date().toISOString(),
+      date: input.date ?? input.weekStart ?? new Date().toISOString(),
+      note: input.note ?? "",
+    })).salary,
+
+  recordHistoricalSalary: async (input: AddSalaryInput) =>
+    (await businessPost<{ salary: Salary }>("/salaries/historical", {
+      ...input,
+      date: input.date ?? new Date().toISOString(),
       note: input.note ?? "",
     })).salary,
 

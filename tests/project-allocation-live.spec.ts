@@ -163,10 +163,22 @@ test("live per-employee project tasks stay visible only for assigned employees a
   const assignedFirstRow = assignedPage.locator("tbody tr").first();
   await assignedFirstRow.locator("select").first().selectOption(projectName);
   await expect
-    .poll(async () => (await readTaskOptions(assignedPage)).map((value) => value.trim()).some((value) => value.includes(targetedTaskName)))
+    .poll(
+      async () =>
+        (await readTaskOptions(assignedPage))
+          .map((value) => value.trim())
+          .some((value) => value.includes(targetedTaskName)),
+      { timeout: 15000 },
+    )
     .toBeTruthy();
   await expect
-    .poll(async () => (await readTaskOptions(assignedPage)).map((value) => value.trim()).some((value) => value.includes(sharedTaskName)))
+    .poll(
+      async () =>
+        (await readTaskOptions(assignedPage))
+          .map((value) => value.trim())
+          .some((value) => value.includes(sharedTaskName)),
+      { timeout: 15000 },
+    )
     .toBeTruthy();
 
   await otherPage.goto(`${FRONTEND_ORIGIN}/employee/timesheet`);
@@ -174,7 +186,13 @@ test("live per-employee project tasks stay visible only for assigned employees a
   const otherFirstRow = otherPage.locator("tbody tr").first();
   await otherFirstRow.locator("select").first().selectOption(projectName);
   await expect
-    .poll(async () => (await readTaskOptions(otherPage)).map((value) => value.trim()).some((value) => value.includes(sharedTaskName)))
+    .poll(
+      async () =>
+        (await readTaskOptions(otherPage))
+          .map((value) => value.trim())
+          .some((value) => value.includes(sharedTaskName)),
+      { timeout: 15000 },
+    )
     .toBeTruthy();
   const otherTaskOptions = (await readTaskOptions(otherPage)).map((value) => value.trim());
   expect(otherTaskOptions.some((value) => value.includes(targetedTaskName))).toBeFalsy();

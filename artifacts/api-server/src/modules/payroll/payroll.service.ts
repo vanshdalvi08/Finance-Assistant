@@ -30,7 +30,7 @@ export type SalaryActor = {
 export type SalaryInput = {
   id?: string;
   accountId?: string;
-  employeeId: string;
+  employeeId?: string;
   employeeNameSnapshot?: string;
   amount: number;
   date?: string;
@@ -110,11 +110,12 @@ function changedSalaryFields(previous: SalaryRecord | null, next: SalaryRecord) 
   return candidates.filter((key) => before[key] !== after[key]);
 }
 
-function requestHashForSalaryPay(input: { salaryId: string; note?: string }) {
+function requestHashForSalaryPay(input: { salaryId: string; note?: string; accountId?: string | null }) {
   return hashSha256(
     JSON.stringify({
       salaryId: input.salaryId.trim(),
       note: input.note?.trim() ?? "",
+      accountId: input.accountId?.trim() ?? "",
     }),
   );
 }
@@ -194,6 +195,9 @@ export async function getSalaryForActor(id: string, tenantId: string, requesterR
   }
 
   assertTenantAccess(salary.tenantId, tenantId, () => new SalaryServiceError("forbidden", "Forbidden"));
+  if (requesterRole === "employee" && !salary.employeeId) {
+    throw new SalaryServiceError("forbidden", "Forbidden");
+  }
   assertEmployeeSelfAccess(salary.employeeId, requesterRole, requesterUserId, () => new SalaryServiceError("forbidden", "Forbidden"));
 
   return salary;
@@ -203,9 +207,16 @@ export async function saveSalary(
   input: SalaryInput,
   actor: SalaryActor,
 ): Promise<{ salary: SalaryRecord; created: boolean; existing: SalaryRecord | null; action: "created" | "updated" | "paid" }> {
-  const employee = await loadEmployeeProfile(input.employeeId, actor.tenantId);
-  if (!employee) {
+  const normalizedEmployeeId = input.employeeId?.trim() || undefined;
+  const employee = normalizedEmployeeId ? await loadEmployeeProfile(normalizedEmployeeId, actor.tenantId) : null;
+  if (normalizedEmployeeId && !employee) {
     throw new SalaryServiceError("not_found", "Employee not found");
+  }
+  if (!normalizedEmployeeId && !(input.employeeNameSnapshot?.trim())) {
+    throw new SalaryServiceError("invalid_input", "Enter the former employee name for this historical salary.");
+  }
+  if (!normalizedEmployeeId && (input.status ?? "pending") !== "paid") {
+    throw new SalaryServiceError("invalid_input", "Former employee salary records must be saved as historical paid entries.");
   }
 
   let salary: SalaryRecord | null = null;
@@ -246,8 +257,8 @@ export async function saveSalary(
       id: input.id ?? existing?.id ?? createId("sal"),
       tenantId: actor.tenantId,
       accountId: status === "paid" ? selectedAccountId : selectedAccountId,
-      employeeId: input.employeeId.trim(),
-      employeeNameSnapshot: input.employeeNameSnapshot?.trim() || existing?.employeeNameSnapshot || employee.name,
+      employeeId: normalizedEmployeeId,
+      employeeNameSnapshot: input.employeeNameSnapshot?.trim() || existing?.employeeNameSnapshot || employee?.name || "Former Employee",
       amount: nextAmount,
       date: normalizeDate(input.date ?? existing?.date ?? nowIso()),
       note: input.note?.trim() || existing?.note || "",
@@ -289,7 +300,7 @@ export async function saveSalary(
         actorUserId: actor.userId,
         requestId: actor.requestId,
         details: {
-          entityLabel: salary.employeeNameSnapshot ?? employee.name,
+          entityLabel: salary.employeeNameSnapshot ?? employee?.name ?? "Former Employee",
           requestId: actor.requestId,
           changedFields: changedSalaryFields(existing, salary),
           before: existing ? summarizeSalary(existing) : null,
@@ -347,7 +358,7 @@ export async function paySalary(
   options?: { idempotencyKey?: string | null; accountId?: string | null },
 ): Promise<{ salary: SalaryRecord; wasAlreadyPaid: boolean }> {
   const idempotencyKey = options?.idempotencyKey?.trim() || null;
-  const requestHash = idempotencyKey ? requestHashForSalaryPay({ salaryId: id, note }) : null;
+  const requestHash = idempotencyKey ? requestHashForSalaryPay({ salaryId: id, note, accountId: options?.accountId }) : null;
   const idempotencyClaim = idempotencyKey && requestHash ? await claimSalaryPayIdempotency(actor, idempotencyKey, requestHash) : null;
 
   if (idempotencyClaim && !idempotencyClaim.created) {

@@ -188,7 +188,7 @@ export interface SalaryRecord {
   id: string;
   tenantId: string;
   accountId?: string;
-  employeeId: string;
+  employeeId?: string;
   employeeNameSnapshot?: string;
   amount: number;
   date: string;
@@ -919,7 +919,7 @@ function salaryFromRow(row: DbSalary): SalaryRecord {
       "accountId" in row && typeof (row as { accountId?: unknown }).accountId === "string"
         ? String((row as { accountId?: string }).accountId ?? "").trim() || undefined
         : undefined,
-    employeeId: row.employeeId,
+    employeeId: row.employeeId ?? undefined,
     employeeNameSnapshot: row.employeeNameSnapshot?.trim() || undefined,
     amount: Math.abs(Number(row.amount ?? 0)),
     date: toIso(row.date),
@@ -941,7 +941,7 @@ function salaryToRow(salary: SalaryRecord) {
     id: salary.id,
     tenantId: salary.tenantId?.trim() || DEFAULT_TENANT_ID,
     accountId: salary.accountId?.trim() || null,
-    employeeId: salary.employeeId,
+    employeeId: salary.employeeId ?? null,
     employeeNameSnapshot: salary.employeeNameSnapshot?.trim() || null,
     amount: Math.abs(Number(salary.amount ?? 0)),
     date: toDate(salary.date),
@@ -1705,7 +1705,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
       id: salary.id ?? createId("sal"),
       tenantId: String((salary as SalaryRecord).tenantId ?? DEFAULT_TENANT_ID).trim() || DEFAULT_TENANT_ID,
       accountId: salary.accountId?.trim() || undefined,
-      employeeId: String(salary.employeeId ?? "").trim(),
+      employeeId: String(salary.employeeId ?? "").trim() || undefined,
       employeeNameSnapshot: salary.employeeNameSnapshot?.trim() || undefined,
       amount: Math.abs(Number(salary.amount ?? 0)),
       date: normalizeDate(String(salary.date ?? nowIso())),
