@@ -27,6 +27,8 @@ import {
   type PurchaseOrder as DbPurchaseOrder,
   type InsertPurchaseOrder as DbInsertPurchaseOrder,
   type Salary as DbSalary,
+  type TimesheetDailyReviewHolidays,
+  type TimesheetDailyReviewLocks,
   type TimesheetDailyReviewStatus,
   type TimesheetDailyReviewNotes,
   type Timesheet as DbTimesheet,
@@ -228,6 +230,8 @@ export interface TimesheetEntry {
   reviewNotes?: string;
   dailyReviewStatus?: TimesheetDailyReviewStatus;
   dailyReviewNotes?: TimesheetDailyReviewNotes;
+  dailyReviewHolidays?: TimesheetDailyReviewHolidays;
+  dailyReviewLocks?: TimesheetDailyReviewLocks;
   lines: TimesheetTaskLine[];
   createdAt: string;
   updatedAt: string;
@@ -628,6 +632,30 @@ function normalizeDailyReviewNotes(input?: Partial<Record<DayKey, string>> | nul
   const normalized = Object.fromEntries(
     DAY_KEYS.map((day) => [day, input[day]?.trim() ?? ""]).filter(([, value]) => value.length > 0),
   ) as TimesheetDailyReviewNotes;
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function normalizeDailyReviewHolidays(input?: Partial<Record<DayKey, boolean>> | null): TimesheetDailyReviewHolidays | undefined {
+  if (!input) {
+    return undefined;
+  }
+
+  const normalized = Object.fromEntries(
+    DAY_KEYS.map((day) => [day, input[day] === true ? true : false]).filter(([, value]) => value === true),
+  ) as TimesheetDailyReviewHolidays;
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function normalizeDailyReviewLocks(input?: Partial<Record<DayKey, boolean>> | null): TimesheetDailyReviewLocks | undefined {
+  if (!input) {
+    return undefined;
+  }
+
+  const normalized = Object.fromEntries(
+    DAY_KEYS.map((day) => [day, input[day] === true ? true : false]).filter(([, value]) => value === true),
+  ) as TimesheetDailyReviewLocks;
 
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
@@ -1247,6 +1275,8 @@ function timesheetFromRow(row: DbTimesheet): TimesheetEntry {
     reviewNotes: row.reviewNotes?.trim() || undefined,
     dailyReviewStatus: normalizeDailyReviewStatus(row.dailyReviewStatus),
     dailyReviewNotes: normalizeDailyReviewNotes(row.dailyReviewNotes),
+    dailyReviewHolidays: normalizeDailyReviewHolidays(row.dailyReviewHolidays),
+    dailyReviewLocks: normalizeDailyReviewLocks(row.dailyReviewLocks),
     lines: Array.isArray(row.lines) && row.lines.length > 0
       ? row.lines.map((line) => ({
           id: line.id ?? createId("line"),
@@ -1289,6 +1319,8 @@ function timesheetFromNormalizedRow(
     reviewNotes: row.reviewNotes?.trim() || undefined,
     dailyReviewStatus: normalizeDailyReviewStatus(row.dailyReviewStatus),
     dailyReviewNotes: normalizeDailyReviewNotes(row.dailyReviewNotes),
+    dailyReviewHolidays: normalizeDailyReviewHolidays(row.dailyReviewHolidays),
+    dailyReviewLocks: normalizeDailyReviewLocks(row.dailyReviewLocks),
     lines: lines
       .filter((line) => line.timesheetId === row.id)
       .sort((left, right) => {
@@ -1373,6 +1405,8 @@ function timesheetToRow(entry: TimesheetEntry) {
     reviewNotes: entry.reviewNotes?.trim() || null,
     dailyReviewStatus: normalizeDailyReviewStatus(entry.dailyReviewStatus) ?? {},
     dailyReviewNotes: normalizeDailyReviewNotes(entry.dailyReviewNotes) ?? {},
+    dailyReviewHolidays: normalizeDailyReviewHolidays(entry.dailyReviewHolidays) ?? {},
+    dailyReviewLocks: normalizeDailyReviewLocks(entry.dailyReviewLocks) ?? {},
     lines: (entry.lines ?? []).map((line) => ({
       id: line.id ?? createId("line"),
       project: line.project?.trim() || "",
@@ -1748,6 +1782,8 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
       reviewNotes: entry.reviewNotes?.trim() || undefined,
       dailyReviewStatus: normalizeDailyReviewStatus(entry.dailyReviewStatus),
       dailyReviewNotes: normalizeDailyReviewNotes(entry.dailyReviewNotes),
+      dailyReviewHolidays: normalizeDailyReviewHolidays(entry.dailyReviewHolidays),
+      dailyReviewLocks: normalizeDailyReviewLocks(entry.dailyReviewLocks),
       lines: Array.isArray(entry.lines) && entry.lines.length > 0 ? entry.lines.map((line) => ({
         id: line.id ?? createId("line"),
         project: String(line.project ?? "").trim(),

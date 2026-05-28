@@ -8,6 +8,8 @@ export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type TimesheetWorkNotes = Partial<Record<DayKey, string>>;
 export type TimesheetDailyReviewStatus = Partial<Record<DayKey, "reviewed" | "reverted">>;
 export type TimesheetDailyReviewNotes = Partial<Record<DayKey, string>>;
+export type TimesheetDailyReviewHolidays = Partial<Record<DayKey, true>>;
+export type TimesheetDailyReviewLocks = Partial<Record<DayKey, true>>;
 export type ApprovalStatus = "draft" | "submitted" | "approved" | "rejected";
 export type SalaryStatus = "pending" | "paid";
 export type ExpenseGroup = "personal" | "office";
@@ -397,6 +399,8 @@ export const timesheetsTable = pgTable(
   reviewNotes: text("review_notes"),
   dailyReviewStatus: jsonb("daily_review_status").$type<TimesheetDailyReviewStatus>().notNull().default({}),
   dailyReviewNotes: jsonb("daily_review_notes").$type<TimesheetDailyReviewNotes>().notNull().default({}),
+  dailyReviewHolidays: jsonb("daily_review_holidays").$type<TimesheetDailyReviewHolidays>().notNull().default({}),
+  dailyReviewLocks: jsonb("daily_review_locks").$type<TimesheetDailyReviewLocks>().notNull().default({}),
   lines: jsonb("lines").$type<TimesheetLineRecord[]>().notNull().default(sql`'[]'::jsonb`),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
