@@ -387,7 +387,7 @@ export interface UserProfile {
 }
 
 export const DAY_KEYS: DayKey[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-export const DEFAULT_FINANCIAL_ACCOUNT_NAME = "Operational";
+export const DEFAULT_FINANCIAL_ACCOUNT_NAME = "Main Account";
 
 export const DEFAULT_CATEGORIES: ExpenseCategoryRecord[] = [
   { id: "00000000-0000-0000-0000-000000000001", name: "Software", color: "#6366f1", group: "office", createdAt: "1970-01-01T00:00:00.000Z", updatedAt: "1970-01-01T00:00:00.000Z" },
@@ -440,7 +440,7 @@ export function createDefaultFinancialAccount(tenantId: string): FinancialAccoun
     accountType: "operational",
     category: "bank",
     openingBalance: 0,
-    description: "Default operational account",
+    description: "Default main account",
     includeInOperationalReporting: true,
     isActive: true,
     createdAt: now,

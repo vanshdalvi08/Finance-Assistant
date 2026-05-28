@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { DashboardCard } from "@/components/dashboard-card";
 import { api, type FinancialAccountBalance } from "@/lib/api";
@@ -54,7 +54,7 @@ function accountScopeLabel(account: FinancialAccountBalance) {
     case "cash":
       return "Cash";
     default:
-      return "Operational";
+      return "Main";
   }
 }
 
@@ -103,7 +103,7 @@ export default function Dashboard() {
   const { data: salaries = [] } = useQuery({ queryKey: ["salaries"], queryFn: api.getSalaries });
   const { data: overview } = useQuery({ queryKey: ["adminOverview"], queryFn: api.getAdminOverview });
   const [selectedPeriod, setSelectedPeriod] = useState("all");
-  const [selectedBalanceView, setSelectedBalanceView] = useState("operational");
+  const [selectedBalanceView, setSelectedBalanceView] = useState("");
   const approvedExpenses = expenses.filter((expense) => expense.status === "approved");
   const paidSalaries = salaries.filter((salary) => salary.status === "paid");
 
@@ -117,6 +117,14 @@ export default function Dashboard() {
       .filter(Boolean)
       .sort((left, right) => right.localeCompare(left));
   }, [approvedExpenses, funds, paidSalaries, transactions]);
+
+  useEffect(() => {
+    if (selectedBalanceView || !overview) {
+      return;
+    }
+
+    setSelectedBalanceView(overview.financialAccounts[0]?.id ?? "all");
+  }, [overview, selectedBalanceView]);
 
   const selectedMonth = selectedPeriod === "all" ? null : new Date(`${selectedPeriod}-01T00:00:00`);
   const comparisonMonth = selectedMonth
@@ -154,10 +162,6 @@ export default function Dashboard() {
 
     if (selectedBalanceView === "all") {
       return overview.allAccountsBalance ?? overview.currentBalance;
-    }
-
-    if (selectedBalanceView === "operational") {
-      return overview.operationalBalance ?? overview.currentBalance;
     }
 
     return overview.financialAccounts.find((account) => account.id === selectedBalanceView)?.balance ?? 0;
@@ -235,7 +239,6 @@ export default function Dashboard() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="operational">Operational</SelectItem>
                       <SelectItem value="all">All Accounts</SelectItem>
                       {(overview?.financialAccounts ?? []).map((account) => (
                         <SelectItem key={account.id} value={account.id}>

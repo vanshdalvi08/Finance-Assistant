@@ -15,7 +15,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Landmark, Pencil, Plus, WalletCards } from "lucide-react";
 
 const ACCOUNT_TYPE_OPTIONS = [
-  { value: "operational", label: "Operational" },
+  { value: "operational", label: "Main" },
   { value: "personal", label: "Personal" },
   { value: "mixed_use", label: "Mixed Use" },
   { value: "reserve", label: "Reserve" },
@@ -30,7 +30,7 @@ const CATEGORY_OPTIONS = [
 ] as const;
 
 function accountTypeLabel(value: FinancialAccount["accountType"]) {
-  return ACCOUNT_TYPE_OPTIONS.find((option) => option.value === value)?.label ?? "Operational";
+  return ACCOUNT_TYPE_OPTIONS.find((option) => option.value === value)?.label ?? "Main";
 }
 
 function categoryLabel(value: FinancialAccount["category"]) {
@@ -142,7 +142,7 @@ export default function FinancialAccountsPage() {
             <div>
               <h1 className="text-2xl font-bold tracking-tight">Financial Accounts</h1>
               <p className="mt-1 text-sm text-muted-foreground">
-                Manage operational money sources used for salaries, expenses, reimbursements, and company spending.
+                Manage the money sources used for salaries, expenses, reimbursements, and company spending.
               </p>
             </div>
           </div>
@@ -259,9 +259,9 @@ export default function FinancialAccountsPage() {
 
                 <div className="flex items-center justify-between rounded-2xl border border-border/60 bg-secondary/15 px-4 py-3">
                   <div>
-                    <p className="text-sm font-medium">Include in operational balance</p>
+                    <p className="text-sm font-medium">Include in main balance</p>
                     <p className="text-xs text-muted-foreground">
-                      Show this account in the operational cash view used by dashboards and reporting.
+                      Show this account in the main cash view used by dashboards and reporting.
                     </p>
                   </div>
                   <Switch
@@ -309,7 +309,7 @@ export default function FinancialAccountsPage() {
           </Card>
           <Card className="border-border/50">
             <CardContent className="p-5">
-              <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Operational Balance</p>
+              <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Main Balance</p>
               <div className="mt-2 flex items-end justify-between gap-3">
                 <div>
                   <p className="text-2xl font-bold">
@@ -370,7 +370,7 @@ export default function FinancialAccountsPage() {
                     </p>
                   </div>
                   <Badge variant={account.includeInOperationalReporting ? "default" : "secondary"}>
-                    {account.includeInOperationalReporting ? "In operational view" : "Hidden from operational view"}
+                    {account.includeInOperationalReporting ? "Included in main view" : "Hidden from main view"}
                   </Badge>
                 </div>
               </CardContent>

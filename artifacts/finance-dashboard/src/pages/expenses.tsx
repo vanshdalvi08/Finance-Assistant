@@ -47,7 +47,7 @@ function accountDisplayName(account: FinancialAccount) {
     account.accountType === "mixed_use"
       ? "Mixed Use"
       : account.accountType === "operational"
-        ? "Operational"
+        ? "Main"
         : account.accountType === "reserve"
           ? "Reserve"
           : account.accountType === "cash"
