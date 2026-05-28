@@ -15,6 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 
 type PayrollStatus = "pending" | "paid";
@@ -45,6 +46,7 @@ type PendingPayrollGroup = {
   records: SalaryRecord[];
   totalHours: number;
   totalAmount: number;
+  hourlyRate?: number;
   monthLabels: string[];
 };
 
@@ -120,6 +122,12 @@ function upsertSalaryRecord(current: SalaryRecord[] | undefined, nextRecord: Sal
 function monthLabelFromRecord(record: SalaryRecord) {
   const sourceDate = record.weekStart ?? record.date;
   return sourceDate ? format(new Date(sourceDate), "MMMM yyyy") : "Unknown month";
+}
+
+function weekRangeLabel(sourceDate: string) {
+  const weekStart = new Date(sourceDate);
+  const weekEnd = addDays(weekStart, 6);
+  return `${format(weekStart, "dd MMM yyyy")} - ${format(weekEnd, "dd MMM yyyy")}`;
 }
 
 function buildWorklogDays(timesheet: TimesheetEntry): WorklogDay[] {
@@ -226,12 +234,16 @@ export default function Salary() {
           records: [],
           totalHours: 0,
           totalAmount: 0,
+          hourlyRate: undefined,
           monthLabels: [],
         } satisfies PendingPayrollGroup);
 
       existing.records.push(record);
       existing.totalHours += Number(record.hours ?? 0);
       existing.totalAmount += getPayrollAmount(record);
+      if (!existing.hourlyRate && typeof record.rate === "number" && record.rate > 0) {
+        existing.hourlyRate = record.rate;
+      }
       const monthLabel = monthLabelFromRecord(record);
       if (!existing.monthLabels.includes(monthLabel)) {
         existing.monthLabels.push(monthLabel);
@@ -245,8 +257,12 @@ export default function Salary() {
         records: [...group.records].sort((left, right) => {
           const leftDate = new Date(left.weekStart ?? left.date).getTime();
           const rightDate = new Date(right.weekStart ?? right.date).getTime();
-          return rightDate - leftDate;
+          return leftDate - rightDate;
         }),
+        totalAmount:
+          typeof group.hourlyRate === "number" && group.hourlyRate > 0
+            ? Math.round(group.totalHours * group.hourlyRate)
+            : group.totalAmount,
       }))
       .sort((left, right) => right.totalAmount - left.totalAmount);
   }, [employees, pendingPayroll]);
@@ -695,7 +711,7 @@ export default function Salary() {
                                     <ChevronRight className="h-3.5 w-3.5" />
                                   </Button>
                                 </DialogTrigger>
-                                <DialogContent className="max-w-5xl">
+                                <DialogContent className="max-h-[88vh] max-w-5xl overflow-hidden">
                                   <DialogHeader>
                                     <DialogTitle className="flex items-center gap-2">
                                       <CalendarDays className="h-4 w-4 text-muted-foreground" />
@@ -703,7 +719,9 @@ export default function Salary() {
                                     </DialogTitle>
                                   </DialogHeader>
 
-                                  <div className="grid gap-3 md:grid-cols-3">
+                                  <ScrollArea className="max-h-[calc(88vh-5.5rem)] pr-4">
+                                    <div className="space-y-4">
+                                      <div className="grid gap-3 md:grid-cols-3">
                                     <Card className="border-border/60">
                                       <CardContent className="pt-5">
                                         <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Pending Entries</div>
@@ -722,9 +740,9 @@ export default function Salary() {
                                         <div className="mt-2 text-2xl font-semibold">{formatCurrency(group.totalAmount)}</div>
                                       </CardContent>
                                     </Card>
-                                  </div>
+                                      </div>
 
-                                  <div className="grid gap-4 lg:grid-cols-[1.1fr,1.3fr]">
+                                      <div className="grid gap-4 lg:grid-cols-[1.1fr,1.3fr]">
                                     <Card className="border-border/60">
                                       <CardHeader className="pb-3">
                                         <CardTitle className="text-sm">Pending Payout Entries</CardTitle>
@@ -820,7 +838,7 @@ export default function Salary() {
                                               <div className="mb-3 flex items-center justify-between gap-3">
                                                 <div>
                                                   <div className="font-medium">
-                                                    {record.weekStart ? format(new Date(record.weekStart), "dd MMM yyyy") : format(new Date(record.date), "dd MMM yyyy")}
+                                                    {record.weekStart ? weekRangeLabel(record.weekStart) : format(new Date(record.date), "dd MMM yyyy")}
                                                   </div>
                                                   <div className="text-xs text-muted-foreground">
                                                     {record.source === "timesheet" ? "Approved timesheet worklog" : "Manual payroll entry"}
@@ -869,7 +887,9 @@ export default function Salary() {
                                         })}
                                       </CardContent>
                                     </Card>
-                                  </div>
+                                      </div>
+                                    </div>
+                                  </ScrollArea>
                                 </DialogContent>
                               </Dialog>
                             </TableCell>
