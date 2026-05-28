@@ -2688,10 +2688,11 @@ export async function saveTimesheetFast(input: {
     storeReadPromise = null;
     const current = storeCache ?? await readStore({ fresh: true });
     const normalizedEntry = normalizeStore({ timesheets: [input.entry] }).timesheets[0];
+    const isReviewShell = Boolean(normalizedEntry.reviewShell);
     assertTaskHourLimits(normalizedEntry, current.projectBudgets, current.timesheets);
     const existing = current.timesheets.find((timesheet) => timesheet.id === normalizedEntry.id);
 
-    if (normalizedEntry.status === "draft" && !hasPersistedTimesheetContent(normalizedEntry)) {
+    if (normalizedEntry.status === "draft" && !hasPersistedTimesheetContent(normalizedEntry) && !isReviewShell) {
       if (!existing) {
         return null;
       }
@@ -2788,6 +2789,11 @@ export async function setTimesheetDayReviewStatusFast(input: {
     const nextDailyReviewNotes = { ...(existing.dailyReviewNotes ?? {}) };
     const nextDailyReviewHolidays = { ...(existing.dailyReviewHolidays ?? {}) };
     const nextDailyReviewLocks = { ...(existing.dailyReviewLocks ?? {}) };
+    const dayHasLoggedWork = existing.lines.some((line) => Number(line.hours?.[input.day] ?? 0) > 0 || Boolean(line.workNotes?.[input.day]?.trim()));
+
+    if (input.action === "holiday" && dayHasLoggedWork) {
+      throw new Error(`Cannot mark ${input.day.toUpperCase()} as a holiday after work has already been logged.`);
+    }
 
     switch (input.action) {
       case "reviewed":
