@@ -2731,7 +2731,7 @@ export async function saveTimesheetFast(input: {
 export async function setTimesheetDayReviewStatusFast(input: {
   id: string;
   day: DayKey;
-  reviewed: boolean;
+  action: "reviewed" | "reverted" | "holiday" | "locked" | "clear_review" | "clear_holiday" | "clear_lock";
   note?: string;
   tenantId: string;
   actorName: string;
@@ -2750,21 +2750,45 @@ export async function setTimesheetDayReviewStatusFast(input: {
 
     const nextDailyReviewStatus = { ...(existing.dailyReviewStatus ?? {}) };
     const nextDailyReviewNotes = { ...(existing.dailyReviewNotes ?? {}) };
-    if (input.reviewed) {
-      nextDailyReviewStatus[input.day] = "reviewed";
-      delete nextDailyReviewNotes[input.day];
-    } else {
-      const note = input.note?.trim();
-      if (note) {
-        nextDailyReviewStatus[input.day] = "reverted";
-        nextDailyReviewNotes[input.day] = note;
-      } else {
+    const nextDailyReviewHolidays = { ...(existing.dailyReviewHolidays ?? {}) };
+    const nextDailyReviewLocks = { ...(existing.dailyReviewLocks ?? {}) };
+
+    switch (input.action) {
+      case "reviewed":
+        nextDailyReviewStatus[input.day] = "reviewed";
+        delete nextDailyReviewNotes[input.day];
+        break;
+      case "reverted": {
+        const note = input.note?.trim();
+        if (note) {
+          nextDailyReviewStatus[input.day] = "reverted";
+          nextDailyReviewNotes[input.day] = note;
+        } else {
+          delete nextDailyReviewStatus[input.day];
+          delete nextDailyReviewNotes[input.day];
+        }
+        break;
+      }
+      case "clear_review":
         delete nextDailyReviewStatus[input.day];
         delete nextDailyReviewNotes[input.day];
-      }
+        break;
+      case "holiday":
+        nextDailyReviewHolidays[input.day] = true;
+        break;
+      case "clear_holiday":
+        delete nextDailyReviewHolidays[input.day];
+        break;
+      case "locked":
+        nextDailyReviewLocks[input.day] = true;
+        break;
+      case "clear_lock":
+        delete nextDailyReviewLocks[input.day];
+        break;
     }
+
     const hasAllDaysReviewed = DAY_KEYS.every((day) => nextDailyReviewStatus[day] === "reviewed");
-    const shouldAutoSubmit = hasAllDaysReviewed && (existing.status === "draft" || existing.status === "rejected");
+    const shouldAutoSubmit = input.action === "reviewed" && hasAllDaysReviewed && (existing.status === "draft" || existing.status === "rejected");
     if (shouldAutoSubmit) {
       assertWorkflowTransition("timesheetSubmission", existing.status, "submitted");
     }
@@ -2780,6 +2804,8 @@ export async function setTimesheetDayReviewStatusFast(input: {
           reviewNotes: shouldAutoSubmit ? undefined : existing.reviewNotes,
           dailyReviewStatus: nextDailyReviewStatus,
           dailyReviewNotes: nextDailyReviewNotes,
+          dailyReviewHolidays: nextDailyReviewHolidays,
+          dailyReviewLocks: nextDailyReviewLocks,
           updatedAt: nowIso(),
         },
       ],
@@ -2789,49 +2815,74 @@ export async function setTimesheetDayReviewStatusFast(input: {
       tenantId: input.tenantId,
       actorName: input.actorName,
       actorRole: input.actorRole,
-      action: "reviewed",
+      action: input.action,
       entityType: "timesheet",
       entityId: existing.id,
       summary:
-        input.reviewed && shouldAutoSubmit
+        input.action === "reviewed" && shouldAutoSubmit
           ? `Marked ${input.day.toUpperCase()} for a timesheet and auto-submitted the week.`
-          : input.reviewed
+          : input.action === "reviewed"
             ? `Marked ${input.day.toUpperCase()} for a timesheet.`
-            : input.note?.trim()
+            : input.action === "reverted"
               ? `Reverted ${input.day.toUpperCase()} for a timesheet.`
-              : `Removed review mark for ${input.day.toUpperCase()} on a timesheet.`,
+              : input.action === "holiday"
+                ? `Marked ${input.day.toUpperCase()} as a holiday.`
+                : input.action === "locked"
+                  ? `Locked ${input.day.toUpperCase()} on a timesheet.`
+                  : input.action === "clear_holiday"
+                    ? `Removed holiday from ${input.day.toUpperCase()} on a timesheet.`
+                    : input.action === "clear_lock"
+                      ? `Unlocked ${input.day.toUpperCase()} on a timesheet.`
+                      : `Removed review mark for ${input.day.toUpperCase()} on a timesheet.`,
       requestId: input.requestId,
       details: {
         entityLabel: existing.employeeNameSnapshot,
         requestId: input.requestId,
         changedFields: shouldAutoSubmit
           ? ["dailyReviewStatus", "dailyReviewNotes", "status", "submittedAt"]
-          : ["dailyReviewStatus", "dailyReviewNotes"],
+          : input.action === "holiday" || input.action === "clear_holiday"
+            ? ["dailyReviewHolidays"]
+            : input.action === "locked" || input.action === "clear_lock"
+              ? ["dailyReviewLocks"]
+              : ["dailyReviewStatus", "dailyReviewNotes"],
         before: {
           status: existing.status,
           submittedAt: existing.submittedAt ?? null,
           dailyReviewStatus: existing.dailyReviewStatus ?? {},
           dailyReviewNotes: existing.dailyReviewNotes ?? {},
+          dailyReviewHolidays: existing.dailyReviewHolidays ?? {},
+          dailyReviewLocks: existing.dailyReviewLocks ?? {},
         },
         after: {
           status: updatedEntry.status,
           submittedAt: updatedEntry.submittedAt ?? null,
           dailyReviewStatus: updatedEntry.dailyReviewStatus ?? {},
           dailyReviewNotes: updatedEntry.dailyReviewNotes ?? {},
+          dailyReviewHolidays: updatedEntry.dailyReviewHolidays ?? {},
+          dailyReviewLocks: updatedEntry.dailyReviewLocks ?? {},
         },
-          context: {
-            operation: input.reviewed
+        context: {
+          operation:
+            input.action === "reviewed"
               ? shouldAutoSubmit
                 ? "timesheet_day_review_mark_and_auto_submit"
                 : "timesheet_day_review_mark"
-              : input.note?.trim()
+              : input.action === "reverted"
                 ? "timesheet_day_review_revert"
-                : "timesheet_day_review_undo",
-            day: input.day,
-            autoSubmitted: shouldAutoSubmit,
-          },
+                : input.action === "holiday"
+                  ? "timesheet_day_review_mark_holiday"
+                  : input.action === "locked"
+                    ? "timesheet_day_review_lock"
+                    : input.action === "clear_holiday"
+                      ? "timesheet_day_review_clear_holiday"
+                      : input.action === "clear_lock"
+                        ? "timesheet_day_review_clear_lock"
+                        : "timesheet_day_review_undo",
+          day: input.day,
+          autoSubmitted: shouldAutoSubmit,
         },
-      });
+      },
+    });
 
     const nextStore = normalizeStore({
       ...current,
