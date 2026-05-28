@@ -9,6 +9,7 @@ import AdminsPage from "@/pages/admins";
 import EmployeesPage from "@/pages/employees";
 import SalaryPage from "@/pages/salary";
 import FundsPage from "@/pages/funds";
+import FinancialAccountsPage from "@/pages/financial-accounts";
 import ClientsPage from "@/pages/clients";
 import PurchaseOrdersPage from "@/pages/purchase-orders";
 import PreApprovalsPage from "@/pages/pre-approvals";
@@ -134,6 +135,9 @@ function LegacyRouter() {
         <Route path="/settings">
           {renderRoleRoute(isAuthenticated, role, "admin", <SettingsPage />)}
         </Route>
+        <Route path="/settings/financial-accounts">
+          {renderRoleRoute(isAuthenticated, role, "admin", <FinancialAccountsPage />)}
+        </Route>
         <Route path="/timesheets">
           {renderRoleRoute(isAuthenticated, role, "admin", <AdminTimesheetValidationPage />)}
         </Route>
@@ -158,6 +162,7 @@ function LegacyRouter() {
         <Route path="/admin/project-budgets">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/project-budgets" />)}</Route>
         <Route path="/admin/expenses">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/expenses" />)}</Route>
         <Route path="/admin/settings">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/settings" />)}</Route>
+        <Route path="/admin/settings/financial-accounts">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/settings/financial-accounts" />)}</Route>
         <Route path="/admin/timesheets">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/timesheets" />)}</Route>
         <Route path="/admin/leave-management">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/leave-management" />)}</Route>
         <Route path="/admin/reports">{renderRoleRoute(isAuthenticated, role, "admin", <Redirect to="/reports" />)}</Route>

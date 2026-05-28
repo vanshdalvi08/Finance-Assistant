@@ -60,6 +60,7 @@ import { resolveExpenseAttachmentUrl } from "../lib/storage";
 import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../lib/notifications";
 import fundsRouter from "../modules/funds/funds.routes";
 import expensesRouter from "../modules/expenses/expenses.routes";
+import financialAccountsRouter from "../modules/financial-accounts/financial-accounts.routes";
 import salaryRouter from "../modules/payroll/payroll.routes";
 import projectsRouter from "../modules/projects/projects.routes";
 import purchaseOrdersRouter from "../modules/purchase-orders/purchase-orders.routes";
@@ -81,6 +82,7 @@ import { assertActorRoleAccess, assertEmployeeSelfAccess, assertTenantAccess } f
 import { hashSha256 } from "../lib/security";
 import { logger } from "../lib/logger";
 import { assertWorkflowTransition, WorkflowStateError } from "../lib/workflow-state";
+import { summarizeFinancialAccounts } from "../lib/financial-accounts";
 
 const router: IRouter = Router();
 const mutationLimiter = rateLimit({
@@ -1190,6 +1192,7 @@ router.use((request, response, next) => {
   next();
 });
 router.use(fundsRouter);
+router.use(financialAccountsRouter);
 router.use(expensesRouter);
 router.use(salaryRouter);
 router.use(purchaseOrdersRouter);
@@ -1202,11 +1205,12 @@ router.get("/overview", requireTenantRole("admin"), async (_request, response) =
   const tenantExpenses = store.expenses.filter((expense) => tenantExpenseFilter(expense, tenantId));
   const tenantFunds = store.funds.filter((fund) => tenantFundFilter(fund, tenantId));
   const tenantSalaries = store.salaries.filter((salary) => tenantSalaryFilter(salary, tenantId));
+  const accountSummary = summarizeFinancialAccounts(store, tenantId);
   const approved = approveExpenses({ ...store, expenses: tenantExpenses });
   const totalFunds = tenantFunds.reduce((sum, fund) => sum + Math.abs(fund.amount), 0);
   const totalExpenses = approved.reduce((sum, expense) => sum + Math.abs(expense.amount), 0);
   const totalSalaryPaid = paidSalaries({ ...store, salaries: tenantSalaries }).reduce((sum, salary) => sum + Math.abs(salary.amount), 0);
-  const currentBalance = availableFunds(store, tenantId);
+  const currentBalance = accountSummary.accounts.length > 0 ? accountSummary.allAccountsBalance : availableFunds(store, tenantId);
   const currentMonth = new Date().toISOString().slice(0, 7);
   const currentYear = new Date().getFullYear();
 
@@ -1216,6 +1220,9 @@ router.get("/overview", requireTenantRole("admin"), async (_request, response) =
     totalSalaryPaid,
     activeEmployees: employees.filter((employee) => employee.status === "active").length,
     currentBalance,
+    allAccountsBalance: accountSummary.allAccountsBalance,
+    operationalBalance: accountSummary.operationalBalance,
+    financialAccounts: accountSummary.accounts,
     pendingExpenses: tenantExpenses.filter((expense) => expense.status === "submitted").length,
     pendingTimesheets: store.timesheets.filter(
       (entry) => entry.status === "submitted" && employees.some((employee) => employee.id === entry.employeeId),

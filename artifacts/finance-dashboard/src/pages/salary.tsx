@@ -7,10 +7,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { format } from "date-fns";
+import { addDays, format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
-import { CreditCard, Clock3, BadgeCheck, Plus } from "lucide-react";
-import type { FinancialAccount } from "@/lib/api";
+import { CreditCard, Clock3, BadgeCheck, Plus, ChevronRight, CalendarDays } from "lucide-react";
+import type { FinancialAccount, TimesheetEntry } from "@/lib/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -35,7 +35,29 @@ type SalaryRecord = {
   hours?: number;
   rate?: number;
   paidAt?: string;
+  timesheetId?: string;
 };
+
+type PendingPayrollGroup = {
+  key: string;
+  employeeId?: string;
+  employeeName: string;
+  records: SalaryRecord[];
+  totalHours: number;
+  totalAmount: number;
+  monthLabels: string[];
+};
+
+type WorklogDay = {
+  key: string;
+  dayLabel: string;
+  dateLabel: string;
+  monthLabel: string;
+  hours: number;
+  workNote: string;
+};
+
+const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 
 function formatCurrency(value: number) {
   return value.toLocaleString("en-IN", {
@@ -95,6 +117,33 @@ function upsertSalaryRecord(current: SalaryRecord[] | undefined, nextRecord: Sal
   return current.map((record) => (record.id === nextRecord.id ? nextRecord : record));
 }
 
+function monthLabelFromRecord(record: SalaryRecord) {
+  const sourceDate = record.weekStart ?? record.date;
+  return sourceDate ? format(new Date(sourceDate), "MMMM yyyy") : "Unknown month";
+}
+
+function buildWorklogDays(timesheet: TimesheetEntry): WorklogDay[] {
+  const rows = DAY_KEYS.map((dayKey, offset) => {
+    const date = addDays(new Date(timesheet.weekStart), offset);
+    const hours = timesheet.lines.reduce((sum, line) => sum + Number(line.hours?.[dayKey] ?? 0), 0);
+    const workNote = timesheet.lines
+      .map((line) => line.workNotes?.[dayKey]?.trim() ?? "")
+      .filter((value) => value.length > 0)
+      .join(" | ");
+
+    return {
+      key: `${timesheet.id}-${dayKey}`,
+      dayLabel: format(date, "EEE"),
+      dateLabel: format(date, "dd MMM yyyy"),
+      monthLabel: format(date, "MMMM yyyy"),
+      hours,
+      workNote,
+    };
+  });
+
+  return rows.filter((row) => row.hours > 0 || row.workNote.length > 0);
+}
+
 export default function Salary() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -114,7 +163,9 @@ export default function Salary() {
   const { data: salaryData = [] } = useQuery({ queryKey: ["salaries"], queryFn: api.getSalaries });
   const { data: adminOverview } = useQuery({ queryKey: ["adminOverview"], queryFn: api.getAdminOverview });
   const { data: financialAccounts = [] } = useQuery({ queryKey: ["financialAccounts"], queryFn: api.getFinancialAccounts });
+  const { data: timesheets = [] } = useQuery({ queryKey: ["timesheets"], queryFn: () => api.getTimesheets() });
   const salaries = salaryData as SalaryRecord[];
+  const timesheetEntries = timesheets as TimesheetEntry[];
   const activeAccounts = useMemo(
     () => financialAccounts.filter((account) => account.isActive),
     [financialAccounts],
@@ -154,6 +205,51 @@ export default function Salary() {
 
   const pendingPayroll = salaries.filter((record) => getPayrollStatus(record) === "pending");
   const paidPayroll = salaries.filter((record) => getPayrollStatus(record) === "paid");
+  const timesheetById = useMemo(
+    () => new Map(timesheetEntries.map((entry) => [entry.id, entry])),
+    [timesheetEntries],
+  );
+
+  const pendingPayrollGroups = useMemo(() => {
+    const groups = new Map<string, PendingPayrollGroup>();
+
+    for (const record of pendingPayroll) {
+      const employee = employees.find((item) => item.id === record.employeeId);
+      const employeeName = record.employeeNameSnapshot ?? employee?.name ?? "Unknown";
+      const key = record.employeeId?.trim() || employeeName.toLowerCase();
+      const existing =
+        groups.get(key) ??
+        ({
+          key,
+          employeeId: record.employeeId,
+          employeeName,
+          records: [],
+          totalHours: 0,
+          totalAmount: 0,
+          monthLabels: [],
+        } satisfies PendingPayrollGroup);
+
+      existing.records.push(record);
+      existing.totalHours += Number(record.hours ?? 0);
+      existing.totalAmount += getPayrollAmount(record);
+      const monthLabel = monthLabelFromRecord(record);
+      if (!existing.monthLabels.includes(monthLabel)) {
+        existing.monthLabels.push(monthLabel);
+      }
+      groups.set(key, existing);
+    }
+
+    return Array.from(groups.values())
+      .map((group) => ({
+        ...group,
+        records: [...group.records].sort((left, right) => {
+          const leftDate = new Date(left.weekStart ?? left.date).getTime();
+          const rightDate = new Date(right.weekStart ?? right.date).getTime();
+          return rightDate - leftDate;
+        }),
+      }))
+      .sort((left, right) => right.totalAmount - left.totalAmount);
+  }, [employees, pendingPayroll]);
 
   const pendingAmount = pendingPayroll.reduce((sum, record) => sum + getPayrollAmount(record), 0);
   const paidThisMonth = paidPayroll
@@ -542,85 +638,240 @@ export default function Salary() {
                   <TableHeader>
                     <TableRow className="border-border/50">
                       <TableHead>Employee</TableHead>
-                      <TableHead>Week</TableHead>
+                      <TableHead>Pending Entries</TableHead>
                       <TableHead className="text-right">Hours</TableHead>
-                      <TableHead className="text-right">Rate</TableHead>
                       <TableHead className="text-right">Amount</TableHead>
-                      <TableHead>Paid Through</TableHead>
                       <TableHead>Source</TableHead>
                       <TableHead className="text-right">Action</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {pendingPayroll.length === 0 ? (
+                    {pendingPayrollGroups.length === 0 ? (
                       <TableRow className="border-border/50">
-                        <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
+                        <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
                           No pending payroll records.
                         </TableCell>
                       </TableRow>
                     ) : (
-                      pendingPayroll.map((record) => {
-                        const employee = employees.find((item) => item.id === record.employeeId);
-                        const employeeName = record.employeeNameSnapshot ?? employee?.name ?? "Unknown";
-                        const amount = getPayrollAmount(record);
-                        const selectedAccountId = accountSelections[record.id] ?? record.accountId;
-                        const availableBalance = selectedAccountId ? accountBalances.get(selectedAccountId) ?? 0 : 0;
-                        const insufficientFunds = Boolean(selectedAccountId) && amount > availableBalance;
-
+                      pendingPayrollGroups.map((group) => {
                         return (
-                          <TableRow key={record.id} className="border-border/50">
-                            <TableCell className="font-medium">{employeeName}</TableCell>
+                          <TableRow key={group.key} className="border-border/50">
+                            <TableCell className="font-medium">
+                              <div className="space-y-1">
+                                <div>{group.employeeName}</div>
+                                <div className="text-xs text-muted-foreground">
+                                  {group.monthLabels.join(" • ")}
+                                </div>
+                              </div>
+                            </TableCell>
                             <TableCell className="text-muted-foreground">
-                              {record.weekStart ? format(new Date(record.weekStart), "MMM dd, yyyy") : "-"}
+                              {group.records.length} {group.records.length === 1 ? "entry" : "entries"}
                             </TableCell>
                             <TableCell className="text-right tabular-nums text-muted-foreground">
-                              {typeof record.hours === "number" ? record.hours : "-"}
-                            </TableCell>
-                            <TableCell className="text-right tabular-nums text-muted-foreground">
-                              {typeof record.rate === "number" ? formatCurrency(record.rate) : "-"}
+                              {group.totalHours || "-"}
                             </TableCell>
                             <TableCell className="text-right font-medium tabular-nums">
-                              {formatCurrency(amount)}
+                              {formatCurrency(group.totalAmount)}
                             </TableCell>
                             <TableCell>
-                              <Select
-                                value={selectedAccountId ?? ""}
-                                onValueChange={(value) =>
-                                  setAccountSelections((current) => ({ ...current, [record.id]: value }))
-                                }
-                              >
-                                <SelectTrigger className="h-8 w-[190px] rounded-full border-border/60 bg-background/70 text-xs">
-                                  <SelectValue placeholder="Select account" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {financialAccounts.filter((account) => account.isActive).map((account) => (
-                                    <SelectItem key={account.id} value={account.id}>
-                                      {accountDisplayName(account)}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </TableCell>
-                            <TableCell>
-                              <Badge variant="outline" className="font-normal text-xs">
-                                {record.source === "timesheet" ? "Timesheet" : "Manual"}
-                              </Badge>
+                              <div className="flex flex-wrap gap-2">
+                                {group.records.some((record) => record.source === "timesheet") ? (
+                                  <Badge variant="outline" className="font-normal text-xs">
+                                    Timesheet
+                                  </Badge>
+                                ) : null}
+                                {group.records.some((record) => record.source === "manual") ? (
+                                  <Badge variant="outline" className="font-normal text-xs">
+                                    Manual
+                                  </Badge>
+                                ) : null}
+                              </div>
                             </TableCell>
                             <TableCell className="text-right">
-                              <Button
-                                size="sm"
-                                onClick={() => payMutation.mutate(record)}
-                                disabled={payMutation.isPending || !selectedAccountId || insufficientFunds}
-                                title={
-                                  !selectedAccountId
-                                    ? "Select the financial account used for this payout."
-                                    : insufficientFunds
-                                      ? "Not enough available funds in the selected account."
-                                      : undefined
-                                }
-                              >
-                                {!selectedAccountId ? "Select Account" : insufficientFunds ? "Insufficient Funds" : "Pay Salary"}
-                              </Button>
+                              <Dialog>
+                                <DialogTrigger asChild>
+                                  <Button size="sm" variant="outline" className="gap-2 rounded-full">
+                                    View Payroll
+                                    <ChevronRight className="h-3.5 w-3.5" />
+                                  </Button>
+                                </DialogTrigger>
+                                <DialogContent className="max-w-5xl">
+                                  <DialogHeader>
+                                    <DialogTitle className="flex items-center gap-2">
+                                      <CalendarDays className="h-4 w-4 text-muted-foreground" />
+                                      {group.employeeName} Payroll Review
+                                    </DialogTitle>
+                                  </DialogHeader>
+
+                                  <div className="grid gap-3 md:grid-cols-3">
+                                    <Card className="border-border/60">
+                                      <CardContent className="pt-5">
+                                        <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Pending Entries</div>
+                                        <div className="mt-2 text-2xl font-semibold">{group.records.length}</div>
+                                      </CardContent>
+                                    </Card>
+                                    <Card className="border-border/60">
+                                      <CardContent className="pt-5">
+                                        <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Total Hours</div>
+                                        <div className="mt-2 text-2xl font-semibold">{group.totalHours}</div>
+                                      </CardContent>
+                                    </Card>
+                                    <Card className="border-border/60">
+                                      <CardContent className="pt-5">
+                                        <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Total Amount</div>
+                                        <div className="mt-2 text-2xl font-semibold">{formatCurrency(group.totalAmount)}</div>
+                                      </CardContent>
+                                    </Card>
+                                  </div>
+
+                                  <div className="grid gap-4 lg:grid-cols-[1.1fr,1.3fr]">
+                                    <Card className="border-border/60">
+                                      <CardHeader className="pb-3">
+                                        <CardTitle className="text-sm">Pending Payout Entries</CardTitle>
+                                      </CardHeader>
+                                      <CardContent className="space-y-3">
+                                        {group.records.map((record) => {
+                                          const amount = getPayrollAmount(record);
+                                          const selectedAccountId = accountSelections[record.id] ?? record.accountId;
+                                          const availableBalance = selectedAccountId ? accountBalances.get(selectedAccountId) ?? 0 : 0;
+                                          const insufficientFunds = Boolean(selectedAccountId) && amount > availableBalance;
+
+                                          return (
+                                            <div key={record.id} className="rounded-2xl border border-border/60 bg-background/60 p-4">
+                                              <div className="flex items-start justify-between gap-4">
+                                                <div>
+                                                  <div className="font-medium">
+                                                    {record.weekStart ? format(new Date(record.weekStart), "dd MMM yyyy") : format(new Date(record.date), "dd MMM yyyy")}
+                                                  </div>
+                                                  <div className="mt-1 text-xs text-muted-foreground">
+                                                    {typeof record.hours === "number" ? `${record.hours}h` : "Hours not set"}
+                                                    {typeof record.rate === "number" ? ` • ${formatCurrency(record.rate)} rate` : ""}
+                                                  </div>
+                                                </div>
+                                                <div className="text-right">
+                                                  <div className="font-semibold tabular-nums">{formatCurrency(amount)}</div>
+                                                  <Badge variant="outline" className="mt-2 text-[11px] font-normal">
+                                                    {record.source === "timesheet" ? "Timesheet" : "Manual"}
+                                                  </Badge>
+                                                </div>
+                                              </div>
+
+                                              <div className="mt-4 space-y-3">
+                                                <Select
+                                                  value={selectedAccountId ?? ""}
+                                                  onValueChange={(value) =>
+                                                    setAccountSelections((current) => ({ ...current, [record.id]: value }))
+                                                  }
+                                                >
+                                                  <SelectTrigger className="h-9 rounded-xl border-border/60 bg-background/70 text-xs">
+                                                    <SelectValue placeholder="Select account" />
+                                                  </SelectTrigger>
+                                                  <SelectContent>
+                                                    {financialAccounts.filter((account) => account.isActive).map((account) => (
+                                                      <SelectItem key={account.id} value={account.id}>
+                                                        {accountDisplayName(account)}
+                                                      </SelectItem>
+                                                    ))}
+                                                  </SelectContent>
+                                                </Select>
+
+                                                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                                  <span>{selectedAccountId ? `Available ${formatCurrency(availableBalance)}` : "Select payout account"}</span>
+                                                  {record.note ? <span className="max-w-[220px] truncate">{record.note}</span> : null}
+                                                </div>
+
+                                                <Button
+                                                  size="sm"
+                                                  className="w-full rounded-xl"
+                                                  onClick={() => payMutation.mutate(record)}
+                                                  disabled={payMutation.isPending || !selectedAccountId || insufficientFunds}
+                                                  title={
+                                                    !selectedAccountId
+                                                      ? "Select the financial account used for this payout."
+                                                      : insufficientFunds
+                                                        ? "Not enough available funds in the selected account."
+                                                        : undefined
+                                                  }
+                                                >
+                                                  {!selectedAccountId ? "Select Account" : insufficientFunds ? "Insufficient Funds" : "Pay Salary"}
+                                                </Button>
+                                              </div>
+                                            </div>
+                                          );
+                                        })}
+                                      </CardContent>
+                                    </Card>
+
+                                    <Card className="border-border/60">
+                                      <CardHeader className="pb-3">
+                                        <CardTitle className="text-sm">Month Work Hours & Work Notes</CardTitle>
+                                      </CardHeader>
+                                      <CardContent className="space-y-4">
+                                        {group.records.map((record) => {
+                                          const timesheet = record.timesheetId ? timesheetById.get(record.timesheetId) : undefined;
+                                          const worklogDays = timesheet ? buildWorklogDays(timesheet) : [];
+                                          const groupedByMonth = worklogDays.reduce<Record<string, WorklogDay[]>>((accumulator, day) => {
+                                            accumulator[day.monthLabel] = [...(accumulator[day.monthLabel] ?? []), day];
+                                            return accumulator;
+                                          }, {});
+
+                                          return (
+                                            <div key={`${record.id}-worklog`} className="rounded-2xl border border-border/60 bg-background/50 p-4">
+                                              <div className="mb-3 flex items-center justify-between gap-3">
+                                                <div>
+                                                  <div className="font-medium">
+                                                    {record.weekStart ? format(new Date(record.weekStart), "dd MMM yyyy") : format(new Date(record.date), "dd MMM yyyy")}
+                                                  </div>
+                                                  <div className="text-xs text-muted-foreground">
+                                                    {record.source === "timesheet" ? "Approved timesheet worklog" : "Manual payroll entry"}
+                                                  </div>
+                                                </div>
+                                                <div className="text-sm font-medium tabular-nums">{typeof record.hours === "number" ? `${record.hours}h` : "-"}</div>
+                                              </div>
+
+                                              {Object.keys(groupedByMonth).length > 0 ? (
+                                                Object.entries(groupedByMonth).map(([monthLabel, monthRows]) => (
+                                                  <div key={`${record.id}-${monthLabel}`} className="mb-4 last:mb-0">
+                                                    <div className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                                                      {monthLabel}
+                                                    </div>
+                                                    <Table>
+                                                      <TableHeader>
+                                                        <TableRow className="border-border/50">
+                                                          <TableHead className="w-[70px]">Day</TableHead>
+                                                          <TableHead className="w-[130px]">Date</TableHead>
+                                                          <TableHead className="w-[90px] text-right">Hours</TableHead>
+                                                          <TableHead>Work Note</TableHead>
+                                                        </TableRow>
+                                                      </TableHeader>
+                                                      <TableBody>
+                                                        {monthRows.map((day) => (
+                                                          <TableRow key={day.key} className="border-border/50">
+                                                            <TableCell className="font-medium">{day.dayLabel}</TableCell>
+                                                            <TableCell className="text-muted-foreground">{day.dateLabel}</TableCell>
+                                                            <TableCell className="text-right tabular-nums">{day.hours}</TableCell>
+                                                            <TableCell className="text-muted-foreground">
+                                                              {day.workNote || <span className="text-muted-foreground/70">No work note</span>}
+                                                            </TableCell>
+                                                          </TableRow>
+                                                        ))}
+                                                      </TableBody>
+                                                    </Table>
+                                                  </div>
+                                                ))
+                                              ) : (
+                                                <div className="rounded-xl border border-dashed border-border/60 bg-background/40 px-4 py-5 text-sm text-muted-foreground">
+                                                  No detailed day-wise worklog found for this payroll entry.
+                                                </div>
+                                              )}
+                                            </div>
+                                          );
+                                        })}
+                                      </CardContent>
+                                    </Card>
+                                  </div>
+                                </DialogContent>
+                              </Dialog>
                             </TableCell>
                           </TableRow>
                         );

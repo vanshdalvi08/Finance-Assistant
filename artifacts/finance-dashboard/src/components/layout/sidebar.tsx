@@ -23,6 +23,7 @@ import {
   ShieldCheck,
   UserRound,
   Users,
+  WalletCards,
   Wallet,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -85,7 +86,10 @@ const adminGroups: AdminNavGroup[] = [
   {
     id: "settings",
     label: "Settings",
-    items: [{ href: "/settings", label: "Settings", icon: Settings }],
+    items: [
+      { href: "/settings", label: "Settings", icon: Settings },
+      { href: "/settings/financial-accounts", label: "Financial Accounts", icon: WalletCards },
+    ],
   },
 ];
 

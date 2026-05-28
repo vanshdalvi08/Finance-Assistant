@@ -1,15 +1,14 @@
 import { useMemo, useState } from "react";
-import { Link } from "wouter";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { DashboardCard } from "@/components/dashboard-card";
-import { api } from "@/lib/api";
+import { api, type FinancialAccountBalance } from "@/lib/api";
 import { useQuery } from "@tanstack/react-query";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowDownRight, ArrowRight, ArrowUpRight, IndianRupee, Wallet, Receipt } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, IndianRupee, Wallet, Receipt } from "lucide-react";
 import { format } from "date-fns";
 
 function getMonthWindow(offset: number) {
@@ -42,6 +41,21 @@ function monthKey(date: string) {
 
 function formatMonthLabel(value: string) {
   return format(new Date(`${value}-01T00:00:00`), "MMMM yyyy");
+}
+
+function accountScopeLabel(account: FinancialAccountBalance) {
+  switch (account.accountType) {
+    case "personal":
+      return "Personal";
+    case "mixed_use":
+      return "Mixed";
+    case "reserve":
+      return "Reserve";
+    case "cash":
+      return "Cash";
+    default:
+      return "Operational";
+  }
 }
 
 function buildFinanceChartData(
@@ -89,6 +103,7 @@ export default function Dashboard() {
   const { data: salaries = [] } = useQuery({ queryKey: ["salaries"], queryFn: api.getSalaries });
   const { data: overview } = useQuery({ queryKey: ["adminOverview"], queryFn: api.getAdminOverview });
   const [selectedPeriod, setSelectedPeriod] = useState("all");
+  const [selectedBalanceView, setSelectedBalanceView] = useState("operational");
   const approvedExpenses = expenses.filter((expense) => expense.status === "approved");
   const paidSalaries = salaries.filter((salary) => salary.status === "paid");
 
@@ -132,9 +147,21 @@ export default function Dashboard() {
         .filter((salary) => isSameMonth(salary.paidAt ?? salary.date, selectedMonth))
         .reduce((sum, salary) => sum + salary.amount, 0)
     : overview?.totalSalaryPaid ?? paidSalaries.reduce((sum, salary) => sum + salary.amount, 0);
-  const availableFunds = selectedMonth
-    ? totalFunds - totalExpenses - totalSalaryPaid
-    : overview?.currentBalance ?? totalFunds - totalExpenses - totalSalaryPaid;
+  const availableFunds = useMemo(() => {
+    if (!overview) {
+      return selectedMonth ? totalFunds - totalExpenses - totalSalaryPaid : 0;
+    }
+
+    if (selectedBalanceView === "all") {
+      return overview.allAccountsBalance ?? overview.currentBalance;
+    }
+
+    if (selectedBalanceView === "operational") {
+      return overview.operationalBalance ?? overview.currentBalance;
+    }
+
+    return overview.financialAccounts.find((account) => account.id === selectedBalanceView)?.balance ?? 0;
+  }, [overview, selectedBalanceView, selectedMonth, totalExpenses, totalFunds, totalSalaryPaid]);
   const recentTransactions = (
     selectedMonth
       ? transactions.filter((transaction) => isSameMonth(transaction.date, selectedMonth))
@@ -203,12 +230,20 @@ export default function Dashboard() {
                   <p className="text-3xl font-bold tracking-tight">
                     {availableFunds.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
                   </p>
-                  <Link href="/transactions?type=fund">
-                    <button className="inline-flex items-center gap-1 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground">
-                      View fund transactions
-                      <ArrowRight className="h-4 w-4" />
-                    </button>
-                  </Link>
+                  <Select value={selectedBalanceView} onValueChange={setSelectedBalanceView}>
+                    <SelectTrigger className="h-8 w-[170px] rounded-full border-emerald-500/15 bg-emerald-500/6 px-3 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="operational">Operational</SelectItem>
+                      <SelectItem value="all">All Accounts</SelectItem>
+                      {(overview?.financialAccounts ?? []).map((account) => (
+                        <SelectItem key={account.id} value={account.id}>
+                          {account.name} - {accountScopeLabel(account)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="shrink-0 rounded-lg bg-emerald-500/8 p-2 text-emerald-300">
                   <Wallet className="w-5 h-5" />
