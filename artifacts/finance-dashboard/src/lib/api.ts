@@ -1815,9 +1815,14 @@ export const api = {
   saveTimesheet: async (entry: TimesheetEntry) =>
     normalizeTimesheet((await businessPost<{ timesheet: TimesheetEntry }>("/timesheets", normalizeTimesheet(entry))).timesheet),
 
-  setTimesheetDayReviewStatus: async (id: string, day: DayKey, reviewed: boolean, note?: string) =>
+  setTimesheetDayReviewStatus: async (
+    id: string,
+    day: DayKey,
+    action: "reviewed" | "reverted" | "holiday" | "locked" | "clear_review" | "clear_holiday" | "clear_lock",
+    note?: string,
+  ) =>
     normalizeTimesheet(
-      (await businessPost<{ timesheet: TimesheetEntry }>(`/timesheets/${id}/daily-review/${day}`, { reviewed, note }, "PATCH")).timesheet,
+      (await businessPost<{ timesheet: TimesheetEntry }>(`/timesheets/${id}/daily-review/${day}`, { action, note }, "PATCH")).timesheet,
     ),
 
   submitTimesheetEntry: async (entry: TimesheetEntry) =>
