@@ -750,9 +750,25 @@ export default function AdminTimesheetValidationPage() {
       setPendingReviewKey(`${id}:${day}`);
     },
     onSuccess: (updatedEntry, variables) => {
-      queryClient.setQueryData<TimesheetEntry[]>(["timesheets"], (currentEntries = []) =>
-        currentEntries.map((entry) => (entry.id === updatedEntry.id ? updatedEntry : entry)),
-      );
+      queryClient.setQueryData<TimesheetEntry[]>(["timesheets"], (currentEntries = []) => {
+        let replaced = false;
+        const nextEntries = currentEntries.map((entry) => {
+          if (entry.id === updatedEntry.id) {
+            replaced = true;
+            return updatedEntry;
+          }
+
+          if (entry.employeeId === updatedEntry.employeeId && entry.weekStart === updatedEntry.weekStart) {
+            replaced = true;
+            return updatedEntry;
+          }
+
+          return entry;
+        });
+
+        return replaced ? nextEntries : [...currentEntries, updatedEntry];
+      });
+      void queryClient.invalidateQueries({ queryKey: ["timesheets"] });
       void queryClient.invalidateQueries({ queryKey: ["notifications"] });
       if (variables.action === "reviewed" || variables.action === "clear_review") {
         setDayUnverifyTarget(null);
