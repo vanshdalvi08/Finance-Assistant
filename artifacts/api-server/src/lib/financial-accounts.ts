@@ -1,5 +1,12 @@
 import { DEFAULT_TENANT_ID } from "./tenants";
-import { type BusinessStore, type ExpenseRecord, type FinancialAccountRecord, type FundRecord, type SalaryRecord } from "./business-store";
+import {
+  type BusinessStore,
+  type ExpenseRecord,
+  type FinancialAccountRecord,
+  type FundRecord,
+  type SalaryRecord,
+  isLegacyDefaultFinancialAccount,
+} from "./business-store";
 
 export type FinancialAccountSummary = FinancialAccountRecord & {
   balance: number;
@@ -32,7 +39,15 @@ function tenantSalaryFilter(salary: SalaryRecord, tenantId: string) {
 export function listFinancialAccounts(store: BusinessStore, tenantId: string) {
   return store.financialAccounts
     .filter((account) => tenantMatches(account.tenantId, tenantId))
-    .sort((left, right) => left.name.localeCompare(right.name));
+    .sort((left, right) => {
+      const leftIsLegacy = isLegacyDefaultFinancialAccount(left);
+      const rightIsLegacy = isLegacyDefaultFinancialAccount(right);
+      if (leftIsLegacy !== rightIsLegacy) {
+        return leftIsLegacy ? 1 : -1;
+      }
+
+      return left.name.localeCompare(right.name);
+    });
 }
 
 export function findFinancialAccount(store: BusinessStore, tenantId: string, accountId?: string | null) {
@@ -53,7 +68,10 @@ export function findFinancialAccount(store: BusinessStore, tenantId: string, acc
 export function preferredFinancialAccount(store: BusinessStore, tenantId: string) {
   const accounts = listFinancialAccounts(store, tenantId);
   return (
-    accounts.find((account) => account.accountType === "operational" && account.isActive)
+    accounts.find((account) => account.accountType === "operational" && account.isActive && !isLegacyDefaultFinancialAccount(account))
+    ?? accounts.find((account) => account.isActive && !isLegacyDefaultFinancialAccount(account))
+    ?? accounts.find((account) => !isLegacyDefaultFinancialAccount(account))
+    ?? accounts.find((account) => account.accountType === "operational" && account.isActive)
     ?? accounts.find((account) => account.isActive)
     ?? accounts[0]
     ?? null

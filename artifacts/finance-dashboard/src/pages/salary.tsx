@@ -61,6 +61,10 @@ type WorklogDay = {
 
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 
+function isLegacyDefaultAccount(account: FinancialAccount) {
+  return account.id.startsWith("acct_operational_");
+}
+
 function formatCurrency(value: number) {
   return value.toLocaleString("en-IN", {
     style: "currency",
@@ -156,7 +160,7 @@ export default function Salary() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [showPaidHistory, setShowPaidHistory] = useState(false);
-  const [accountSelections, setAccountSelections] = useState<Record<string, string>>({});
+  const [payoutAccountSelections, setPayoutAccountSelections] = useState<Record<string, string>>({});
   const [dialogOpen, setDialogOpen] = useState(false);
   const [entryMode, setEntryMode] = useState<SalaryEntryMode>("historical_paid");
   const [salaryEmployeeMode, setSalaryEmployeeMode] = useState<SalaryEmployeeMode>("existing");
@@ -179,31 +183,6 @@ export default function Salary() {
     [financialAccounts],
   );
 
-  useEffect(() => {
-    if (financialAccounts.length === 0) {
-      return;
-    }
-
-    setAccountSelections((current) => {
-      const next = { ...current };
-      const preferred =
-        financialAccounts.find((account) => account.accountType === "operational" && account.isActive)
-        ?? financialAccounts.find((account) => account.isActive)
-        ?? financialAccounts[0];
-
-      for (const record of salaries.filter((item) => getPayrollStatus(item) === "pending")) {
-        if (next[record.id] || record.accountId) {
-          continue;
-        }
-        if (preferred) {
-          next[record.id] = preferred.id;
-        }
-      }
-
-      return next;
-    });
-  }, [financialAccounts, salaries]);
-
   const accountBalances = useMemo(
     () => new Map((adminOverview?.financialAccounts ?? []).map((account) => [account.id, account.balance])),
     [adminOverview?.financialAccounts],
@@ -211,8 +190,14 @@ export default function Salary() {
   const selectedDialogAccount = activeAccounts.find((account) => account.id === salaryAccountId) ?? null;
   const selectedDialogAccountBalance = selectedDialogAccount ? accountBalances.get(selectedDialogAccount.id) ?? null : null;
 
-  const pendingPayroll = salaries.filter((record) => getPayrollStatus(record) === "pending");
-  const paidPayroll = salaries.filter((record) => getPayrollStatus(record) === "paid");
+  const pendingPayroll = useMemo(
+    () => salaries.filter((record) => getPayrollStatus(record) === "pending"),
+    [salaries],
+  );
+  const paidPayroll = useMemo(
+    () => salaries.filter((record) => getPayrollStatus(record) === "paid"),
+    [salaries],
+  );
   const timesheetById = useMemo(
     () => new Map(timesheetEntries.map((entry) => [entry.id, entry])),
     [timesheetEntries],
@@ -267,31 +252,59 @@ export default function Salary() {
       .sort((left, right) => right.totalAmount - left.totalAmount);
   }, [employees, pendingPayroll]);
 
+  useEffect(() => {
+    if (pendingPayrollGroups.length === 0 || activeAccounts.length === 0) {
+      return;
+    }
+
+    setPayoutAccountSelections((current) => {
+      const next = { ...current };
+      const preferredAccount =
+        activeAccounts.find((account) => account.accountType === "operational" && !isLegacyDefaultAccount(account))
+        ?? activeAccounts.find((account) => !isLegacyDefaultAccount(account))
+        ?? activeAccounts[0];
+
+      for (const group of pendingPayrollGroups) {
+        if (next[group.key]) {
+          continue;
+        }
+
+        const existingAccountId = group.records.find((record) => record.accountId)?.accountId;
+        next[group.key] = existingAccountId ?? preferredAccount?.id ?? "";
+      }
+
+      return next;
+    });
+  }, [activeAccounts, pendingPayrollGroups]);
+
   const pendingAmount = pendingPayroll.reduce((sum, record) => sum + getPayrollAmount(record), 0);
   const paidThisMonth = paidPayroll
     .filter((record) => getPayrollDate(record).slice(0, 7) === new Date().toISOString().slice(0, 7))
     .reduce((sum, record) => sum + getPayrollAmount(record), 0);
 
   const payMutation = useMutation({
-    mutationFn: async (record: SalaryRecord): Promise<{ persisted: boolean; record: SalaryRecord }> => {
-      const accountId = accountSelections[record.id] ?? record.accountId;
-      const updatedRecord = await api.paySalaryRecord(record.id, { accountId });
-      return { persisted: true, record: updatedRecord ?? record };
+    mutationFn: async ({
+      group,
+      accountId,
+    }: {
+      group: PendingPayrollGroup;
+      accountId: string;
+    }): Promise<{ records: SalaryRecord[] }> => {
+      const paidRecords: SalaryRecord[] = [];
+      for (const record of group.records) {
+        const updatedRecord = await api.paySalaryRecord(record.id, { accountId });
+        paidRecords.push(updatedRecord ?? record);
+      }
+      return { records: paidRecords };
     },
-    onSuccess: (_result, record) => {
-      const updatedRecord =
-        _result.record ??
-        ({
-          ...record,
-          status: "paid" as const,
-          paidAt: new Date().toISOString(),
-          date: record.date ?? new Date().toISOString(),
-        } satisfies SalaryRecord);
-      queryClient.setQueryData<SalaryRecord[]>(["salaries"], (current) => upsertSalaryRecord(current, updatedRecord));
-      if (record.employeeId) {
-        queryClient.setQueryData<SalaryRecord[]>(["employee-salaries", record.employeeId], (current) =>
-          upsertSalaryRecord(current, updatedRecord),
-        );
+    onSuccess: ({ records }) => {
+      for (const record of records) {
+        queryClient.setQueryData<SalaryRecord[]>(["salaries"], (current) => upsertSalaryRecord(current, record));
+        if (record.employeeId) {
+          queryClient.setQueryData<SalaryRecord[]>(["employee-salaries", record.employeeId], (current) =>
+            upsertSalaryRecord(current, record),
+          );
+        }
       }
       void Promise.all([
         queryClient.invalidateQueries({ queryKey: ["adminOverview"] }),
@@ -301,7 +314,7 @@ export default function Salary() {
 
       toast({
         title: "Salary paid",
-        description: "The payroll record has been moved to paid history.",
+        description: "The combined payroll payout has been moved to paid history.",
       });
     },
     onError: (error) => {
@@ -319,7 +332,8 @@ export default function Salary() {
     }
 
     const preferred =
-      activeAccounts.find((account) => account.accountType === "operational")
+      activeAccounts.find((account) => account.accountType === "operational" && !isLegacyDefaultAccount(account))
+      ?? activeAccounts.find((account) => !isLegacyDefaultAccount(account))
       ?? activeAccounts[0];
     if (preferred) {
       setSalaryAccountId(preferred.id);
@@ -745,78 +759,85 @@ export default function Salary() {
                                       <div className="grid gap-4 lg:grid-cols-[1.1fr,1.3fr]">
                                     <Card className="border-border/60">
                                       <CardHeader className="pb-3">
-                                        <CardTitle className="text-sm">Pending Payout Entries</CardTitle>
+                                        <CardTitle className="text-sm">Final Payout</CardTitle>
                                       </CardHeader>
-                                      <CardContent className="space-y-3">
-                                        {group.records.map((record) => {
-                                          const amount = getPayrollAmount(record);
-                                          const selectedAccountId = accountSelections[record.id] ?? record.accountId;
-                                          const availableBalance = selectedAccountId ? accountBalances.get(selectedAccountId) ?? 0 : 0;
-                                          const insufficientFunds = Boolean(selectedAccountId) && amount > availableBalance;
-
-                                          return (
-                                            <div key={record.id} className="rounded-2xl border border-border/60 bg-background/60 p-4">
-                                              <div className="flex items-start justify-between gap-4">
-                                                <div>
-                                                  <div className="font-medium">
-                                                    {record.weekStart ? format(new Date(record.weekStart), "dd MMM yyyy") : format(new Date(record.date), "dd MMM yyyy")}
-                                                  </div>
-                                                  <div className="mt-1 text-xs text-muted-foreground">
-                                                    {typeof record.hours === "number" ? `${record.hours}h` : "Hours not set"}
-                                                    {typeof record.rate === "number" ? ` • ${formatCurrency(record.rate)} rate` : ""}
-                                                  </div>
-                                                </div>
-                                                <div className="text-right">
-                                                  <div className="font-semibold tabular-nums">{formatCurrency(amount)}</div>
-                                                  <Badge variant="outline" className="mt-2 text-[11px] font-normal">
-                                                    {record.source === "timesheet" ? "Timesheet" : "Manual"}
-                                                  </Badge>
-                                                </div>
-                                              </div>
-
-                                              <div className="mt-4 space-y-3">
-                                                <Select
-                                                  value={selectedAccountId ?? ""}
-                                                  onValueChange={(value) =>
-                                                    setAccountSelections((current) => ({ ...current, [record.id]: value }))
-                                                  }
-                                                >
-                                                  <SelectTrigger className="h-9 rounded-xl border-border/60 bg-background/70 text-xs">
-                                                    <SelectValue placeholder="Select account" />
-                                                  </SelectTrigger>
-                                                  <SelectContent>
-                                                    {financialAccounts.filter((account) => account.isActive).map((account) => (
-                                                      <SelectItem key={account.id} value={account.id}>
-                                                        {accountDisplayName(account)}
-                                                      </SelectItem>
-                                                    ))}
-                                                  </SelectContent>
-                                                </Select>
-
-                                                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                                                  <span>{selectedAccountId ? `Available ${formatCurrency(availableBalance)}` : "Select payout account"}</span>
-                                                  {record.note ? <span className="max-w-[220px] truncate">{record.note}</span> : null}
-                                                </div>
-
-                                                <Button
-                                                  size="sm"
-                                                  className="w-full rounded-xl"
-                                                  onClick={() => payMutation.mutate(record)}
-                                                  disabled={payMutation.isPending || !selectedAccountId || insufficientFunds}
-                                                  title={
-                                                    !selectedAccountId
-                                                      ? "Select the financial account used for this payout."
-                                                      : insufficientFunds
-                                                        ? "Not enough available funds in the selected account."
-                                                        : undefined
-                                                  }
-                                                >
-                                                  {!selectedAccountId ? "Select Account" : insufficientFunds ? "Insufficient Funds" : "Pay Salary"}
-                                                </Button>
+                                      <CardContent className="space-y-4">
+                                        <div className="rounded-2xl border border-border/60 bg-background/60 p-4">
+                                          <div className="flex items-start justify-between gap-4">
+                                            <div>
+                                              <div className="font-medium">Combined payroll payout</div>
+                                              <div className="mt-1 text-xs text-muted-foreground">
+                                                {group.records.length} weekly entries combined into one payment.
                                               </div>
                                             </div>
-                                          );
-                                        })}
+                                            <div className="text-right">
+                                              <div className="font-semibold tabular-nums">{formatCurrency(group.totalAmount)}</div>
+                                              <Badge variant="outline" className="mt-2 text-[11px] font-normal">
+                                                Monthly total
+                                              </Badge>
+                                            </div>
+                                          </div>
+
+                                          <div className="mt-4 space-y-3">
+                                            <Select
+                                              value={payoutAccountSelections[group.key] ?? ""}
+                                              onValueChange={(value) =>
+                                                setPayoutAccountSelections((current) => ({ ...current, [group.key]: value }))
+                                              }
+                                            >
+                                              <SelectTrigger className="h-9 rounded-xl border-border/60 bg-background/70 text-xs">
+                                                <SelectValue placeholder="Select account" />
+                                              </SelectTrigger>
+                                              <SelectContent>
+                                                {financialAccounts.filter((account) => account.isActive).map((account) => (
+                                                  <SelectItem key={account.id} value={account.id}>
+                                                    {accountDisplayName(account)}
+                                                  </SelectItem>
+                                                ))}
+                                              </SelectContent>
+                                            </Select>
+
+                                            <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                                              <span>
+                                                {payoutAccountSelections[group.key]
+                                                  ? `Available ${formatCurrency(accountBalances.get(payoutAccountSelections[group.key]) ?? 0)}`
+                                                  : "Select payout account"}
+                                              </span>
+                                              <span className="max-w-[220px] truncate">
+                                                {group.records.map((record) => weekRangeLabel(record.weekStart ?? record.date)).join(" • ")}
+                                              </span>
+                                            </div>
+
+                                            <Button
+                                              size="sm"
+                                              className="w-full rounded-xl"
+                                              onClick={() =>
+                                                payMutation.mutate({
+                                                  group,
+                                                  accountId: payoutAccountSelections[group.key] ?? "",
+                                                })
+                                              }
+                                              disabled={
+                                                payMutation.isPending ||
+                                                !payoutAccountSelections[group.key] ||
+                                                group.totalAmount > (accountBalances.get(payoutAccountSelections[group.key] ?? "") ?? 0)
+                                              }
+                                              title={
+                                                !payoutAccountSelections[group.key]
+                                                  ? "Select the financial account used for this payout."
+                                                  : group.totalAmount > (accountBalances.get(payoutAccountSelections[group.key] ?? "") ?? 0)
+                                                    ? "Not enough available funds in the selected account."
+                                                    : undefined
+                                              }
+                                            >
+                                              {!payoutAccountSelections[group.key]
+                                                ? "Select Account"
+                                                : group.totalAmount > (accountBalances.get(payoutAccountSelections[group.key] ?? "") ?? 0)
+                                                  ? "Insufficient Funds"
+                                                  : "Pay Final Salary"}
+                                            </Button>
+                                          </div>
+                                        </div>
                                       </CardContent>
                                     </Card>
 

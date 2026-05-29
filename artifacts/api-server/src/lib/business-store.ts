@@ -228,6 +228,7 @@ export interface TimesheetEntry {
   reviewedAt?: string;
   reviewedBy?: string;
   reviewNotes?: string;
+  reviewShell?: boolean;
   dailyReviewStatus?: TimesheetDailyReviewStatus;
   dailyReviewNotes?: TimesheetDailyReviewNotes;
   dailyReviewHolidays?: TimesheetDailyReviewHolidays;
@@ -433,6 +434,11 @@ export function normalizeFinancialAccountCategory(value: unknown): FinancialAcco
 
 export function defaultFinancialAccountId(tenantId: string) {
   return `acct_operational_${tenantId}`;
+}
+
+export function isLegacyDefaultFinancialAccount(account: Pick<FinancialAccountRecord, "id" | "tenantId">) {
+  const tenantId = account.tenantId?.trim() || DEFAULT_TENANT_ID;
+  return account.id === defaultFinancialAccountId(tenantId);
 }
 
 export function createDefaultFinancialAccount(tenantId: string): FinancialAccountRecord {
@@ -1273,6 +1279,7 @@ function timesheetFromRow(row: DbTimesheet): TimesheetEntry {
     reviewedAt: row.reviewedAt ? toIso(row.reviewedAt) : undefined,
     reviewedBy: row.reviewedBy?.trim() || undefined,
     reviewNotes: row.reviewNotes?.trim() || undefined,
+    reviewShell: Boolean((row as DbTimesheet & { reviewShell?: unknown }).reviewShell),
     dailyReviewStatus: normalizeDailyReviewStatus(row.dailyReviewStatus),
     dailyReviewNotes: normalizeDailyReviewNotes(row.dailyReviewNotes),
     dailyReviewHolidays: normalizeDailyReviewHolidays(row.dailyReviewHolidays),
@@ -1317,6 +1324,7 @@ function timesheetFromNormalizedRow(
     reviewedAt: row.reviewedAt ? toIso(row.reviewedAt) : undefined,
     reviewedBy: row.reviewedBy?.trim() || undefined,
     reviewNotes: row.reviewNotes?.trim() || undefined,
+    reviewShell: Boolean((row as DbTimesheet & { reviewShell?: unknown }).reviewShell),
     dailyReviewStatus: normalizeDailyReviewStatus(row.dailyReviewStatus),
     dailyReviewNotes: normalizeDailyReviewNotes(row.dailyReviewNotes),
     dailyReviewHolidays: normalizeDailyReviewHolidays(row.dailyReviewHolidays),
@@ -1403,6 +1411,7 @@ function timesheetToRow(entry: TimesheetEntry) {
     reviewedAt: entry.reviewedAt ? toDate(entry.reviewedAt) : null,
     reviewedBy: entry.reviewedBy?.trim() || null,
     reviewNotes: entry.reviewNotes?.trim() || null,
+    reviewShell: Boolean(entry.reviewShell),
     dailyReviewStatus: normalizeDailyReviewStatus(entry.dailyReviewStatus) ?? {},
     dailyReviewNotes: normalizeDailyReviewNotes(entry.dailyReviewNotes) ?? {},
     dailyReviewHolidays: normalizeDailyReviewHolidays(entry.dailyReviewHolidays) ?? {},
@@ -1610,17 +1619,22 @@ function ensureFinancialAccountCoverage(store: BusinessStore): BusinessStore {
 
   for (const tenantId of tenantIds) {
     const existingTenantAccounts = accounts.filter((account) => account.tenantId === tenantId);
-    const operationalAccount = existingTenantAccounts.find((account) => account.accountType === "operational")
+    const legacyDefaultId = defaultFinancialAccountId(tenantId);
+    const preferredAccount =
+      existingTenantAccounts.find(
+        (account) =>
+          account.isActive &&
+          account.accountType === "operational" &&
+          account.id !== legacyDefaultId,
+      )
+      ?? existingTenantAccounts.find((account) => account.isActive && account.id !== legacyDefaultId)
+      ?? existingTenantAccounts.find((account) => account.id !== legacyDefaultId)
+      ?? existingTenantAccounts.find((account) => account.isActive && account.accountType === "operational")
+      ?? existingTenantAccounts.find((account) => account.isActive)
       ?? existingTenantAccounts[0];
-    if (operationalAccount) {
-      defaultAccountByTenant.set(tenantId, operationalAccount.id);
-      continue;
+    if (preferredAccount) {
+      defaultAccountByTenant.set(tenantId, preferredAccount.id);
     }
-
-    const created = createDefaultFinancialAccount(tenantId);
-    accounts.push(created);
-    accountIds.add(created.id);
-    defaultAccountByTenant.set(tenantId, created.id);
   }
 
   return {
@@ -1629,20 +1643,30 @@ function ensureFinancialAccountCoverage(store: BusinessStore): BusinessStore {
     funds: store.funds.map((fund) => {
       const tenantId = fund.tenantId?.trim() || DEFAULT_TENANT_ID;
       const fallbackId = defaultAccountByTenant.get(tenantId);
+      const legacyDefaultId = defaultFinancialAccountId(tenantId);
       const accountId = fund.accountId?.trim();
+      const keepExistingAccount =
+        accountId &&
+        accountIds.has(accountId) &&
+        !(accountId === legacyDefaultId && fallbackId && fallbackId !== legacyDefaultId);
       return {
         ...fund,
-        accountId: accountId && accountIds.has(accountId) ? accountId : fallbackId,
+        accountId: keepExistingAccount ? accountId : fallbackId,
       };
     }),
     expenses: store.expenses.map((expense) => {
       const tenantId = expense.tenantId?.trim() || DEFAULT_TENANT_ID;
       const fallbackId = defaultAccountByTenant.get(tenantId);
+      const legacyDefaultId = defaultFinancialAccountId(tenantId);
       const accountId = expense.accountId?.trim();
       const shouldBackfill = expense.status === "approved";
+      const keepExistingAccount =
+        accountId &&
+        accountIds.has(accountId) &&
+        !(accountId === legacyDefaultId && fallbackId && fallbackId !== legacyDefaultId);
       return {
         ...expense,
-        accountId: accountId && accountIds.has(accountId)
+        accountId: keepExistingAccount
           ? accountId
           : shouldBackfill
             ? fallbackId
@@ -1652,11 +1676,16 @@ function ensureFinancialAccountCoverage(store: BusinessStore): BusinessStore {
     salaries: store.salaries.map((salary) => {
       const tenantId = salary.tenantId?.trim() || DEFAULT_TENANT_ID;
       const fallbackId = defaultAccountByTenant.get(tenantId);
+      const legacyDefaultId = defaultFinancialAccountId(tenantId);
       const accountId = salary.accountId?.trim();
       const shouldBackfill = salary.status === "paid";
+      const keepExistingAccount =
+        accountId &&
+        accountIds.has(accountId) &&
+        !(accountId === legacyDefaultId && fallbackId && fallbackId !== legacyDefaultId);
       return {
         ...salary,
-        accountId: accountId && accountIds.has(accountId)
+        accountId: keepExistingAccount
           ? accountId
           : shouldBackfill
             ? fallbackId
@@ -1776,14 +1805,15 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
       employeeNameSnapshot: String(entry.employeeNameSnapshot ?? "").trim(),
       weekStart: normalizeWeekStart(String(entry.weekStart ?? nowIso())),
       status: entry.status ?? "draft",
-      submittedAt: entry.submittedAt ? normalizeDate(String(entry.submittedAt)) : undefined,
-      reviewedAt: entry.reviewedAt ? normalizeDate(String(entry.reviewedAt)) : undefined,
-      reviewedBy: entry.reviewedBy?.trim() || undefined,
-      reviewNotes: entry.reviewNotes?.trim() || undefined,
-      dailyReviewStatus: normalizeDailyReviewStatus(entry.dailyReviewStatus),
-      dailyReviewNotes: normalizeDailyReviewNotes(entry.dailyReviewNotes),
-      dailyReviewHolidays: normalizeDailyReviewHolidays(entry.dailyReviewHolidays),
-      dailyReviewLocks: normalizeDailyReviewLocks(entry.dailyReviewLocks),
+    submittedAt: entry.submittedAt ? normalizeDate(String(entry.submittedAt)) : undefined,
+    reviewedAt: entry.reviewedAt ? normalizeDate(String(entry.reviewedAt)) : undefined,
+    reviewedBy: entry.reviewedBy?.trim() || undefined,
+    reviewNotes: entry.reviewNotes?.trim() || undefined,
+    reviewShell: Boolean(entry.reviewShell),
+    dailyReviewStatus: normalizeDailyReviewStatus(entry.dailyReviewStatus),
+    dailyReviewNotes: normalizeDailyReviewNotes(entry.dailyReviewNotes),
+    dailyReviewHolidays: normalizeDailyReviewHolidays(entry.dailyReviewHolidays),
+    dailyReviewLocks: normalizeDailyReviewLocks(entry.dailyReviewLocks),
       lines: Array.isArray(entry.lines) && entry.lines.length > 0 ? entry.lines.map((line) => ({
         id: line.id ?? createId("line"),
         project: String(line.project ?? "").trim(),

@@ -5,6 +5,7 @@ import {
   type FinancialAccountCategory,
   type FinancialAccountRecord,
   type FinancialAccountType,
+  isLegacyDefaultFinancialAccount,
   normalizeFinancialAccountCategory,
   normalizeFinancialAccountType,
   nowIso,
@@ -83,7 +84,15 @@ export async function listFinancialAccountsForTenant(tenantId: string) {
   const store = await readStore();
   return store.financialAccounts
     .filter((account) => normalizeTenantId(account.tenantId) === tenantId)
-    .sort((left, right) => left.name.localeCompare(right.name));
+    .sort((left, right) => {
+      const leftIsLegacy = isLegacyDefaultFinancialAccount(left);
+      const rightIsLegacy = isLegacyDefaultFinancialAccount(right);
+      if (leftIsLegacy !== rightIsLegacy) {
+        return leftIsLegacy ? 1 : -1;
+      }
+
+      return left.name.localeCompare(right.name);
+    });
 }
 
 export async function getFinancialAccountForTenant(id: string, tenantId: string) {

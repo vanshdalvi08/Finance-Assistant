@@ -42,6 +42,10 @@ const expenseSchema = z.object({
 type ExpenseForm = z.infer<typeof expenseSchema>;
 type ExpenseEntryMode = "review_flow" | "historical_paid";
 
+function isLegacyDefaultAccount(account: FinancialAccount) {
+  return account.id.startsWith("acct_operational_");
+}
+
 function accountDisplayName(account: FinancialAccount) {
   const typeLabel =
     account.accountType === "mixed_use"
@@ -496,7 +500,10 @@ export default function Expenses() {
       return;
     }
 
-    const preferred = financialAccounts.find((account) => account.accountType === "operational" && account.isActive)
+    const preferred = financialAccounts.find(
+      (account) => account.accountType === "operational" && account.isActive && !isLegacyDefaultAccount(account),
+    )
+      ?? activeAccounts.find((account) => !isLegacyDefaultAccount(account))
       ?? activeAccounts[0]
       ?? financialAccounts[0];
     if (preferred) {
