@@ -25,6 +25,7 @@ export type FundActor = {
 
 export type FundInput = {
   id?: string;
+  accountId?: string;
   source: string;
   amount: number;
   date: string;
@@ -48,6 +49,7 @@ function tenantFundFilter(fund: FundRecord, tenantId: string) {
 
 function normalizedFundPayload(input: FundInput) {
   return {
+    accountId: input.accountId?.trim() || "",
     source: input.source.trim(),
     amount: Math.abs(input.amount),
     date: normalizeDate(input.date),
@@ -61,12 +63,15 @@ function requestHashForFund(input: FundInput) {
   return hashSha256(JSON.stringify(normalizedFundPayload(input)));
 }
 
-function summarizeFund(fund: Pick<FundRecord, "source" | "amount" | "date" | "note" | "receiptName"> | null | undefined) {
+function summarizeFund(
+  fund: Pick<FundRecord, "accountId" | "source" | "amount" | "date" | "note" | "receiptName"> | null | undefined,
+) {
   if (!fund) {
     return null;
   }
 
   return {
+    accountId: fund.accountId ?? "",
     source: fund.source,
     amount: fund.amount,
     date: fund.date,
@@ -77,10 +82,11 @@ function summarizeFund(fund: Pick<FundRecord, "source" | "amount" | "date" | "no
 
 function changedFundFields(previous: FundRecord | null | undefined, next: FundRecord) {
   if (!previous) {
-    return ["source", "amount", "date", "note", "receiptName", "receiptPath"];
+    return ["accountId", "source", "amount", "date", "note", "receiptName", "receiptPath"];
   }
 
   const fields: string[] = [];
+  if ((previous.accountId || "") !== (next.accountId || "")) fields.push("accountId");
   if (previous.source !== next.source) fields.push("source");
   if (previous.amount !== next.amount) fields.push("amount");
   if (previous.date !== next.date) fields.push("date");
@@ -205,9 +211,18 @@ export async function saveFund(
       if (payload.amount <= 0) {
         throw new FundsServiceError("invalid_input", "Fund amount must be greater than zero.");
       }
+      const selectedAccountId = payload.accountId || existing?.accountId || undefined;
+      if (selectedAccountId) {
+        const matchedAccount = current.financialAccounts.find((account) => account.id === selectedAccountId) ?? null;
+        if (!matchedAccount) {
+          throw new FundsServiceError("invalid_input", "Selected financial account was not found.");
+        }
+        assertTenantAccess(matchedAccount.tenantId, actor.tenantId, () => new FundsServiceError("forbidden", "Forbidden"));
+      }
       fund = {
         id: input.id ?? existing?.id ?? createId("fund"),
         tenantId: actor.tenantId,
+        accountId: selectedAccountId,
         source: payload.source,
         amount: payload.amount,
         date: payload.date,

@@ -1,6 +1,6 @@
-import { useMemo, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useState, type ChangeEvent } from "react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
-import { api, type AdminOverview, type ChartPoint, type Fund, type Transaction } from "@/lib/api";
+import { api, type AdminOverview, type ChartPoint, type FinancialAccount, type Fund, type Transaction } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AlertDialog,
@@ -17,6 +17,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -34,6 +35,25 @@ const fundSchema = z.object({
   date: z.string().min(1, "Date is required"),
   note: z.string().optional(),
 });
+
+function isLegacyDefaultAccount(account: FinancialAccount) {
+  return account.id.startsWith("acct_operational_");
+}
+
+function accountDisplayName(account: FinancialAccount) {
+  const typeLabel =
+    account.accountType === "mixed_use"
+      ? "Mixed Use"
+      : account.accountType === "operational"
+        ? "Main"
+        : account.accountType === "reserve"
+          ? "Reserve"
+          : account.accountType === "cash"
+            ? "Cash"
+            : "Personal";
+
+  return `${account.name} • ${typeLabel}`;
+}
 
 function getSafeDate(value: string | null | undefined) {
   if (!value) {
@@ -182,6 +202,7 @@ export default function Funds() {
   const [receiptFile, setReceiptFile] = useState<UploadedAsset | null>(null);
   const [isUploadingReceipt, setIsUploadingReceipt] = useState(false);
   const [fundToDelete, setFundToDelete] = useState<Fund | null>(null);
+  const [selectedAccountId, setSelectedAccountId] = useState("");
 
   const { data: funds = [] } = useQuery({
     queryKey: ["funds"],
@@ -195,6 +216,42 @@ export default function Funds() {
     queryKey: ["adminOverview"],
     queryFn: api.getAdminOverview,
   });
+  const { data: financialAccounts = [] } = useQuery({
+    queryKey: ["financialAccounts"],
+    queryFn: api.getFinancialAccounts,
+  });
+
+  const activeAccounts = useMemo(
+    () => financialAccounts.filter((account) => account.isActive),
+    [financialAccounts],
+  );
+  const accountBalances = useMemo(
+    () => new Map((overview?.financialAccounts ?? []).map((account) => [account.id, account.balance])),
+    [overview?.financialAccounts],
+  );
+
+  useEffect(() => {
+    if (
+      selectedAccountId &&
+      activeAccounts.some((account) => account.id === selectedAccountId && !isLegacyDefaultAccount(account))
+    ) {
+      return;
+    }
+
+    const preferred =
+      activeAccounts.find((account) => account.accountType === "operational" && !isLegacyDefaultAccount(account))
+      ?? activeAccounts.find((account) => !isLegacyDefaultAccount(account))
+      ?? financialAccounts.find((account) => account.isActive && !isLegacyDefaultAccount(account))
+      ?? activeAccounts[0]
+      ?? financialAccounts[0];
+
+    if (preferred && preferred.id !== selectedAccountId) {
+      setSelectedAccountId(preferred.id);
+    }
+  }, [activeAccounts, financialAccounts, selectedAccountId]);
+
+  const selectedAccount = activeAccounts.find((account) => account.id === selectedAccountId) ?? null;
+  const selectedAccountBalance = selectedAccount ? accountBalances.get(selectedAccount.id) ?? null : null;
 
   const totalCapitalInflow = funds.reduce((sum, fund) => sum + fund.amount, 0);
   const simplifiedChartData = useMemo(
@@ -253,6 +310,7 @@ export default function Funds() {
     mutationFn: async (data: z.infer<typeof fundSchema>) =>
       api.addFund({
         ...data,
+        accountId: selectedAccountId || undefined,
         receiptName: receiptFile?.fileName,
         receiptPath: receiptFile?.path,
       }),
@@ -399,6 +457,35 @@ export default function Funds() {
                       )}
                     />
                   </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium leading-none text-foreground">Financial Account</label>
+                    <Select value={selectedAccountId} onValueChange={setSelectedAccountId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select account" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {activeAccounts.map((account) => (
+                          <SelectItem key={account.id} value={account.id}>
+                            {accountDisplayName(account)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
+                      <span>
+                        {selectedAccountBalance != null
+                          ? `Available ${selectedAccountBalance.toLocaleString("en-IN", {
+                              style: "currency",
+                              currency: "INR",
+                              maximumFractionDigits: 0,
+                            })}`
+                          : "Choose the account this inflow should be recorded against"}
+                      </span>
+                      <span className="max-w-[220px] truncate">
+                        {selectedAccount ? accountDisplayName(selectedAccount) : "No account selected"}
+                      </span>
+                    </div>
+                  </div>
                   <FormField
                     control={form.control}
                     name="note"
@@ -464,7 +551,11 @@ export default function Funds() {
                       </div>
                     ) : null}
                   </div>
-                  <Button type="submit" className="w-full mt-4" disabled={addMutation.isPending || isUploadingReceipt}>
+                  <Button
+                    type="submit"
+                    className="w-full mt-4"
+                    disabled={addMutation.isPending || isUploadingReceipt || !selectedAccountId}
+                  >
                     Save Inflow
                   </Button>
                 </form>

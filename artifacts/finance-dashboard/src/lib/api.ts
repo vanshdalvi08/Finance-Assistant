@@ -20,6 +20,8 @@ export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 export type TimesheetWorkNotes = Partial<Record<DayKey, string>>;
 export type TimesheetDailyReviewStatus = Partial<Record<DayKey, "reviewed" | "reverted">>;
 export type TimesheetDailyReviewNotes = Partial<Record<DayKey, string>>;
+export type TimesheetDailyReviewHolidays = Partial<Record<DayKey, true>>;
+export type TimesheetDailyReviewLocks = Partial<Record<DayKey, true>>;
 type TimeOffKind = "leave" | "holiday";
 
 const DAY_KEYS: DayKey[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -171,7 +173,10 @@ export interface TimesheetEntry {
   reviewedBy?: string;
   reviewNotes?: string;
   dailyReviewStatus?: TimesheetDailyReviewStatus;
+  dailyReviewHolidays?: TimesheetDailyReviewHolidays;
+  dailyReviewLocks?: TimesheetDailyReviewLocks;
   dailyReviewNotes?: TimesheetDailyReviewNotes;
+  reviewShell?: boolean;
   lines: TimesheetTaskLine[];
 }
 
@@ -930,9 +935,16 @@ function normalizeTimesheet(entry: TimesheetEntry): TimesheetEntry {
     dailyReviewStatus: Object.fromEntries(
       Object.entries(entry.dailyReviewStatus ?? {}).filter(([, value]) => value === "reviewed" || value === "reverted"),
     ) as TimesheetDailyReviewStatus,
+    dailyReviewHolidays: Object.fromEntries(
+      Object.entries(entry.dailyReviewHolidays ?? {}).filter(([, value]) => value === true),
+    ) as TimesheetDailyReviewHolidays,
+    dailyReviewLocks: Object.fromEntries(
+      Object.entries(entry.dailyReviewLocks ?? {}).filter(([, value]) => value === true),
+    ) as TimesheetDailyReviewLocks,
     dailyReviewNotes: Object.fromEntries(
       Object.entries(entry.dailyReviewNotes ?? {}).filter(([, value]) => typeof value === "string" && value.trim().length > 0),
     ) as TimesheetDailyReviewNotes,
+    reviewShell: entry.reviewShell === true,
     lines: (entry.lines.length ? entry.lines : [{ id: createId("line"), project: "", task: "", subTask: "", notes: "", workNotes: {}, hours: blankHours() }]).map((line) => ({
       ...line,
       id: line.id || createId("line"),
