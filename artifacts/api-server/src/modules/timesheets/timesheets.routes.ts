@@ -415,6 +415,17 @@ function timesheetHasContent(entry: TimesheetEntry) {
   });
 }
 
+function timesheetHasProtectedDayState(entry: TimesheetEntry) {
+  return DAY_KEYS.some(
+    (day) =>
+      entry.dailyReviewStatus?.[day] === "reviewed" ||
+      entry.dailyReviewStatus?.[day] === "reverted" ||
+      entry.dailyReviewHolidays?.[day] === true ||
+      entry.dailyReviewLocks?.[day] === true ||
+      Boolean(entry.dailyReviewNotes?.[day]?.trim()),
+  );
+}
+
 function reviewedDayLabel(day: DayKey) {
   return day.charAt(0).toUpperCase() + day.slice(1);
 }
@@ -761,7 +772,7 @@ router.get("/timesheets", requireTenantRole("admin", "employee"), async (request
   }
 
   let timesheets = store.timesheets
-    .filter((entry) => entry.status !== "draft" || timesheetHasContent(entry))
+    .filter((entry) => entry.status !== "draft" || timesheetHasContent(entry) || timesheetHasProtectedDayState(entry))
     .sort((left, right) => new Date(right.weekStart).getTime() - new Date(left.weekStart).getTime());
 
   if (employeeId) {

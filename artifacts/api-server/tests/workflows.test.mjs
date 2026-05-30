@@ -1553,6 +1553,16 @@ test("empty review shells can be shown, locked, and protected before work is ent
     assert.equal(holidayResponse.status, 200, JSON.stringify(holidayResponse.json));
     assert.equal(holidayResponse.json.timesheet.dailyReviewHolidays.tue, true);
 
+    const listResponse = await api("/business/timesheets", {
+      method: "GET",
+      token: adminToken,
+    });
+    assert.equal(listResponse.status, 200, JSON.stringify(listResponse.json));
+    const listedShell = listResponse.json.timesheets.find((entry) => entry.id === timesheetId);
+    assert.ok(listedShell, "protected empty review shell should stay visible in the timesheet list");
+    assert.equal(listedShell.dailyReviewLocks.mon, true);
+    assert.equal(listedShell.dailyReviewHolidays.tue, true);
+
     const employeePatch = await api(`/business/timesheets/${timesheetId}`, {
       method: "PATCH",
       token: employeeToken,

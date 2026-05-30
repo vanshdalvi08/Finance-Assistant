@@ -2821,6 +2821,10 @@ export async function setTimesheetDayReviewStatusFast(input: {
     const nextDailyReviewLocks = { ...(existing.dailyReviewLocks ?? {}) };
     const dayHasLoggedWork = existing.lines.some((line) => Number(line.hours?.[input.day] ?? 0) > 0 || Boolean(line.workNotes?.[input.day]?.trim()));
 
+    if (input.action === "reviewed" && !dayHasLoggedWork) {
+      throw new Error(`Cannot mark ${input.day.toUpperCase()} as reviewed before hours or a work note are added.`);
+    }
+
     if (input.action === "holiday" && dayHasLoggedWork) {
       throw new Error(`Cannot mark ${input.day.toUpperCase()} as a holiday after work has already been logged.`);
     }

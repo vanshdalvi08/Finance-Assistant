@@ -154,6 +154,41 @@ function timesheetHasDisplayContent(entry: TimesheetEntry) {
   return entry.lines.some((line) => lineHasContent(line));
 }
 
+function timesheetHasProtectedDayState(entry: Pick<TimesheetEntry, "dailyReviewStatus" | "dailyReviewHolidays" | "dailyReviewLocks" | "dailyReviewNotes">) {
+  return DAYS.some(
+    (day) =>
+      entry.dailyReviewStatus?.[day] === "reviewed" ||
+      entry.dailyReviewStatus?.[day] === "reverted" ||
+      entry.dailyReviewHolidays?.[day] === true ||
+      entry.dailyReviewLocks?.[day] === true ||
+      Boolean(entry.dailyReviewNotes?.[day]?.trim()),
+  );
+}
+
+function preferredDailyReviewEntry(current: DailyReviewSheetEntry | undefined, candidate: DailyReviewSheetEntry) {
+  if (!current) {
+    return candidate;
+  }
+
+  const currentHasProtectedState = timesheetHasProtectedDayState(current);
+  const candidateHasProtectedState = timesheetHasProtectedDayState(candidate);
+  if (candidateHasProtectedState !== currentHasProtectedState) {
+    return candidateHasProtectedState ? candidate : current;
+  }
+
+  const currentHasDisplayContent = timesheetHasDisplayContent(current);
+  const candidateHasDisplayContent = timesheetHasDisplayContent(candidate);
+  if (candidateHasDisplayContent !== currentHasDisplayContent) {
+    return candidateHasDisplayContent ? candidate : current;
+  }
+
+  if (candidate.reviewShell !== current.reviewShell) {
+    return candidate.reviewShell ? candidate : current;
+  }
+
+  return new Date(candidate.updatedAt).getTime() >= new Date(current.updatedAt).getTime() ? candidate : current;
+}
+
 type DailyReviewSheetEntry = TimesheetEntry & {
   isMissingSheet?: boolean;
 };
@@ -768,7 +803,6 @@ export default function AdminTimesheetValidationPage() {
 
         return replaced ? nextEntries : [...currentEntries, updatedEntry];
       });
-      void queryClient.invalidateQueries({ queryKey: ["timesheets"] });
       void queryClient.invalidateQueries({ queryKey: ["notifications"] });
       if (variables.action === "reviewed" || variables.action === "clear_review") {
         setDayUnverifyTarget(null);
@@ -839,8 +873,25 @@ export default function AdminTimesheetValidationPage() {
         reviewShell: true,
         lines: [],
       }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["timesheets"] });
+    onSuccess: (createdEntry) => {
+      queryClient.setQueryData<TimesheetEntry[]>(["timesheets"], (currentEntries = []) => {
+        let replaced = false;
+        const nextEntries = currentEntries.map((entry) => {
+          if (entry.id === createdEntry.id) {
+            replaced = true;
+            return createdEntry;
+          }
+
+          if (entry.employeeId === createdEntry.employeeId && entry.weekStart === createdEntry.weekStart) {
+            replaced = true;
+            return createdEntry;
+          }
+
+          return entry;
+        });
+
+        return replaced ? nextEntries : [...currentEntries, createdEntry];
+      });
     },
   });
 
@@ -945,7 +996,7 @@ export default function AdminTimesheetValidationPage() {
         ? (() => {
             const byEmployee = new Map<string, DailyReviewSheetEntry>();
             for (const entry of dailyReviewWeekEntries) {
-              byEmployee.set(entry.employeeId, entry);
+              byEmployee.set(entry.employeeId, preferredDailyReviewEntry(byEmployee.get(entry.employeeId), entry));
             }
 
             for (const employee of employees) {
@@ -967,7 +1018,7 @@ export default function AdminTimesheetValidationPage() {
 
             return Array.from(byEmployee.values());
           })()
-        : dailyReviewWeekEntries.filter((entry) => timesheetHasDisplayContent(entry));
+        : dailyReviewWeekEntries.filter((entry) => timesheetHasDisplayContent(entry) || timesheetHasProtectedDayState(entry));
 
       return entries
         .filter((entry) => {
