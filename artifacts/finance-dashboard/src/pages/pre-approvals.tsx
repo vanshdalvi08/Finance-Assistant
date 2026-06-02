@@ -28,10 +28,12 @@ import { useToast } from "@/hooks/use-toast";
 
 type WorkRowDraft = {
   id: string;
+  lineType: "work" | "expense";
   taskName: string;
   description: string;
   hours: string;
   rate: string;
+  amount: string;
 };
 
 type FormState = {
@@ -51,6 +53,8 @@ const emptyPartyInfo: PreApprovalPartyInfo = {
 };
 
 const emptyProjectInfo: PreApprovalProjectInfo = {
+  documentNumber: "",
+  revision: "01",
   workDescription: "",
   projectStartDate: "",
   projectCompletionDate: "",
@@ -73,11 +77,33 @@ function clientToPartyInfo(client: { name: string; email: string; phone?: string
 function createRow(): WorkRowDraft {
   return {
     id: `row_${Math.random().toString(36).slice(2, 10)}`,
+    lineType: "work",
     taskName: "",
     description: "",
     hours: "",
     rate: "",
+    amount: "",
   };
+}
+
+function formatDocDateCode(value?: string) {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) {
+    return formatDocDateCode();
+  }
+
+  const year = String(date.getFullYear()).slice(-2);
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}${month}${day}`;
+}
+
+function createDocumentNumber(date: string) {
+  return `REFO-${formatDocDateCode(date)}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+}
+
+function isAutoDocumentNumber(value?: string) {
+  return /^REFO-\d{6}-[A-Z0-9]{4}$/.test(value?.trim() ?? "");
 }
 
 function formatCurrency(value: number) {
@@ -89,7 +115,15 @@ function formatCurrency(value: number) {
 }
 
 function amountFor(row: WorkRowDraft) {
+  if (row.lineType === "expense") {
+    return Math.round(Math.max(0, Number(row.amount || 0)));
+  }
+
   return Math.round(Math.max(0, Number(row.hours || 0)) * Math.max(0, Number(row.rate || 0)));
+}
+
+function isExpenseTask(task: { lineType?: "work" | "expense" }) {
+  return task.lineType === "expense";
 }
 
 function statusLabel(status: PreApproval["status"]) {
@@ -185,7 +219,7 @@ export default function PreApprovalsPage() {
   const formTotals = useMemo(() => {
     return rows.reduce(
       (acc, row) => {
-        const hours = Math.max(0, Number(row.hours || 0));
+        const hours = row.lineType === "expense" ? 0 : Math.max(0, Number(row.hours || 0));
         acc.hours += hours;
         acc.amount += amountFor(row);
         return acc;
@@ -205,12 +239,15 @@ export default function PreApprovalsPage() {
     projectInfo,
     tasks: rows
       .map((row) => ({
+        id: row.id,
+        lineType: row.lineType,
         taskName: row.taskName.trim(),
         description: row.description.trim(),
-        hours: Math.max(0, Number(row.hours || 0)),
-        rate: Math.max(0, Number(row.rate || 0)),
+        hours: row.lineType === "expense" ? 0 : Math.max(0, Number(row.hours || 0)),
+        rate: row.lineType === "expense" ? 0 : Math.max(0, Number(row.rate || 0)),
+        amount: amountFor(row),
       }))
-      .filter((row) => row.taskName && Math.round(row.hours * row.rate) > 0),
+      .filter((row) => row.taskName && row.amount > 0),
   });
 
   const saveMutation = useMutation({
@@ -282,17 +319,18 @@ export default function PreApprovalsPage() {
 
   function openCreate() {
     const defaultClient = clients[0];
+    const today = new Date().toISOString().slice(0, 10);
     setEditing(null);
     setForm({
       title: "",
       project: "",
       clientId: defaultClient?.id ?? "",
-      date: new Date().toISOString().slice(0, 10),
+      date: today,
       notes: "",
     });
     setCompanyInfo({ ...emptyPartyInfo, ...companySettings });
     setClientInfo(clientToPartyInfo(defaultClient));
-    setProjectInfo(emptyProjectInfo);
+    setProjectInfo({ ...emptyProjectInfo, documentNumber: createDocumentNumber(today), revision: "01" });
     setRows([createRow()]);
     setDialogOpen(true);
   }
@@ -313,10 +351,12 @@ export default function PreApprovalsPage() {
       item.tasks.length
         ? item.tasks.map((task) => ({
             id: task.id,
+            lineType: task.lineType === "expense" ? "expense" : "work",
             taskName: task.taskName,
             description: task.description,
             hours: String(task.hours),
             rate: String(task.rate),
+            amount: String(task.amount),
           }))
         : [createRow()],
     );
@@ -329,7 +369,7 @@ export default function PreApprovalsPage() {
     setRows([createRow()]);
   }
 
-  function updateRow(index: number, field: keyof WorkRowDraft, value: string) {
+  function updateRow<K extends keyof WorkRowDraft>(index: number, field: K, value: WorkRowDraft[K]) {
     setRows((current) => current.map((row, rowIndex) => (rowIndex === index ? { ...row, [field]: value } : row)));
   }
 
@@ -343,6 +383,14 @@ export default function PreApprovalsPage() {
 
   function updateProjectInfo(field: keyof PreApprovalProjectInfo, value: string) {
     setProjectInfo((current) => ({ ...current, [field]: field.includes("Amount") || field === "retainagePercent" ? Math.max(0, Number(value || 0)) : value }));
+  }
+
+  function updateDocumentDate(date: string) {
+    setForm((current) => ({ ...current, date }));
+    setProjectInfo((current) => ({
+      ...current,
+      documentNumber: !current.documentNumber || isAutoDocumentNumber(current.documentNumber) ? createDocumentNumber(date) : current.documentNumber,
+    }));
   }
 
   return (
@@ -433,10 +481,13 @@ export default function PreApprovalsPage() {
                       <TableBody>
                         {item.tasks.map((task) => (
                           <TableRow key={task.id}>
-                            <TableCell className="font-medium">{task.taskName}</TableCell>
+                            <TableCell className="font-medium">
+                              <div>{task.taskName}</div>
+                              {isExpenseTask(task) ? <div className="mt-1 text-xs text-muted-foreground">Expense item</div> : null}
+                            </TableCell>
                             <TableCell className="text-muted-foreground">{task.description || "-"}</TableCell>
-                            <TableCell className="text-right tabular-nums">{task.hours.toFixed(1)}</TableCell>
-                            <TableCell className="text-right tabular-nums">{formatCurrency(task.rate)}</TableCell>
+                            <TableCell className="text-right tabular-nums">{isExpenseTask(task) ? "-" : task.hours.toFixed(1)}</TableCell>
+                            <TableCell className="text-right tabular-nums">{isExpenseTask(task) ? "-" : formatCurrency(task.rate)}</TableCell>
                             <TableCell className="text-right tabular-nums">{formatCurrency(task.amount)}</TableCell>
                           </TableRow>
                         ))}
@@ -606,7 +657,23 @@ export default function PreApprovalsPage() {
               </div>
               <div className="space-y-2">
                 <Label>Date</Label>
-                <Input type="date" value={form.date} onChange={(event) => setForm((current) => ({ ...current, date: event.target.value }))} />
+                <Input type="date" value={form.date} onChange={(event) => updateDocumentDate(event.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>Doc No</Label>
+                <Input
+                  value={projectInfo.documentNumber ?? ""}
+                  onChange={(event) => updateProjectInfo("documentNumber", event.target.value)}
+                  placeholder="REFO-260531-7DC9"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Revision</Label>
+                <Input
+                  value={projectInfo.revision ?? ""}
+                  onChange={(event) => updateProjectInfo("revision", event.target.value)}
+                  placeholder="01"
+                />
               </div>
             </div>
 
@@ -689,7 +756,7 @@ export default function PreApprovalsPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-sm font-medium">Quotation Rows</h3>
-                  <p className="text-xs text-muted-foreground">Hours and rate define the quotation shown to the client.</p>
+                  <p className="text-xs text-muted-foreground">Use work rows for hours x rate, or expense rows for direct costs like tickets and vendor bills.</p>
                 </div>
                 <Button variant="outline" size="sm" onClick={() => setRows((current) => [...current, createRow()])}>
                   <Plus className="mr-2 h-4 w-4" />
@@ -700,12 +767,29 @@ export default function PreApprovalsPage() {
                 {rows.map((row, index) => (
                   <div
                     key={row.id}
-                    className="grid gap-3 rounded-lg border border-border/50 bg-background/70 p-3 md:grid-cols-[1.1fr_1.4fr_0.6fr_0.7fr_0.8fr]"
+                    className="grid gap-3 rounded-lg border border-border/50 bg-background/70 p-3 md:grid-cols-[0.85fr_1.1fr_1.35fr_0.7fr_0.7fr_0.8fr]"
                   >
+                    <select
+                      value={row.lineType}
+                      onChange={(event) => updateRow(index, "lineType", event.target.value === "expense" ? "expense" : "work")}
+                      className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+                    >
+                      <option value="work">Work point</option>
+                      <option value="expense">Expense point</option>
+                    </select>
                     <Input value={row.taskName} onChange={(event) => updateRow(index, "taskName", event.target.value)} placeholder="Workflow / Discipline" />
                     <Input value={row.description} onChange={(event) => updateRow(index, "description", event.target.value)} placeholder="Task Description" />
-                    <Input type="number" step="0.5" value={row.hours} onChange={(event) => updateRow(index, "hours", event.target.value)} placeholder="Hours" />
-                    <Input type="number" value={row.rate} onChange={(event) => updateRow(index, "rate", event.target.value)} placeholder="Rate / Hr" />
+                    {row.lineType === "expense" ? (
+                      <>
+                        <Input type="number" value={row.amount} onChange={(event) => updateRow(index, "amount", event.target.value)} placeholder="Amount" />
+                        <div className="flex h-10 items-center rounded-md border border-dashed border-border/60 px-3 text-sm text-muted-foreground">Direct cost</div>
+                      </>
+                    ) : (
+                      <>
+                        <Input type="number" step="0.5" value={row.hours} onChange={(event) => updateRow(index, "hours", event.target.value)} placeholder="Hours" />
+                        <Input type="number" value={row.rate} onChange={(event) => updateRow(index, "rate", event.target.value)} placeholder="Rate / Hr" />
+                      </>
+                    )}
                     <div className="flex items-center rounded-md border border-border/50 bg-secondary/10 px-3 text-sm font-medium tabular-nums">
                       {formatCurrency(amountFor(row))}
                     </div>

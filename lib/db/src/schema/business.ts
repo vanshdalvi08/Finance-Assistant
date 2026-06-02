@@ -92,6 +92,7 @@ export interface PurchaseOrderTaskRecord {
 
 export interface PreApprovalTaskRecord {
   id: string;
+  lineType?: "work" | "expense";
   taskName: string;
   description: string;
   hours: number;
@@ -117,6 +118,8 @@ export interface PreApprovalPartyInfoRecord {
 }
 
 export interface PreApprovalProjectInfoRecord {
+  documentNumber?: string;
+  revision?: string;
   workDescription?: string;
   projectStartDate?: string;
   projectCompletionDate?: string;

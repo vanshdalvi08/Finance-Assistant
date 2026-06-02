@@ -186,7 +186,9 @@ function preferredDailyReviewEntry(current: DailyReviewSheetEntry | undefined, c
     return candidate.reviewShell ? candidate : current;
   }
 
-  return new Date(candidate.updatedAt).getTime() >= new Date(current.updatedAt).getTime() ? candidate : current;
+  const candidateUpdatedAt = candidate.updatedAt ?? candidate.reviewedAt ?? candidate.submittedAt ?? candidate.weekStart;
+  const currentUpdatedAt = current.updatedAt ?? current.reviewedAt ?? current.submittedAt ?? current.weekStart;
+  return new Date(candidateUpdatedAt).getTime() >= new Date(currentUpdatedAt).getTime() ? candidate : current;
 }
 
 type DailyReviewSheetEntry = TimesheetEntry & {

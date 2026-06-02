@@ -33,6 +33,18 @@ function formatShortDate(value?: string) {
   }).format(new Date(value));
 }
 
+function formatDocDateCode(value?: string) {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) {
+    return formatDocDateCode();
+  }
+
+  const year = String(date.getFullYear()).slice(-2);
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}${month}${day}`;
+}
+
 function statusLabel(status: PreApproval["status"]) {
   return status === "changes_requested" ? "Changes Requested" : status.replace("_", " ");
 }
@@ -53,61 +65,51 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
   const previouslyBilled = Math.max(0, Number(project.previouslyBilledAmount ?? 0));
   const currentAmount = Math.max(0, Number(preApproval.totalAmount ?? 0));
   const totalBilled = previouslyBilled + currentAmount;
-  const preApprovalCode = `PA-${preApproval.id.slice(0, 8).toUpperCase()}`;
-  const documentTitle = `Pre Approval Man Hour For ${preApproval.project || preApproval.clientNameSnapshot || preApproval.title}`.trim();
+  const documentDate = preApproval.date || preApproval.createdAt || new Date().toISOString();
+  const preApprovalCode = project.documentNumber?.trim() || `REFO-${formatDocDateCode(documentDate)}-${preApproval.id.slice(0, 4).toUpperCase()}`;
+  const revision = project.revision?.trim() || "01";
+  const documentTitle = preApproval.title || preApproval.project || preApproval.clientNameSnapshot || "Pre Approval";
   const companyDisplayName = (company.companyName || "REFORIX ENGINEERING SERVICES").toUpperCase();
   const footerAddress = company.address?.trim() || "Vastu Anand, Building No. 16, Parsik Nagar, Thane, Maharashtra, India";
   const footerWebsite = company.website?.trim() || "www.reforix.com";
 
   const rows = preApproval.tasks
     .map(
-      (task, index) => `
-        <tr>
+      (task, index) => {
+        const isExpense = task.lineType === "expense";
+        return `
+        <tr class="${isExpense ? "expense-row" : ""}">
           <td class="center row-index">${index + 1}</td>
-          <td>
+          <td class="description-cell">
             <div class="task-name">${escapeHtml(task.taskName)}</div>
+            ${isExpense ? `<div class="line-type">Direct expense</div>` : ""}
             ${
               task.description
                 ? `<div class="task-description">${escapeHtml(task.description)}</div>`
                 : `<div class="task-description muted">No additional description provided.</div>`
             }
           </td>
-          <td class="right">${formatCurrency(task.rate)}</td>
-          <td class="center">100%</td>
-          <td class="right">${task.hours.toFixed(2)}</td>
-          <td class="right">${formatCurrency(task.amount)}</td>
-          <td class="right">${formatCurrency(0)}</td>
-          <td class="right">${formatCurrency(task.amount)}</td>
+          <td class="right numeric-cell"><span>${isExpense ? "-" : formatCurrency(task.rate)}</span></td>
+          <td class="center numeric-cell"><span>${isExpense ? "-" : "100%"}</span></td>
+          <td class="right numeric-cell"><span>${isExpense ? "-" : task.hours.toFixed(2)}</span></td>
+          <td class="right numeric-cell"><span>${formatCurrency(task.amount)}</span></td>
+          <td class="right numeric-cell"><span>${formatCurrency(0)}</span></td>
+          <td class="right numeric-cell"><span>${formatCurrency(task.amount)}</span></td>
         </tr>
-      `,
+      `;
+      },
     )
     .join("");
-
-  const comments = preApproval.comments.length
-    ? preApproval.comments
-        .map(
-          (comment) => `
-            <div class="comment">
-              <div class="comment-header">
-                <strong>${escapeHtml(comment.authorName)}</strong>
-                <span>${escapeHtml(comment.authorRole)} · ${formatDate(comment.createdAt)}</span>
-              </div>
-              <p>${escapeHtml(comment.message)}</p>
-            </div>
-          `,
-        )
-        .join("")
-    : `<p class="muted">No client/admin comments recorded.</p>`;
 
   const html = `<!doctype html>
     <html>
       <head>
         <meta charset="utf-8" />
-        <title>${escapeHtml(preApproval.title)} - Pre Approval</title>
+        <title>Pre Approval</title>
         <style>
           @page {
             size: A4;
-            margin: 12mm;
+            margin: 0;
           }
 
           * {
@@ -116,17 +118,18 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
 
           body {
             margin: 0;
-            background: #edf1f7;
-            color: #172033;
-            font-family: Arial, Helvetica, sans-serif;
-            font-size: 11px;
-            line-height: 1.35;
+            background: #1f1f1f;
+            color: #111111;
+            font-family: "Aptos", "Segoe UI", Arial, Helvetica, sans-serif;
+            font-size: 11.8px;
+            line-height: 1.48;
           }
 
           .page {
-            width: 186mm;
-            min-height: 273mm;
+            width: 210mm;
+            min-height: 297mm;
             margin: 0 auto;
+            background: #ffffff;
           }
 
           .muted {
@@ -138,7 +141,7 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
             align-items: center;
             justify-content: space-between;
             gap: 16px;
-            margin: 0 auto 18px;
+            margin: 10px auto 18px;
             border: 1px solid #dce3ee;
             border-radius: 16px;
             background: rgba(255, 255, 255, 0.92);
@@ -149,7 +152,7 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
           .print-actions p {
             margin: 0;
             color: #5d6b80;
-            font-size: 12px;
+            font-size: 11px;
           }
 
           .print-actions button {
@@ -158,91 +161,115 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
             background: #122033;
             color: #ffffff;
             cursor: pointer;
+            font-size: 10.5px;
             font-weight: 700;
             padding: 9px 16px;
           }
 
           .sheet {
+            display: flex;
+            min-height: 297mm;
+            flex-direction: column;
             overflow: hidden;
-            border: 1px solid #d7deea;
-            border-radius: 8px;
+            border: 0;
+            border-radius: 0;
             background: #ffffff;
-            box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+            box-shadow: none;
           }
 
           .doc-ribbon {
             position: relative;
-            height: 28px;
-            background: #7388b9;
+            height: 5mm;
+            background: #7186ba;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
           }
 
           .doc-ribbon::after {
             content: "";
             position: absolute;
-            top: -10px;
-            right: 28%;
-            width: 12px;
-            height: 52px;
+            top: -10.5mm;
+            right: 58mm;
+            width: 4.2mm;
+            height: 25mm;
             background: #ffffff;
-            transform: rotate(24deg);
+            transform: rotate(31deg);
+            transform-origin: center;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
           }
 
           .doc-header {
-            display: flex;
+            display: grid;
             align-items: center;
-            justify-content: space-between;
-            gap: 18px;
-            padding: 16px 20px 8px;
-            border-bottom: 2px solid #909090;
+            grid-template-columns: 112mm 1fr;
+            gap: 5mm;
+            min-height: 24mm;
+            padding: 0 7mm 0 9mm;
+            border-bottom: 1px solid #9d9d9d;
             background: #ffffff;
           }
 
           .brand-lockup {
-            display: flex;
+            display: grid;
             align-items: center;
-            gap: 18px;
+            grid-template-columns: 42mm 1px 1fr;
+            gap: 5.5mm;
             min-width: 0;
-            flex: 1;
+            height: 15mm;
           }
 
           .brand-logo {
             margin: 0;
-            color: #111111;
-            font-size: 26px;
-            font-weight: 800;
-            line-height: 1.1;
-            letter-spacing: -0.04em;
+            color: #000000;
+            font-family: Arial Black, Arial, Helvetica, sans-serif;
+            font-size: 23px;
+            font-weight: 900;
+            line-height: 1;
+            letter-spacing: -0.015em;
+            white-space: nowrap;
+            justify-self: center;
           }
 
           .brand-mark {
-            font-size: 10px;
+            margin-left: 1px;
+            font-family: "Segoe UI", Arial, Helvetica, sans-serif;
+            font-size: 6px;
+            font-weight: 700;
             vertical-align: top;
           }
 
           .brand-divider {
             width: 1px;
-            align-self: stretch;
-            background: #d9dfe8;
+            height: 16mm;
+            background: #d7d7d7;
           }
 
           .brand-title {
-            color: #1a1a1a;
-            font-size: 21px;
+            color: #000000;
+            font-size: 15.5px;
             font-weight: 700;
-            line-height: 1.2;
+            line-height: 1.15;
+            min-width: 0;
+            white-space: nowrap;
+            justify-self: center;
+            align-self: center;
+            transform: translateY(0.4mm);
           }
 
           .doc-meta {
-            min-width: 240px;
-            color: #252525;
-            font-size: 11px;
-            line-height: 1.6;
+            width: 48mm;
+            color: #111111;
+            font-size: 10.8px;
+            line-height: 1.45;
+            justify-self: end;
+            flex-shrink: 0;
           }
 
           .doc-meta-row {
             display: grid;
-            grid-template-columns: 74px 10px 1fr;
-            gap: 6px;
+            grid-template-columns: 18mm 3mm minmax(0, 1fr);
+            gap: 1.5mm;
             align-items: baseline;
           }
 
@@ -250,70 +277,118 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
           .doc-meta-separator,
           .doc-meta-value {
             margin: 0;
-            color: #252525;
-            font-size: 11px;
+            color: #111111;
+            font-size: 10.8px;
+            font-weight: 400;
           }
 
           .doc-meta-label {
             font-weight: 400;
           }
 
+          .doc-meta-separator {
+            text-align: center;
+          }
+
+          .doc-meta-value {
+            word-break: keep-all;
+            overflow-wrap: normal;
+          }
+
           .doc-title-row {
-            padding: 12px 20px 14px;
-            border-bottom: 1px solid #d6dce5;
+            padding: 2.2mm 9mm;
+            border-bottom: 1px solid #9d9d9d;
           }
 
           .doc-title-row h1 {
             margin: 0;
-            color: #202020;
-            font-size: 18px;
-            font-weight: 500;
-            line-height: 1.2;
+            color: #111111;
+            font-size: 12px;
+            font-weight: 600;
+            line-height: 1.3;
+          }
+
+          .content-shell {
+            flex: 1;
+            padding: 2.2mm 5.5mm 0;
           }
 
           .sheet-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 14px;
-            padding: 14px 16px 0;
+            gap: 3mm;
           }
 
           .sheet-body {
-            padding: 0 16px 14px;
+            padding: 0;
           }
 
           .info-card {
-            border: 1px solid #dce3ee;
-            border-radius: 10px;
-            background: #fbfdff;
-            padding: 11px 13px;
+            min-height: 24mm;
+            border: 1px solid #d4d4d4;
+            border-radius: 2mm;
+            background: #ffffff;
+            padding: 2.4mm 3.5mm;
           }
 
           .section-title {
-            margin: 0 0 10px;
-            color: #728196;
-            font-size: 9px;
-            font-weight: 700;
-            letter-spacing: 0.16em;
+            margin: 0 0 1mm;
+            color: #738197;
+            font-size: 7.8px;
+            font-weight: 800;
+            letter-spacing: 0.14em;
             text-transform: uppercase;
           }
 
           .company-line {
-            margin: 0 0 4px;
+            margin: 0 0 0.7mm;
+            color: #172033;
+            font-size: 9.9px;
+            line-height: 1.22;
           }
 
           .company-line strong {
-            color: #122033;
-            font-size: 13px;
+            color: #111111;
+            font-size: 11px;
+            font-weight: 800;
+          }
+
+          .party-details {
+            display: grid;
+            gap: 0.45mm;
+            margin-top: 0.9mm;
+          }
+
+          .party-row {
+            display: grid;
+            grid-template-columns: 17mm 3.5mm minmax(0, 1fr);
+            column-gap: 1.2mm;
+            align-items: start;
+            color: #172033;
+            font-size: 9.5px;
+            line-height: 1.2;
+          }
+
+          .party-label {
+            white-space: nowrap;
+          }
+
+          .party-separator {
+            text-align: center;
+            white-space: nowrap;
+          }
+
+          .party-value {
+            min-width: 0;
+            overflow-wrap: anywhere;
           }
 
           .summary-card,
           .notes-card,
-          .conversation-card,
           .table-card {
-            margin-top: 12px;
+            margin-top: 1.8mm;
             border: 1px solid #dce3ee;
-            border-radius: 10px;
+            border-radius: 2mm;
             background: #ffffff;
             overflow: hidden;
           }
@@ -324,7 +399,7 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
             align-items: center;
             justify-content: space-between;
             gap: 12px;
-            padding: 10px 14px;
+            padding: 1.55mm 3mm;
             border-bottom: 1px solid #e7edf5;
             background: #f8fbff;
           }
@@ -333,9 +408,9 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
           .card-header p {
             margin: 0;
             color: #728196;
-            font-size: 9px;
+            font-size: 7.8px;
             font-weight: 700;
-            letter-spacing: 0.16em;
+            letter-spacing: 0.18em;
             text-transform: uppercase;
           }
 
@@ -345,9 +420,50 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
             border-collapse: collapse;
           }
 
+          .table-card table {
+            border-collapse: separate;
+            border-spacing: 0;
+            table-layout: fixed;
+          }
+
+          .table-card col:nth-child(1) {
+            width: 8%;
+          }
+
+          .table-card col:nth-child(2) {
+            width: 34%;
+          }
+
+          .table-card col:nth-child(3) {
+            width: 11%;
+          }
+
+          .table-card col:nth-child(4) {
+            width: 8%;
+          }
+
+          .table-card col:nth-child(5) {
+            width: 8%;
+          }
+
+          .table-card col:nth-child(6) {
+            width: 12%;
+          }
+
+          .table-card col:nth-child(7) {
+            width: 13%;
+          }
+
+          .table-card col:nth-child(8) {
+            width: 14%;
+          }
+
           .summary-table td {
             border-top: 1px solid #edf2f8;
-            padding: 7px 12px;
+            padding: 1.2mm 2.5mm;
+            color: #172033;
+            font-size: 9.7px;
+            line-height: 1.22;
             vertical-align: top;
           }
 
@@ -357,31 +473,77 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
 
           .summary-table td:first-child {
             width: 32%;
-            color: #304156;
-            font-weight: 700;
+            color: #24344a;
+            font-weight: 800;
           }
 
           .work-description {
-            min-height: 54px;
+            min-height: 5mm;
             color: #172033;
           }
 
           th,
           td {
             border-top: 1px solid #edf2f8;
-            padding: 7px 9px;
-            vertical-align: top;
+            padding: 1.05mm 2mm;
+            color: #172033;
+            font-size: 9.1px;
+            line-height: 1.24;
+            vertical-align: middle;
+          }
+
+          .table-card th,
+          .table-card td {
+            border-left: 1px solid #e5ebf3;
+          }
+
+          .table-card th:first-child,
+          .table-card td:first-child {
+            border-left: 0;
           }
 
           th {
             border-top: 0;
-            background: #f8fbff;
+            background: #f7faff;
             color: #64748b;
-            font-size: 9px;
-            font-weight: 700;
-            letter-spacing: 0.08em;
+            font-size: 7.2px;
+            font-weight: 800;
+            letter-spacing: 0.12em;
+            padding-bottom: 1.35mm;
+            padding-top: 1.35mm;
             text-align: center;
             text-transform: uppercase;
+            vertical-align: middle;
+            line-height: 1.18;
+          }
+
+          .table-card tbody tr {
+            background: #ffffff;
+          }
+
+          .table-card tbody tr:nth-child(even):not(.total-row) {
+            background: #fcfdff;
+          }
+
+          .table-card tbody tr.expense-row {
+            background: #fffdf8;
+          }
+
+          .description-cell {
+            padding-left: 2.5mm;
+            vertical-align: top;
+          }
+
+          .numeric-cell {
+            color: #111827;
+            font-variant-numeric: tabular-nums;
+            line-height: 1;
+            white-space: nowrap;
+          }
+
+          .numeric-cell span {
+            display: inline-block;
+            padding-top: 0.35mm;
           }
 
           .center {
@@ -395,122 +557,104 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
           .row-index {
             color: #64748b;
             font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            vertical-align: top;
+            padding-top: 1.45mm;
           }
 
           .task-name {
             color: #172033;
-            font-size: 11px;
+            font-size: 9.1px;
             font-weight: 700;
           }
 
           .task-description {
-            margin-top: 4px;
+            margin-top: 0.55mm;
             color: #5f6f86;
-            font-size: 10px;
-            line-height: 1.35;
+            font-size: 7.8px;
+            line-height: 1.27;
+          }
+
+          .line-type {
+            display: inline-block;
+            margin-top: 0.45mm;
+            border-left: 2px solid #7186ba;
+            color: #64748b;
+            font-size: 7.2px;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            padding-left: 1.4mm;
           }
 
           .total-row td {
             background: #f8fbff;
             font-weight: 800;
+            vertical-align: middle;
           }
 
-          .notes-body,
-          .conversation-body {
-            padding: 11px 13px 13px;
+          .total-row .numeric-cell span {
+            padding-top: 0;
+          }
+
+          .notes-body {
+            padding: 1.2mm 3mm;
           }
 
           .notes-body p {
             margin: 0;
             color: #2d3b50;
-          }
-
-          .comment {
-            margin-top: 10px;
-            border-top: 1px solid #e8eef6;
-            padding-top: 10px;
-          }
-
-          .comment:first-child {
-            margin-top: 0;
-            border-top: 0;
-            padding-top: 0;
-          }
-
-          .comment-header {
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            gap: 8px;
-          }
-
-          .comment strong {
-            color: #172033;
-          }
-
-          .comment span {
-            color: #738197;
-            font-size: 10px;
-            text-transform: capitalize;
-          }
-
-          .comment p {
-            margin: 6px 0 0;
-            color: #334155;
+            font-size: 8.7px;
+            line-height: 1.27;
           }
 
           .billing-summary {
-            margin-top: 10px;
-            padding: 0 4px;
+            margin-top: 1.1mm;
+            padding: 0 1mm;
             color: #526175;
-            font-size: 9px;
+            font-size: 7.5px;
           }
 
           .footer-band {
-            position: relative;
-            margin-top: 12px;
-            background: #7388b9;
+            margin-top: auto;
+            background: #7186ba;
             color: #ffffff;
             text-align: center;
-            padding: 8px 20px 10px;
-          }
-
-          .footer-band::before {
-            content: "";
-            position: absolute;
-            top: -8px;
-            left: 20%;
-            width: 12px;
-            height: 52px;
-            background: #ffffff;
-            transform: rotate(28deg);
+            padding: 1.4mm 9mm 1.3mm;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
           }
 
           .footer-company {
-            font-size: 10px;
+            font-size: 6.6px;
             font-weight: 700;
+            line-height: 1.15;
             text-transform: uppercase;
           }
 
           .footer-address,
           .footer-website {
-            font-size: 9px;
-            font-weight: 600;
+            color: rgba(255, 255, 255, 0.9);
+            font-size: 5.8px;
+            font-weight: 400;
+            line-height: 1.15;
           }
 
           @media screen {
             .page {
-              padding: 8px 0 20px;
+              margin: 18px auto;
             }
           }
 
           @media print {
             body {
               background: #ffffff;
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
             }
 
             .page {
               max-width: none;
+              margin: 0;
             }
 
             .print-actions {
@@ -535,7 +679,7 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
             <div class="doc-ribbon"></div>
             <div class="doc-header">
               <div class="brand-lockup">
-                <p class="brand-logo">REFORIX<span class="brand-mark">™</span></p>
+                <p class="brand-logo">REFORIX<sup class="brand-mark">TM</sup></p>
                 <div class="brand-divider"></div>
                 <div class="brand-title">${escapeHtml(companyDisplayName)}</div>
               </div>
@@ -548,39 +692,44 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
                 <div class="doc-meta-row">
                   <p class="doc-meta-label">Date</p>
                   <p class="doc-meta-separator">:</p>
-                  <p class="doc-meta-value">${formatShortDate(preApproval.date)}</p>
+                  <p class="doc-meta-value">${formatShortDate(documentDate)}</p>
                 </div>
                 <div class="doc-meta-row">
                   <p class="doc-meta-label">Revision</p>
                   <p class="doc-meta-separator">:</p>
-                  <p class="doc-meta-value">00</p>
+                  <p class="doc-meta-value">${escapeHtml(revision)}</p>
                 </div>
               </div>
             </div>
             <div class="doc-title-row">
-              <h1>${escapeHtml(documentTitle)}</h1>
+              <h1>TITLE : ${escapeHtml(documentTitle)}</h1>
             </div>
 
-            <div class="sheet-grid">
-              <div class="info-card">
-                <p class="section-title">Company Information</p>
-                <p class="company-line"><strong>${escapeHtml(company.companyName || "Reforix Payroll")}</strong></p>
-                <p class="company-line">${escapeHtml(company.address || "Address")}</p>
-                <p class="company-line">Phone: ${escapeHtml(company.phone || "-")}</p>
-                <p class="company-line">Email: ${escapeHtml(company.email || "-")}</p>
-                <p class="company-line">Website: ${escapeHtml(company.website || "-")}</p>
+            <div class="content-shell">
+              <div class="sheet-grid">
+                <div class="info-card">
+                  <p class="section-title">Company Information</p>
+                  <p class="company-line"><strong>${escapeHtml(companyDisplayName)}</strong></p>
+                  <div class="party-details">
+                    <div class="party-row"><span class="party-label">Address</span><span class="party-separator">:-</span><span class="party-value">${escapeHtml(company.address || "")}</span></div>
+                    <div class="party-row"><span class="party-label">Phone</span><span class="party-separator">:-</span><span class="party-value">${escapeHtml(company.phone || "")}</span></div>
+                    <div class="party-row"><span class="party-label">Email</span><span class="party-separator">:-</span><span class="party-value">${escapeHtml(company.email || "")}</span></div>
+                    <div class="party-row"><span class="party-label">Website</span><span class="party-separator">:-</span><span class="party-value">${escapeHtml(company.website || "")}</span></div>
+                  </div>
+                </div>
+                <div class="info-card">
+                  <p class="section-title">Client Information</p>
+                  <p class="company-line"><strong>${escapeHtml(client.companyName || preApproval.clientNameSnapshot)}</strong></p>
+                  <div class="party-details">
+                    <div class="party-row"><span class="party-label">Address</span><span class="party-separator">:-</span><span class="party-value">${escapeHtml(client.address || "")}</span></div>
+                    <div class="party-row"><span class="party-label">Phone</span><span class="party-separator">:-</span><span class="party-value">${escapeHtml(client.phone || "")}</span></div>
+                    <div class="party-row"><span class="party-label">Email</span><span class="party-separator">:-</span><span class="party-value">${escapeHtml(client.email || "")}</span></div>
+                    <div class="party-row"><span class="party-label">Website</span><span class="party-separator">:-</span><span class="party-value">${escapeHtml(client.website || "")}</span></div>
+                  </div>
+                </div>
               </div>
-              <div class="info-card">
-                <p class="section-title">Client Information</p>
-                <p class="company-line"><strong>${escapeHtml(client.companyName || preApproval.clientNameSnapshot)}</strong></p>
-                <p class="company-line">${escapeHtml(client.address || "Address")}</p>
-                <p class="company-line">Phone: ${escapeHtml(client.phone || "-")}</p>
-                <p class="company-line">Email: ${escapeHtml(client.email || "-")}</p>
-                <p class="company-line">Website: ${escapeHtml(client.website || "-")}</p>
-              </div>
-            </div>
 
-            <div class="sheet-body">
+              <div class="sheet-body">
               <div class="summary-card">
                 <div class="summary-header">
                   <p>Project Summary</p>
@@ -593,8 +742,7 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
                   <tr><td>Project start date</td><td>${formatDate(project.projectStartDate)}</td></tr>
                   <tr><td>Project completion date</td><td>${formatDate(project.projectCompletionDate)}</td></tr>
                   <tr><td>Total contract value</td><td>${formatCurrency(Number(project.totalContractValue ?? 0))}</td></tr>
-                  <tr><td>Percentage of retainage held (%)</td><td>${Number(project.retainagePercent ?? 0).toFixed(2)}%</td></tr>
-                  <tr><td>Total retainage amount held</td><td>${formatCurrency(Number(project.retainageAmount ?? 0))}</td></tr>
+                  <tr><td>Total bill amount</td><td>${formatCurrency(totalBilled)}</td></tr>
                   <tr><td>Work Description</td><td class="work-description">${escapeHtml(project.workDescription || preApproval.title)}</td></tr>
                 </table>
               </div>
@@ -604,6 +752,16 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
                   <p>Line Items</p>
                 </div>
                 <table>
+                  <colgroup>
+                    <col />
+                    <col />
+                    <col />
+                    <col />
+                    <col />
+                    <col />
+                    <col />
+                    <col />
+                  </colgroup>
                   <thead>
                     <tr>
                       <th class="center">Line item #</th>
@@ -621,10 +779,10 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
                     <tr class="total-row">
                       <td colspan="3" class="right">Total</td>
                       <td></td>
-                      <td class="right">${preApproval.totalHours.toFixed(2)}</td>
-                      <td class="right">${formatCurrency(preApproval.totalAmount)}</td>
-                      <td class="right">${formatCurrency(previouslyBilled)}</td>
-                      <td class="right">${formatCurrency(currentAmount)}</td>
+                      <td class="right numeric-cell"><span>${preApproval.totalHours.toFixed(2)}</span></td>
+                      <td class="right numeric-cell"><span>${formatCurrency(preApproval.totalAmount)}</span></td>
+                      <td class="right numeric-cell"><span>${formatCurrency(previouslyBilled)}</span></td>
+                      <td class="right numeric-cell"><span>${formatCurrency(currentAmount)}</span></td>
                     </tr>
                   </tbody>
                 </table>
@@ -639,24 +797,15 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
                 </div>
               </div>
 
-              <div class="conversation-card">
-                <div class="card-header">
-                  <p>Client / Admin Conversation</p>
-                </div>
-                <div class="conversation-body">
-                  ${comments}
-                </div>
-              </div>
-
               <div class="billing-summary">
                 Progress billing summary: Amount previously billed ${formatCurrency(previouslyBilled)}. Current amount ${formatCurrency(currentAmount)}. Total ${formatCurrency(totalBilled)}.
               </div>
-
-              <div class="footer-band">
-                <div class="footer-company">${escapeHtml(companyDisplayName)}</div>
-                <div class="footer-address">${escapeHtml(footerAddress)}</div>
-                <div class="footer-website">${escapeHtml(footerWebsite)}</div>
               </div>
+            </div>
+            <div class="footer-band">
+              <div class="footer-company">${escapeHtml(companyDisplayName)}</div>
+              <div class="footer-address">${escapeHtml(footerAddress)}</div>
+              <div class="footer-website">${escapeHtml(footerWebsite)}</div>
             </div>
           </div>
         </div>

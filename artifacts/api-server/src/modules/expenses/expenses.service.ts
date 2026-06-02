@@ -31,6 +31,7 @@ export type ExpenseActor = {
 
 export type ExpenseInput = {
   id?: string;
+  accountId?: string;
   employeeId?: string;
   employeeNameSnapshot?: string;
   project?: string;

@@ -171,6 +171,7 @@ export interface TimesheetEntry {
   submittedAt?: string;
   reviewedAt?: string;
   reviewedBy?: string;
+  updatedAt?: string;
   reviewNotes?: string;
   dailyReviewStatus?: TimesheetDailyReviewStatus;
   dailyReviewHolidays?: TimesheetDailyReviewHolidays;
@@ -320,6 +321,7 @@ export type PreApprovalStatus = "draft" | "submitted" | "changes_requested" | "a
 
 export interface PreApprovalTask {
   id: string;
+  lineType?: "work" | "expense";
   taskName: string;
   description: string;
   hours: number;
@@ -345,6 +347,8 @@ export interface PreApprovalPartyInfo {
 }
 
 export interface PreApprovalProjectInfo {
+  documentNumber?: string;
+  revision?: string;
   workDescription?: string;
   projectStartDate?: string;
   projectCompletionDate?: string;
@@ -509,10 +513,13 @@ interface CreatePreApprovalInput {
   clientInfo?: PreApprovalPartyInfo;
   projectInfo?: PreApprovalProjectInfo;
   tasks?: Array<{
+    id?: string;
+    lineType?: "work" | "expense";
     taskName: string;
     description?: string;
     hours: number;
     rate: number;
+    amount?: number;
   }>;
 }
 

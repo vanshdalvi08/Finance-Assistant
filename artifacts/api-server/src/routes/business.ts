@@ -388,10 +388,12 @@ const leaveSettingsSchema = z.object({
 
 const poTaskSchema = z.object({
   id: businessIdSchema.optional(),
+  lineType: z.enum(["work", "expense"]).default("work"),
   taskName: z.string().trim().min(2),
   description: z.string().trim().optional(),
   hours: z.coerce.number().min(0),
   rate: z.coerce.number().min(0),
+  amount: z.coerce.number().min(0).optional(),
 });
 
 const preApprovalCommentSchema = z.object({
@@ -407,6 +409,8 @@ const partyInfoSchema = z.object({
 });
 
 const projectInfoSchema = z.object({
+  documentNumber: z.string().trim().optional(),
+  revision: z.string().trim().optional(),
   workDescription: z.string().trim().optional(),
   projectStartDate: z.string().trim().optional(),
   projectCompletionDate: z.string().trim().optional(),
@@ -455,6 +459,8 @@ function requestHashForPreApprovalMutation(input: z.infer<typeof preApprovalSche
         website: input.clientInfo?.website?.trim() ?? "",
       },
       projectInfo: {
+        documentNumber: input.projectInfo?.documentNumber?.trim() ?? "",
+        revision: input.projectInfo?.revision?.trim() ?? "",
         workDescription: input.projectInfo?.workDescription?.trim() ?? "",
         projectStartDate: input.projectInfo?.projectStartDate?.trim() ?? "",
         projectCompletionDate: input.projectInfo?.projectCompletionDate?.trim() ?? "",
@@ -465,10 +471,12 @@ function requestHashForPreApprovalMutation(input: z.infer<typeof preApprovalSche
       },
       tasks: (input.tasks ?? []).map((task) => ({
         id: task.id?.trim() ?? "",
+        lineType: task.lineType,
         taskName: task.taskName.trim(),
         description: task.description?.trim() ?? "",
         hours: Number(task.hours),
         rate: Number(task.rate),
+        amount: Number(task.amount ?? 0),
       })),
     }),
   );
@@ -662,20 +670,26 @@ function calculatePoTaskAmount(hours: number, rate: number) {
 }
 
 function normalizeApprovalTask(task: z.infer<typeof poTaskSchema>) {
+  const lineType = task.lineType === "expense" ? "expense" : "work";
   const hours = Math.max(0, Number(task.hours ?? 0));
   const rate = Math.max(0, Number(task.rate ?? 0));
+  const amount = lineType === "expense" ? Math.round(Math.max(0, Number(task.amount ?? 0))) : calculatePoTaskAmount(hours, rate);
   return {
     id: task.id ?? createId("pa_task"),
+    lineType,
     taskName: task.taskName.trim(),
     description: task.description?.trim() || "",
-    hours,
-    rate,
-    amount: calculatePoTaskAmount(hours, rate),
+    hours: lineType === "expense" ? 0 : hours,
+    rate: lineType === "expense" ? 0 : rate,
+    amount,
   };
 }
 
 function serializePreApproval(row: DbPreApproval) {
-  const tasks = Array.isArray(row.tasks) ? row.tasks : [];
+  const tasks = (Array.isArray(row.tasks) ? row.tasks : []).map((task) => ({
+    ...task,
+    lineType: task.lineType === "expense" ? "expense" : "work",
+  }));
 
   return {
     id: row.id,
@@ -1267,7 +1281,7 @@ router.get("/charts", requireTenantRole("admin"), async (_request, response) => 
       bucket.expenses += Math.abs(expense.amount);
     }
   }
-  for (const salary of tenantSalaries.filter((item) => tenantEmployeeIds.has(item.employeeId))) {
+  for (const salary of tenantSalaries.filter((item) => item.employeeId !== undefined && tenantEmployeeIds.has(item.employeeId))) {
     const bucket = buckets.get((salary.paidAt ?? salary.date).slice(0, 7));
     if (bucket) {
       bucket.salary += Math.abs(salary.amount);
@@ -1315,7 +1329,7 @@ router.get("/transactions", requireTenantRole("admin"), async (_request, respons
       type: "salary" as const,
       amount: -Math.abs(salary.amount),
       date: salary.paidAt ?? salary.date,
-      description: `${salary.employeeNameSnapshot ?? employeeNames.get(salary.employeeId) ?? "Employee"} Salary`,
+      description: `${salary.employeeNameSnapshot ?? (salary.employeeId ? employeeNames.get(salary.employeeId) : undefined) ?? "Employee"} Salary`,
       category: "Payroll",
     })),
   ].sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime());

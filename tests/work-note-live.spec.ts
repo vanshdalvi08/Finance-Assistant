@@ -437,7 +437,7 @@ test("live daily review persists, resets after employee edits, and supports undo
   await expect(employeePage.getByRole("heading", { name: "My Timesheet" })).toBeVisible();
   await selectSeededWeek(employeePage);
   const mondayHeader = employeePage.locator("thead th").filter({ hasText: "Mon" }).first();
-  await expect(mondayHeader).toContainText("Verify");
+  await expect(mondayHeader).toContainText("Verified");
 
   const lockedEditButton = employeePage.getByRole("button", { name: "Edit work note for Mon" }).first();
   await expect(lockedEditButton).toBeDisabled();
@@ -635,8 +635,8 @@ test("live daily review keeps reviewed days intact when the employee adds a new 
 
   const mondayHeader = employeePage.locator("thead th").filter({ hasText: "Mon" }).first();
   const tuesdayHeader = employeePage.locator("thead th").filter({ hasText: "Tue" }).first();
-  await expect(mondayHeader).toContainText("Verify");
-  await expect(tuesdayHeader).toContainText("Verify");
+  await expect(mondayHeader).toContainText("Verified");
+  await expect(tuesdayHeader).toContainText("Verified");
 
   await employeePage.getByRole("button", { name: "Add Task" }).click();
   const secondRow = employeePage.locator("tbody tr").nth(1);
@@ -664,8 +664,8 @@ test("live daily review keeps reviewed days intact when the employee adds a new 
 
   await employeePage.reload();
   await selectSeededWeek(employeePage);
-  await expect(mondayHeader).toContainText("Verify");
-  await expect(tuesdayHeader).toContainText("Verify");
+  await expect(mondayHeader).toContainText("Verified");
+  await expect(tuesdayHeader).toContainText("Verified");
 
   expect(employeePageErrors).toEqual([]);
   expect(adminPageErrors).toEqual([]);

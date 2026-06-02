@@ -36,10 +36,12 @@ export type PreApprovalPartyInfoInput = {
 
 export type PreApprovalTaskInput = {
   id?: string;
+  lineType?: "work" | "expense";
   taskName: string;
   description?: string;
   hours: number;
   rate: number;
+  amount?: number;
 };
 
 export type PreApprovalInput = {
@@ -68,15 +70,18 @@ function calculateTaskAmount(hours: number, rate: number) {
 }
 
 function normalizeTask(task: PreApprovalTaskInput): PreApprovalTaskRecord {
+  const lineType = task.lineType === "expense" ? "expense" : "work";
   const hours = Math.max(0, Number(task.hours ?? 0));
   const rate = Math.max(0, Number(task.rate ?? 0));
+  const amount = lineType === "expense" ? Math.round(Math.max(0, Number(task.amount ?? 0))) : calculateTaskAmount(hours, rate);
   return {
     id: task.id ?? createId("pa_task"),
+    lineType,
     taskName: task.taskName.trim(),
     description: task.description?.trim() || "",
-    hours,
-    rate,
-    amount: calculateTaskAmount(hours, rate),
+    hours: lineType === "expense" ? 0 : hours,
+    rate: lineType === "expense" ? 0 : rate,
+    amount,
   };
 }
 

@@ -22,6 +22,10 @@ function formatCurrency(value: number) {
   });
 }
 
+function isExpenseTask(task: { lineType?: "work" | "expense" }) {
+  return task.lineType === "expense";
+}
+
 function statusLabel(status: PreApproval["status"]) {
   return status === "changes_requested" ? "Changes Requested" : status.replace("_", " ");
 }
@@ -189,10 +193,13 @@ export default function ClientPreApprovalsPage() {
                       <TableBody>
                         {item.tasks.map((task) => (
                           <TableRow key={task.id}>
-                            <TableCell className="font-medium">{task.taskName}</TableCell>
+                            <TableCell className="font-medium">
+                              <div>{task.taskName}</div>
+                              {isExpenseTask(task) ? <div className="mt-1 text-xs text-muted-foreground">Expense item</div> : null}
+                            </TableCell>
                             <TableCell className="text-muted-foreground">{task.description || "-"}</TableCell>
-                            <TableCell className="text-right tabular-nums">{task.hours.toFixed(1)}</TableCell>
-                            <TableCell className="text-right tabular-nums">{formatCurrency(task.rate)}</TableCell>
+                            <TableCell className="text-right tabular-nums">{isExpenseTask(task) ? "-" : task.hours.toFixed(1)}</TableCell>
+                            <TableCell className="text-right tabular-nums">{isExpenseTask(task) ? "-" : formatCurrency(task.rate)}</TableCell>
                             <TableCell className="text-right tabular-nums">{formatCurrency(task.amount)}</TableCell>
                           </TableRow>
                         ))}
