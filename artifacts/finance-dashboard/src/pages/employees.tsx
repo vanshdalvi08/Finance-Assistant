@@ -22,7 +22,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
-import { Plus, Search, MoreHorizontal, Edit, Trash2, ImagePlus, X } from "lucide-react";
+import { Plus, Search, MoreHorizontal, Edit, Trash2, ImagePlus, X, LockKeyhole, ShieldCheck } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { createEmployeeAccount, listEmployeeAccounts } from "@/auth/auth-service";
@@ -81,6 +81,13 @@ type EmployeeFormValues = z.infer<typeof employeeSchema>;
 type EmployeeMutationInput = EmployeeFormValues & { profilePhotoUrl?: string | null };
 
 const HOURS_PER_YEAR = 2080;
+const EMPLOYEES_SECTION_UNLOCK_KEY = "reforix:employees-section-unlocked";
+const CONFIGURED_EMPLOYEES_SECTION_PASSCODE = import.meta.env.VITE_EMPLOYEES_SECTION_PASSCODE;
+const EMPLOYEES_SECTION_PASSCODE =
+  typeof CONFIGURED_EMPLOYEES_SECTION_PASSCODE === "string" && /^\d{4}$/.test(CONFIGURED_EMPLOYEES_SECTION_PASSCODE)
+    ? CONFIGURED_EMPLOYEES_SECTION_PASSCODE
+    : "1234";
+const EMPLOYEES_SECTION_PASSCODE_LENGTH = 4;
 
 export default function Employees() {
   const [search, setSearch] = useState("");
@@ -91,6 +98,11 @@ export default function Employees() {
   const [profilePhotoName, setProfilePhotoName] = useState<string>("");
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [photoInputKey, setPhotoInputKey] = useState(0);
+  const [isEmployeesUnlocked, setIsEmployeesUnlocked] = useState(
+    () => sessionStorage.getItem(EMPLOYEES_SECTION_UNLOCK_KEY) === "true"
+  );
+  const [employeePasscode, setEmployeePasscode] = useState("");
+  const [employeePasscodeError, setEmployeePasscodeError] = useState("");
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -361,28 +373,83 @@ export default function Employees() {
     return `${formatCurrency(employee.salary)} / yr`;
   }
 
+  function unlockEmployeesSection() {
+    sessionStorage.setItem(EMPLOYEES_SECTION_UNLOCK_KEY, "true");
+    setIsEmployeesUnlocked(true);
+    setEmployeePasscode("");
+    setEmployeePasscodeError("");
+  }
+
+  function handleEmployeesUnlock(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (employeePasscode !== EMPLOYEES_SECTION_PASSCODE) {
+      setEmployeePasscodeError("Incorrect passcode. Please try again.");
+      return;
+    }
+
+    unlockEmployeesSection();
+  }
+
+  function handleEmployeePasscodeChange(value: string) {
+    const nextPasscode = value.replace(/\D/g, "").slice(0, EMPLOYEES_SECTION_PASSCODE_LENGTH);
+    setEmployeePasscode(nextPasscode);
+    setEmployeePasscodeError("");
+
+    if (nextPasscode.length !== EMPLOYEES_SECTION_PASSCODE_LENGTH) {
+      return;
+    }
+
+    if (nextPasscode === EMPLOYEES_SECTION_PASSCODE) {
+      unlockEmployeesSection();
+      return;
+    }
+
+    setEmployeePasscodeError("Incorrect passcode. Please try again.");
+  }
+
+  function lockEmployeesSection() {
+    sessionStorage.removeItem(EMPLOYEES_SECTION_UNLOCK_KEY);
+    setIsEmployeesUnlocked(false);
+    setEmployeePasscode("");
+    setEmployeePasscodeError("");
+  }
+
   return (
     <DashboardLayout>
-      <div className="space-y-6">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">Employees</h1>
-            <p className="text-muted-foreground text-sm mt-1">
-              Manage team members and compensation.
-            </p>
-          </div>
+      <div className="relative min-h-[70vh]">
+        <div
+          className={`space-y-6 transition duration-300 ${
+            isEmployeesUnlocked ? "" : "pointer-events-none select-none blur-sm"
+          }`}
+          aria-hidden={!isEmployeesUnlocked}
+        >
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight">Employees</h1>
+              <p className="text-muted-foreground text-sm mt-1">
+                Manage team members and compensation.
+              </p>
+            </div>
 
-          <Dialog
-            open={isDialogOpen}
-            onOpenChange={(open) => {
-              if (open) {
-                setIsDialogOpen(true);
-                return;
-              }
+            <div className="flex items-center gap-2">
+              {isEmployeesUnlocked ? (
+                <Button type="button" variant="outline" onClick={lockEmployeesSection}>
+                  <LockKeyhole className="mr-2 h-4 w-4" />
+                  Lock Section
+                </Button>
+              ) : null}
+              <Dialog
+                open={isDialogOpen}
+                onOpenChange={(open) => {
+                  if (open) {
+                    setIsDialogOpen(true);
+                    return;
+                  }
 
-              closeDialog();
-            }}
-          >
+                  closeDialog();
+                }}
+              >
             <DialogTrigger asChild>
               <Button onClick={openCreateDialog}>
                 <Plus className="w-4 h-4 mr-2" />
@@ -630,8 +697,9 @@ export default function Employees() {
                 </form>
               </Form>
             </DialogContent>
-          </Dialog>
-        </div>
+              </Dialog>
+            </div>
+          </div>
 
         <div className="flex items-center gap-4 bg-card p-4 rounded-lg border border-border/50">
           <div className="relative flex-1 max-w-md">
@@ -788,6 +856,83 @@ export default function Employees() {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+        </div>
+
+        {!isEmployeesUnlocked ? (
+          <div className="absolute inset-0 z-20 flex items-start justify-center rounded-3xl bg-background/55 px-4 py-10 backdrop-blur-[3px]">
+            <form
+              onSubmit={handleEmployeesUnlock}
+              className="relative w-full max-w-[390px] overflow-hidden rounded-[2rem] border border-border/70 bg-card/95 px-8 py-7 text-center shadow-[0_28px_80px_rgba(15,23,42,0.16)]"
+            >
+              <div className="pointer-events-none absolute -right-16 -top-16 h-40 w-40 rounded-full bg-primary/10 blur-3xl" />
+              <div className="pointer-events-none absolute -bottom-20 left-8 h-32 w-32 rounded-full bg-emerald-400/10 blur-3xl" />
+
+              <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-primary">
+                Employee vault
+              </p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-tight text-foreground">Restricted Area</h2>
+              <p className="mx-auto mt-2 max-w-[250px] text-sm leading-6 text-muted-foreground">
+                Enter the 4-digit passcode to continue.
+              </p>
+
+              <div className="relative mt-6">
+                <Input
+                  id="employee-passcode"
+                  type="password"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  autoFocus
+                  aria-label="Employee section passcode"
+                  value={employeePasscode}
+                  onChange={(event) => handleEmployeePasscodeChange(event.target.value)}
+                  className="absolute inset-0 h-[52px] w-full cursor-pointer opacity-0"
+                />
+                <div className="grid grid-cols-4 gap-3" aria-hidden="true">
+                  {Array.from({ length: EMPLOYEES_SECTION_PASSCODE_LENGTH }).map((_, index) => (
+                    <div
+                      key={index}
+                      className={`flex h-[52px] items-center justify-center rounded-2xl border text-xl font-semibold shadow-sm transition ${
+                        employeePasscodeError
+                          ? "border-destructive/60 bg-destructive/5 ring-2 ring-destructive/10"
+                          : employeePasscode.length === index
+                            ? "border-primary/70 bg-primary/5 ring-4 ring-primary/10"
+                            : employeePasscode.length > index
+                              ? "border-primary/40 bg-primary/10 text-primary"
+                              : "border-border/80 bg-secondary/20"
+                      }`}
+                    >
+                      {employeePasscode.length > index ? "*" : ""}
+                    </div>
+                  ))}
+                </div>
+                {employeePasscodeError ? (
+                  <p className="mt-3 text-sm font-medium text-destructive">{employeePasscodeError}</p>
+                ) : (
+                  <button
+                    type="button"
+                    className="mt-4 text-xs font-semibold text-primary/90 underline-offset-4 hover:text-primary hover:underline"
+                    onClick={() =>
+                      toast({
+                        title: "Passcode reminder",
+                        description: "Ask the system admin for the employee section passcode.",
+                      })
+                    }
+                  >
+                    Forgot Passcode?
+                  </button>
+                )}
+              </div>
+
+              <div className="mt-6 inline-flex items-center gap-2 rounded-full border border-border/70 bg-secondary/30 px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                <ShieldCheck className="h-3.5 w-3.5" />
+                Session-only access
+              </div>
+              <button type="submit" className="sr-only">
+                Unlock Employees
+              </button>
+            </form>
+          </div>
+        ) : null}
       </div>
     </DashboardLayout>
   );
