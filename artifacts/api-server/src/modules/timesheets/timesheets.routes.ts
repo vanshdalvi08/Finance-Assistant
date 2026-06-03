@@ -976,7 +976,7 @@ router.post("/timesheets", requireTenantRole("admin", "employee"), async (reques
   );
 
   const entry: TimesheetEntry = {
-    id: parsed.data.id ?? existing?.id ?? createId("ts"),
+    id: existing?.id ?? parsed.data.id ?? createId("ts"),
     employeeId,
     employeeNameSnapshot:
       request.auth?.user.role === "employee"
@@ -1432,7 +1432,7 @@ router.post("/timesheets/submit", requireTenantRole("admin", "employee"), async 
   const dailyReviewState = reconcileDailyReviewState(existing?.dailyReviewStatus, existing?.dailyReviewNotes, existing?.lines ?? [], lines);
 
   const entry: TimesheetEntry = {
-    id: parsed.data.id ?? existing?.id ?? createId("ts"),
+    id: existing?.id ?? parsed.data.id ?? createId("ts"),
     employeeId,
     employeeNameSnapshot:
       request.auth?.user.role === "employee"

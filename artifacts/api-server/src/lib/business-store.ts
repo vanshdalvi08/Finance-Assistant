@@ -2457,6 +2457,15 @@ function createAuditEntry(input: Omit<AuditTrailEntry, "id" | "createdAt">): Aud
   };
 }
 
+function findExistingTimesheetByIdentity(timesheets: TimesheetEntry[], entry: TimesheetEntry): TimesheetEntry | undefined {
+  const entryWeekStart = normalizeWeekStart(entry.weekStart);
+  return timesheets.find((timesheet) => timesheet.id === entry.id)
+    ?? timesheets.find(
+      (timesheet) =>
+        timesheet.employeeId === entry.employeeId && normalizeWeekStart(timesheet.weekStart) === entryWeekStart,
+    );
+}
+
 async function persistTargetedTimesheetUnsafe(input: {
   currentStore: BusinessStore;
   nextStore: BusinessStore;
@@ -2477,19 +2486,22 @@ async function persistTargetedTimesheetUnsafe(input: {
     }
 
     if (entry) {
-      const row = timesheetToRow(entry);
+      const existing = findExistingTimesheetByIdentity(currentStore.timesheets, entry);
+      const persistedEntry = existing && existing.id !== entry.id
+        ? { ...entry, id: existing.id, createdAt: existing.createdAt ?? entry.createdAt }
+        : entry;
+      const row = timesheetToRow(persistedEntry);
       const { id: _rowId, createdAt: _rowCreatedAt, ...updateValues } = row;
-      const alreadyExists = currentStore.timesheets.some((timesheet) => timesheet.id === entry.id);
 
-      if (alreadyExists) {
-        await tx.update(timesheetsTable).set(updateValues).where(eq(timesheetsTable.id, entry.id));
+      if (existing) {
+        await tx.update(timesheetsTable).set(updateValues).where(eq(timesheetsTable.id, existing.id));
       } else {
         await tx.insert(timesheetsTable).values(row);
       }
 
-      await tx.delete(timesheetLinesTable).where(eq(timesheetLinesTable.timesheetId, entry.id));
+      await tx.delete(timesheetLinesTable).where(eq(timesheetLinesTable.timesheetId, persistedEntry.id));
 
-      const lineRows = timesheetLinesToRows(entry, validProjectIds, validTaskIds);
+      const lineRows = timesheetLinesToRows(persistedEntry, validProjectIds, validTaskIds);
       if (lineRows.length > 0) {
         await tx.insert(timesheetLinesTable).values(lineRows);
       }
@@ -2720,9 +2732,12 @@ export async function saveTimesheetFast(input: {
     const normalizedEntry = normalizeStore({ timesheets: [input.entry] }).timesheets[0];
     const isReviewShell = Boolean(normalizedEntry.reviewShell);
     assertTaskHourLimits(normalizedEntry, current.projectBudgets, current.timesheets);
-    const existing = current.timesheets.find((timesheet) => timesheet.id === normalizedEntry.id);
+    const existing = findExistingTimesheetByIdentity(current.timesheets, normalizedEntry);
+    const effectiveEntry = existing && existing.id !== normalizedEntry.id
+      ? { ...normalizedEntry, id: existing.id, createdAt: existing.createdAt ?? normalizedEntry.createdAt }
+      : normalizedEntry;
 
-    if (normalizedEntry.status === "draft" && !hasPersistedTimesheetContent(normalizedEntry) && !isReviewShell) {
+    if (effectiveEntry.status === "draft" && !hasPersistedTimesheetContent(effectiveEntry) && !isReviewShell) {
       if (!existing) {
         return null;
       }
@@ -2761,19 +2776,19 @@ export async function saveTimesheetFast(input: {
     const nextStore = normalizeStore({
       ...current,
       timesheets: existing
-        ? current.timesheets.map((timesheet) => (timesheet.id === normalizedEntry.id ? normalizedEntry : timesheet))
-        : [normalizedEntry, ...current.timesheets],
+        ? current.timesheets.map((timesheet) => (timesheet.id === existing.id ? effectiveEntry : timesheet))
+        : [effectiveEntry, ...current.timesheets],
       auditTrail: input.audit
         ? [
             createAuditEntry({
               ...input.audit,
-              entityId: normalizedEntry.id,
+              entityId: effectiveEntry.id,
               details: {
-                entityLabel: normalizedEntry.employeeNameSnapshot,
+                entityLabel: effectiveEntry.employeeNameSnapshot,
                 requestId: input.audit.requestId,
                 changedFields: existing ? ["entry"] : ["created"],
                 before: existing ? summarizeTimesheetAudit(existing) : null,
-                after: summarizeTimesheetAudit(normalizedEntry),
+                after: summarizeTimesheetAudit(effectiveEntry),
                 context: { operation: existing ? "timesheet_save" : "timesheet_create" },
               },
             }),
@@ -2787,11 +2802,11 @@ export async function saveTimesheetFast(input: {
     await persistTargetedTimesheetUnsafe({
       currentStore: current,
       nextStore,
-      entry: normalizedEntry,
+      entry: effectiveEntry,
       auditEntry,
     });
     cacheStore(nextStore);
-    return structuredClone(normalizedEntry);
+    return structuredClone(effectiveEntry);
   });
 }
 
@@ -3060,12 +3075,15 @@ export async function submitTimesheetEntryFast(input: {
     const current = storeCache ?? await readStore({ fresh: true });
     const normalizedEntry = normalizeStore({ timesheets: [input.entry] }).timesheets[0];
     assertTaskHourLimits(normalizedEntry, current.projectBudgets, current.timesheets);
-    const existing = current.timesheets.find((timesheet) => timesheet.id === normalizedEntry.id);
+    const existing = findExistingTimesheetByIdentity(current.timesheets, normalizedEntry);
+    const effectiveEntry = existing && existing.id !== normalizedEntry.id
+      ? { ...normalizedEntry, id: existing.id, createdAt: existing.createdAt ?? normalizedEntry.createdAt }
+      : normalizedEntry;
     assertWorkflowTransition("timesheetSubmission", existing?.status ?? "draft", "submitted");
     const submittedEntry = normalizeStore({
       timesheets: [
         {
-          ...normalizedEntry,
+          ...effectiveEntry,
           submittedAt: nowIso(),
           reviewedAt: undefined,
           reviewedBy: undefined,
