@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { addDays, format, startOfWeek } from "date-fns";
 import { BarChart3, ChevronDown, ChevronRight, Download, Receipt, Wallet, WalletCards, Clock3, CalendarDays } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
-import { DashboardCard } from "@/components/dashboard-card";
-import { api, type MonthCalendarDay } from "@/lib/api";
+import { api, type DayKey, type MonthCalendarDay, type TimesheetEntry } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,8 +19,16 @@ function formatCurrency(value: number) {
   });
 }
 
+function formatHours(value: number) {
+  return `${Number(value || 0).toFixed(1).replace(/\.0$/, "")}h`;
+}
+
 function isInMonth(date: string, month: string) {
   return date.slice(0, 7) === month;
+}
+
+function weekDateIso(weekStart: string, dayIndex: number) {
+  return format(addDays(new Date(weekStart), dayIndex), "yyyy-MM-dd");
 }
 
 function weekTouchesMonth(weekStart: string, month: string) {
@@ -35,6 +42,16 @@ function weekTouchesMonth(weekStart: string, month: string) {
 
 function totalHours(days: MonthCalendarDay[] | undefined) {
   return (days ?? []).reduce((sum, day) => sum + Number(day.hours ?? 0), 0);
+}
+
+function lineHoursInMonth(entry: TimesheetEntry, line: TimesheetEntry["lines"][number], month: string) {
+  const dayKeys: DayKey[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+  return dayKeys.reduce((sum, day, index) => {
+    if (!isInMonth(weekDateIso(entry.weekStart, index), month)) {
+      return sum;
+    }
+    return sum + Number(line.hours?.[day] ?? 0);
+  }, 0);
 }
 
 function groupWeeks(days: MonthCalendarDay[] | undefined) {
@@ -80,6 +97,7 @@ function groupWeeks(days: MonthCalendarDay[] | undefined) {
 export default function AdminReportsPage() {
   const [selectedMonth, setSelectedMonth] = useState(() => format(new Date(), "yyyy-MM"));
   const [selectedEmployeeId, setSelectedEmployeeId] = useState("");
+  const [taskHoursEmployeeScope, setTaskHoursEmployeeScope] = useState("all");
   const [openWeekId, setOpenWeekId] = useState<string | null>(null);
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
@@ -98,8 +116,18 @@ export default function AdminReportsPage() {
     }
   }, [employees, selectedEmployeeId]);
 
+  useEffect(() => {
+    if (taskHoursEmployeeScope !== "all" && !employees.some((employee) => employee.id === taskHoursEmployeeScope)) {
+      setTaskHoursEmployeeScope("all");
+    }
+  }, [employees, taskHoursEmployeeScope]);
+
   const report = useMemo(() => {
-    const monthTimesheets = timesheets.filter((entry) => isInMonth(entry.weekStart, selectedMonth));
+    const monthTimesheets = timesheets.filter((entry) => weekTouchesMonth(entry.weekStart, selectedMonth));
+    const taskScopeTimesheets =
+      taskHoursEmployeeScope === "all"
+        ? monthTimesheets
+        : monthTimesheets.filter((entry) => entry.employeeId === taskHoursEmployeeScope);
     const monthSalaries = salaries.filter((salary) => isInMonth(salary.date, selectedMonth));
     const monthExpenses = expenses.filter((expense) => isInMonth(expense.date, selectedMonth));
     const monthFunds = funds.filter((fund) => isInMonth(fund.date, selectedMonth));
@@ -107,11 +135,7 @@ export default function AdminReportsPage() {
     const totalHoursLogged = monthTimesheets.reduce(
       (sum, entry) =>
         sum +
-        entry.lines.reduce(
-          (lineSum, line) =>
-            lineSum + Object.values(line.hours).reduce((hoursSum, value) => hoursSum + Number(value ?? 0), 0),
-          0,
-        ),
+        entry.lines.reduce((lineSum, line) => lineSum + lineHoursInMonth(entry, line, selectedMonth), 0),
       0,
     );
 
@@ -126,6 +150,62 @@ export default function AdminReportsPage() {
       .reduce((sum, expense) => sum + expense.amount, 0);
     const totalFunds = monthFunds.reduce((sum, fund) => sum + fund.amount, 0);
 
+    const taskHoursLookup = new Map<
+      string,
+      {
+        id: string;
+        project: string;
+        task: string;
+        subTask: string;
+        hours: number;
+        employeeIds: Set<string>;
+        workNotes: number;
+        rows: number;
+      }
+    >();
+    const taskScopeHours = taskScopeTimesheets.reduce(
+      (sum, entry) =>
+        sum +
+        entry.lines.reduce((lineSum, line) => lineSum + lineHoursInMonth(entry, line, selectedMonth), 0),
+      0,
+    );
+    for (const entry of taskScopeTimesheets) {
+      for (const line of entry.lines) {
+        const hours = lineHoursInMonth(entry, line, selectedMonth);
+        if (hours <= 0) {
+          continue;
+        }
+        const project = line.project?.trim() || "Custom project";
+        const task = line.task?.trim() || "Custom task";
+        const subTask = line.subTask?.trim() || "";
+        const key = `${project}::${task}::${subTask}`;
+        const current =
+          taskHoursLookup.get(key) ??
+          {
+            id: key,
+            project,
+            task,
+            subTask,
+            hours: 0,
+            employeeIds: new Set<string>(),
+            workNotes: 0,
+            rows: 0,
+          };
+        current.hours += hours;
+        current.employeeIds.add(entry.employeeId);
+        current.workNotes += Object.values(line.workNotes ?? {}).filter((note) => note?.trim()).length;
+        current.rows += 1;
+        taskHoursLookup.set(key, current);
+      }
+    }
+    const taskHourRows = [...taskHoursLookup.values()]
+      .map((row) => ({
+        ...row,
+        employeeCount: row.employeeIds.size,
+        share: taskScopeHours > 0 ? (row.hours / taskScopeHours) * 100 : 0,
+      }))
+      .sort((left, right) => right.hours - left.hours);
+
     const employeeRows = employees
       .map((employee) => {
         const employeeHours = monthTimesheets
@@ -133,11 +213,7 @@ export default function AdminReportsPage() {
           .reduce(
             (sum, entry) =>
               sum +
-              entry.lines.reduce(
-                (lineSum, line) =>
-                  lineSum + Object.values(line.hours).reduce((hoursSum, value) => hoursSum + Number(value ?? 0), 0),
-                0,
-              ),
+              entry.lines.reduce((lineSum, line) => lineSum + lineHoursInMonth(entry, line, selectedMonth), 0),
             0,
           );
         return {
@@ -157,9 +233,10 @@ export default function AdminReportsPage() {
       pendingExpenses,
       totalFunds,
       employeeRows,
+      taskHourRows,
       projectRows: projectSummary,
     };
-  }, [employees, expenses, funds, projectSummary, salaries, selectedMonth, timesheets]);
+  }, [employees, expenses, funds, projectSummary, salaries, selectedMonth, taskHoursEmployeeScope, timesheets]);
 
   const { data: employeeMonthCalendar } = useQuery({
     queryKey: ["employee-month-calendar-report", selectedEmployeeId, selectedMonth],
@@ -168,6 +245,7 @@ export default function AdminReportsPage() {
   });
 
   const selectedEmployee = employees.find((employee) => employee.id === selectedEmployeeId) ?? null;
+  const selectedTaskHoursEmployee = employees.find((employee) => employee.id === taskHoursEmployeeScope) ?? null;
   const weeklyBreakdown = useMemo(() => groupWeeks(employeeMonthCalendar?.days), [employeeMonthCalendar?.days]);
   const weeklyBreakdownMap = useMemo(
     () =>
@@ -286,62 +364,164 @@ export default function AdminReportsPage() {
         </div>
 
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-          <DashboardCard label="Total Hours Logged" value={`${report.totalHoursLogged.toFixed(1)}h`} icon={<Clock3 className="h-5 w-5" />} />
-          <DashboardCard label="Salaries Payable" value={formatCurrency(report.salariesPayable)} icon={<WalletCards className="h-5 w-5" />} />
-          <DashboardCard label="Approved Expenses" value={formatCurrency(report.approvedExpenses)} icon={<Receipt className="h-5 w-5" />} />
-          <DashboardCard label="Pending Expenses" value={formatCurrency(report.pendingExpenses)} icon={<BarChart3 className="h-5 w-5" />} />
-          <DashboardCard label="Funds Added" value={formatCurrency(report.totalFunds)} icon={<Wallet className="h-5 w-5" />} />
+          <ReportMetricCard
+            label="Total Hours"
+            value={formatHours(report.totalHoursLogged)}
+            helper="Logged this month"
+            icon={<Clock3 className="h-4 w-4" />}
+          />
+          <ReportMetricCard
+            label="Salaries Payable"
+            value={formatCurrency(report.salariesPayable)}
+            helper="Pending payroll"
+            icon={<WalletCards className="h-4 w-4" />}
+          />
+          <ReportMetricCard
+            label="Approved Expenses"
+            value={formatCurrency(report.approvedExpenses)}
+            helper="Cleared expenses"
+            icon={<Receipt className="h-4 w-4" />}
+          />
+          <ReportMetricCard
+            label="Pending Expenses"
+            value={formatCurrency(report.pendingExpenses)}
+            helper="Awaiting action"
+            icon={<BarChart3 className="h-4 w-4" />}
+          />
+          <ReportMetricCard
+            label="Funds Added"
+            value={formatCurrency(report.totalFunds)}
+            helper="Capital inflow"
+            icon={<Wallet className="h-4 w-4" />}
+          />
         </div>
 
-        <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
-          <Card className="border-border/60 bg-card/80 shadow-sm">
-            <CardHeader>
-              <CardTitle className="text-base font-medium">Employee-wise Summary</CardTitle>
-              <CardDescription>Top contributors for the selected month.</CardDescription>
+        <div className="grid gap-6">
+          <Card className="overflow-hidden border-border/60 bg-card/80 shadow-sm">
+            <CardHeader className="border-b border-border/50 pb-4">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <CardTitle className="text-base font-semibold">Project & Task Hours</CardTitle>
+                  <CardDescription>
+                    {selectedTaskHoursEmployee
+                      ? `Booked hours for ${selectedTaskHoursEmployee.name}, grouped by project, task, and sub-task.`
+                      : "Total booked hours by project, task, and sub-task for all employees in the selected month."}
+                  </CardDescription>
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <Select value={taskHoursEmployeeScope} onValueChange={setTaskHoursEmployeeScope}>
+                    <SelectTrigger className="h-9 w-full rounded-full border-border/70 bg-background/70 text-sm sm:w-[240px]">
+                      <SelectValue placeholder="Choose employee" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All employees</SelectItem>
+                      {employees.map((employee) => (
+                        <SelectItem key={employee.id} value={employee.id}>
+                          {employee.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Badge variant="outline" className="w-fit rounded-full border-border/70 px-3 py-1 text-xs">
+                    {report.taskHourRows.length} active task{report.taskHourRows.length !== 1 ? "s" : ""}
+                  </Badge>
+                </div>
+              </div>
             </CardHeader>
-            <CardContent>
-              {report.employeeRows.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-border/60 px-4 py-10 text-center text-sm text-muted-foreground">
-                  No employee hours logged for this month yet.
+            <CardContent className="p-0">
+              {report.taskHourRows.length === 0 ? (
+                <div className="m-6 rounded-xl border border-dashed border-border/60 px-4 py-10 text-center text-sm text-muted-foreground">
+                  {selectedTaskHoursEmployee
+                    ? `No project or task hours logged by ${selectedTaskHoursEmployee.name} for this month yet.`
+                    : "No project or task hours logged for this month yet."}
                 </div>
               ) : (
-                <div className="space-y-3">
-                  {report.employeeRows.map((row) => {
-                    const width = report.totalHoursLogged > 0 ? (row.hours / report.totalHoursLogged) * 100 : 0;
-                    return (
-                      <div key={row.id} className="space-y-2 rounded-xl border border-border/60 bg-secondary/10 px-4 py-3">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <p className="font-medium text-foreground">{row.name}</p>
-                            <p className="text-xs text-muted-foreground">{row.department}</p>
-                          </div>
-                          <p className="text-sm font-medium">{row.hours.toFixed(1)}h</p>
-                        </div>
-                        <div className="h-2 overflow-hidden rounded-full bg-secondary/60">
-                          <div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, width)}%` }} />
-                        </div>
-                      </div>
-                    );
-                  })}
+                <div>
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-border/60 bg-secondary/25 hover:bg-secondary/25">
+                        <TableHead className="w-[54px] pl-6 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+                          #
+                        </TableHead>
+                        <TableHead className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+                          Project
+                        </TableHead>
+                        <TableHead className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+                          Task
+                        </TableHead>
+                        <TableHead className="w-[24%] text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+                          Sub-task
+                        </TableHead>
+                        <TableHead className="w-[72px] text-right text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+                          People
+                        </TableHead>
+                        <TableHead className="w-[82px] text-right text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+                          Hours
+                        </TableHead>
+                        <TableHead className="w-[132px] pr-6 text-right text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+                          Share
+                        </TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {report.taskHourRows.slice(0, 12).map((row, index) => (
+                        <TableRow key={row.id} className="border-border/50">
+                          <TableCell className="pl-6 align-middle">
+                            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-secondary/60 text-xs font-semibold text-muted-foreground">
+                              {index + 1}
+                            </span>
+                          </TableCell>
+                          <TableCell className="align-middle">
+                            <p className="font-semibold text-foreground">{row.project}</p>
+                          </TableCell>
+                          <TableCell className="align-middle">
+                            <p className="font-medium text-foreground">{row.task}</p>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {row.rows} row{row.rows !== 1 ? "s" : ""} - {row.workNotes} work note
+                              {row.workNotes !== 1 ? "s" : ""}
+                            </p>
+                          </TableCell>
+                          <TableCell className="align-middle text-sm text-muted-foreground">
+                            {row.subTask || "No sub-task"}
+                          </TableCell>
+                          <TableCell className="align-middle text-right font-medium">{row.employeeCount}</TableCell>
+                          <TableCell className="align-middle text-right font-semibold">{formatHours(row.hours)}</TableCell>
+                          <TableCell className="pr-6 align-middle">
+                            <div className="flex items-center justify-end gap-3">
+                              <div className="h-2 w-24 overflow-hidden rounded-full bg-secondary/70">
+                                <div
+                                  className="h-full rounded-full bg-primary"
+                                  style={{ width: `${Math.min(100, row.share)}%` }}
+                                />
+                              </div>
+                              <span className="w-10 text-right text-xs text-muted-foreground">
+                                {row.share.toFixed(0)}%
+                              </span>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
                 </div>
               )}
             </CardContent>
           </Card>
 
-          <Card className="border-border/60 bg-card/80 shadow-sm">
-            <CardHeader>
-              <CardTitle className="text-base font-medium">Project-wise Budget Summary</CardTitle>
+          <Card className="overflow-hidden border-border/60 bg-card/80 shadow-sm">
+            <CardHeader className="border-b border-border/50 pb-4">
+              <CardTitle className="text-base font-semibold">Project-wise Budget Summary</CardTitle>
               <CardDescription>Live spent versus remaining by project.</CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="p-0">
               <Table>
                 <TableHeader>
-                  <TableRow>
-                    <TableHead>Project</TableHead>
-                    <TableHead>Client</TableHead>
-                    <TableHead className="text-right">Budget</TableHead>
-                    <TableHead className="text-right">Spent</TableHead>
-                    <TableHead className="text-right">Remaining</TableHead>
+                  <TableRow className="border-border/60 bg-secondary/25 hover:bg-secondary/25">
+                    <TableHead className="pl-6 text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Project</TableHead>
+                    <TableHead className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Client</TableHead>
+                    <TableHead className="text-right text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Budget</TableHead>
+                    <TableHead className="text-right text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Spent</TableHead>
+                    <TableHead className="pr-6 text-right text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Remaining</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -582,5 +762,40 @@ export default function AdminReportsPage() {
         </Card>
       </div>
     </DashboardLayout>
+  );
+}
+
+function ReportMetricCard({
+  label,
+  value,
+  helper,
+  icon,
+}: {
+  label: string;
+  value: string;
+  helper: string;
+  icon: ReactNode;
+}) {
+  return (
+    <Card className="border-border/60 bg-card/85 shadow-sm">
+      <CardContent className="flex min-h-[128px] flex-col px-5 py-4">
+        <div className="flex min-h-9 items-start justify-between gap-4">
+          <p className="max-w-[8.5rem] text-[11px] font-semibold uppercase leading-[1.35] tracking-[0.17em] text-muted-foreground">
+            {label}
+          </p>
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-secondary/60 text-muted-foreground">
+            {icon}
+          </div>
+        </div>
+
+        <div className="mt-2">
+          <p className="truncate text-[28px] font-semibold leading-none tracking-tight text-foreground tabular-nums">
+            {value}
+          </p>
+        </div>
+
+        <p className="mt-auto text-xs leading-4 text-muted-foreground">{helper}</p>
+      </CardContent>
+    </Card>
   );
 }
