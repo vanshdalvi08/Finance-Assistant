@@ -7,9 +7,22 @@ import { api, type DayKey, type MonthCalendarDay, type TimesheetEntry } from "@/
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+
+const DAY_KEYS: DayKey[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+
+function escapeHtml(value: unknown) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
 
 function formatCurrency(value: number) {
   return value.toLocaleString("en-IN", {
@@ -45,13 +58,23 @@ function totalHours(days: MonthCalendarDay[] | undefined) {
 }
 
 function lineHoursInMonth(entry: TimesheetEntry, line: TimesheetEntry["lines"][number], month: string) {
-  const dayKeys: DayKey[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-  return dayKeys.reduce((sum, day, index) => {
+  return DAY_KEYS.reduce((sum, day, index) => {
     if (!isInMonth(weekDateIso(entry.weekStart, index), month)) {
       return sum;
     }
     return sum + Number(line.hours?.[day] ?? 0);
   }, 0);
+}
+
+function lineWorkNotesInMonth(entry: TimesheetEntry, line: TimesheetEntry["lines"][number], month: string) {
+  return DAY_KEYS.flatMap((day, index) => {
+    const date = weekDateIso(entry.weekStart, index);
+    const note = line.workNotes?.[day]?.trim();
+    if (!isInMonth(date, month) || !note) {
+      return [];
+    }
+    return `${format(new Date(date), "dd MMM")}: ${note}`;
+  });
 }
 
 function groupWeeks(days: MonthCalendarDay[] | undefined) {
@@ -99,6 +122,9 @@ export default function AdminReportsPage() {
   const [selectedEmployeeId, setSelectedEmployeeId] = useState("");
   const [taskHoursEmployeeScope, setTaskHoursEmployeeScope] = useState("all");
   const [openWeekId, setOpenWeekId] = useState<string | null>(null);
+  const [exportOptionsOpen, setExportOptionsOpen] = useState(false);
+  const [includeProjectTaskSummary, setIncludeProjectTaskSummary] = useState(true);
+  const [includeEmployeeDetails, setIncludeEmployeeDetails] = useState(true);
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
   const { data: timesheets = [] } = useQuery({ queryKey: ["timesheets"], queryFn: () => api.getTimesheets() });
@@ -150,61 +176,71 @@ export default function AdminReportsPage() {
       .reduce((sum, expense) => sum + expense.amount, 0);
     const totalFunds = monthFunds.reduce((sum, fund) => sum + fund.amount, 0);
 
-    const taskHoursLookup = new Map<
-      string,
-      {
-        id: string;
-        project: string;
-        task: string;
-        subTask: string;
-        hours: number;
-        employeeIds: Set<string>;
-        workNotes: number;
-        rows: number;
+    const buildTaskHourRows = (sourceTimesheets: TimesheetEntry[], scopeHours: number) => {
+      const taskHoursLookup = new Map<
+        string,
+        {
+          id: string;
+          project: string;
+          task: string;
+          description: string;
+          subTask: string;
+          hours: number;
+          employeeIds: Set<string>;
+          workNotes: number;
+          rows: number;
+        }
+      >();
+
+      for (const entry of sourceTimesheets) {
+        for (const line of entry.lines) {
+          const hours = lineHoursInMonth(entry, line, selectedMonth);
+          if (hours <= 0) {
+            continue;
+          }
+          const project = line.project?.trim() || "Custom project";
+          const task = line.task?.trim() || "Custom task";
+          const description = line.notes?.trim() || "";
+          const subTask = line.subTask?.trim() || "";
+          const key = `${project}::${task}::${description}::${subTask}`;
+          const current =
+            taskHoursLookup.get(key) ??
+            {
+              id: key,
+              project,
+              task,
+              description,
+              subTask,
+              hours: 0,
+              employeeIds: new Set<string>(),
+              workNotes: 0,
+              rows: 0,
+            };
+          current.hours += hours;
+          current.employeeIds.add(entry.employeeId);
+          current.workNotes += lineWorkNotesInMonth(entry, line, selectedMonth).length;
+          current.rows += 1;
+          taskHoursLookup.set(key, current);
+        }
       }
-    >();
+
+      return [...taskHoursLookup.values()]
+        .map((row) => ({
+          ...row,
+          employeeCount: row.employeeIds.size,
+          share: scopeHours > 0 ? (row.hours / scopeHours) * 100 : 0,
+        }))
+        .sort((left, right) => right.hours - left.hours);
+    };
+
     const taskScopeHours = taskScopeTimesheets.reduce(
       (sum, entry) =>
         sum +
         entry.lines.reduce((lineSum, line) => lineSum + lineHoursInMonth(entry, line, selectedMonth), 0),
       0,
     );
-    for (const entry of taskScopeTimesheets) {
-      for (const line of entry.lines) {
-        const hours = lineHoursInMonth(entry, line, selectedMonth);
-        if (hours <= 0) {
-          continue;
-        }
-        const project = line.project?.trim() || "Custom project";
-        const task = line.task?.trim() || "Custom task";
-        const subTask = line.subTask?.trim() || "";
-        const key = `${project}::${task}::${subTask}`;
-        const current =
-          taskHoursLookup.get(key) ??
-          {
-            id: key,
-            project,
-            task,
-            subTask,
-            hours: 0,
-            employeeIds: new Set<string>(),
-            workNotes: 0,
-            rows: 0,
-          };
-        current.hours += hours;
-        current.employeeIds.add(entry.employeeId);
-        current.workNotes += Object.values(line.workNotes ?? {}).filter((note) => note?.trim()).length;
-        current.rows += 1;
-        taskHoursLookup.set(key, current);
-      }
-    }
-    const taskHourRows = [...taskHoursLookup.values()]
-      .map((row) => ({
-        ...row,
-        employeeCount: row.employeeIds.size,
-        share: taskScopeHours > 0 ? (row.hours / taskScopeHours) * 100 : 0,
-      }))
-      .sort((left, right) => right.hours - left.hours);
+    const allTaskHourRows = buildTaskHourRows(monthTimesheets, totalHoursLogged);
+    const taskHourRows = buildTaskHourRows(taskScopeTimesheets, taskScopeHours);
 
     const employeeRows = employees
       .map((employee) => {
@@ -233,6 +269,7 @@ export default function AdminReportsPage() {
       pendingExpenses,
       totalFunds,
       employeeRows,
+      allTaskHourRows,
       taskHourRows,
       projectRows: projectSummary,
     };
@@ -291,46 +328,222 @@ export default function AdminReportsPage() {
       ? openWeekId
       : employeeWeekReports[0]?.id ?? null;
 
+  const employeeExportReports = useMemo(() => {
+    const monthTimesheets = timesheets.filter((entry) => weekTouchesMonth(entry.weekStart, selectedMonth));
+
+    return employees
+      .map((employee) => {
+        const rows = monthTimesheets
+          .filter((entry) => entry.employeeId === employee.id)
+          .flatMap((entry) =>
+            entry.lines.flatMap((line) => {
+              const hours = lineHoursInMonth(entry, line, selectedMonth);
+              if (hours <= 0) {
+                return [];
+              }
+              return {
+                id: `${entry.id}-${line.id}`,
+                project: line.project?.trim() || "Custom project",
+                task: line.task?.trim() || "Custom task",
+                description: line.notes?.trim() || "",
+                subTask: line.subTask?.trim() || "",
+                hours,
+                workNotes: lineWorkNotesInMonth(entry, line, selectedMonth),
+              };
+            }),
+          )
+          .sort((left, right) => left.project.localeCompare(right.project) || left.task.localeCompare(right.task));
+
+        return {
+          employee,
+          rows,
+          totalHours: rows.reduce((sum, row) => sum + row.hours, 0),
+        };
+      })
+      .filter((entry) => entry.totalHours > 0)
+      .sort((left, right) => left.employee.name.localeCompare(right.employee.name));
+  }, [employees, selectedMonth, timesheets]);
+
   function exportPdf() {
+    if (!includeProjectTaskSummary && !includeEmployeeDetails) {
+      return;
+    }
+
     const popup = window.open("", "_blank", "width=1120,height=820");
     if (!popup) {
       return;
     }
 
     const reportMonthLabel = format(new Date(`${selectedMonth}-01T00:00:00`), "MMMM yyyy");
+    const generatedAt = format(new Date(), "dd MMM yyyy, HH:mm");
+    const projectRowsHtml =
+      report.allTaskHourRows.length > 0
+        ? report.allTaskHourRows
+            .map(
+              (row, index) => `
+                <tr>
+                  <td class="muted center">${index + 1}</td>
+                  <td><strong>${escapeHtml(row.project)}</strong></td>
+                  <td>
+                    <strong>${escapeHtml(row.task)}</strong>
+                    ${row.description ? `<div class="subtext">${escapeHtml(row.description)}</div>` : ""}
+                  </td>
+                  <td>${escapeHtml(row.subTask || "-")}</td>
+                  <td class="center">${row.employeeCount}</td>
+                  <td class="num">${formatHours(row.hours)}</td>
+                </tr>
+              `,
+            )
+            .join("")
+        : `<tr><td colspan="6" class="empty">No project or task hours logged for ${escapeHtml(reportMonthLabel)}.</td></tr>`;
+
+    const employeeDetailsHtml =
+      employeeExportReports.length > 0
+        ? employeeExportReports
+            .map(
+              ({ employee, rows, totalHours }) => `
+                <section class="employee-page">
+                  <div class="section-heading">
+                    <div>
+                      <p class="eyebrow">Employee Detail</p>
+                      <h2>${escapeHtml(employee.name)}</h2>
+                      <p>${escapeHtml(employee.department || "Department not set")}</p>
+                    </div>
+                    <div class="total-pill">${formatHours(totalHours)}</div>
+                  </div>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Project</th>
+                        <th>Task</th>
+                        <th>Sub-task</th>
+                        <th class="num">Hours</th>
+                        <th>Work Notes</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${rows
+                        .map(
+                          (row) => `
+                            <tr>
+                              <td><strong>${escapeHtml(row.project)}</strong></td>
+                              <td>
+                                <strong>${escapeHtml(row.task)}</strong>
+                                ${row.description ? `<div class="subtext">${escapeHtml(row.description)}</div>` : ""}
+                              </td>
+                              <td>${escapeHtml(row.subTask || "-")}</td>
+                              <td class="num">${formatHours(row.hours)}</td>
+                              <td>${row.workNotes.length > 0 ? row.workNotes.map((note) => `<div>${escapeHtml(note)}</div>`).join("") : "<span class=\"muted\">No work notes</span>"}</td>
+                            </tr>
+                          `,
+                        )
+                        .join("")}
+                    </tbody>
+                  </table>
+                </section>
+              `,
+            )
+            .join("")
+        : `<section class="employee-page"><div class="empty">No employee task detail available for ${escapeHtml(reportMonthLabel)}.</div></section>`;
+
     popup.document.write(`
       <html>
         <head>
           <title>Monthly Summary - ${reportMonthLabel}</title>
           <style>
-            body { font-family: Arial, sans-serif; padding: 32px; color: #0f172a; }
-            h1 { margin-bottom: 4px; }
-            p { color: #475569; }
-            .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 24px 0; }
-            .card { border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; }
-            .label { font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: .08em; }
-            .value { font-size: 24px; font-weight: 700; margin-top: 8px; }
-            table { width: 100%; border-collapse: collapse; margin-top: 24px; }
-            th, td { border: 1px solid #e2e8f0; padding: 10px 12px; text-align: left; }
-            th { background: #f8fafc; }
+            @page { size: A4; margin: 18mm 14mm; }
+            * { box-sizing: border-box; }
+            body { margin: 0; color: #0f172a; font-family: "Segoe UI", Arial, sans-serif; background: #ffffff; font-size: 12px; }
+            .report-shell { padding: 0; }
+            .cover { border-bottom: 2px solid #0f172a; padding-bottom: 18px; margin-bottom: 18px; }
+            .topline { display: flex; justify-content: space-between; gap: 24px; color: #64748b; font-size: 11px; }
+            h1 { margin: 28px 0 4px; font-size: 30px; line-height: 1.1; letter-spacing: -0.04em; }
+            h2 { margin: 0; font-size: 20px; line-height: 1.2; }
+            p { margin: 0; color: #475569; }
+            .metrics { display: grid; grid-template-columns: minmax(180px, 240px); gap: 10px; margin-top: 20px; }
+            .metric { border: 1px solid #dbe4f0; border-radius: 12px; padding: 12px; background: #f8fafc; }
+            .label, .eyebrow { color: #64748b; font-size: 10px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+            .value { margin-top: 8px; color: #0f172a; font-size: 22px; font-weight: 800; }
+            .section { margin-top: 22px; }
+            .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 12px; }
+            .total-pill { border: 1px solid #dbe4f0; border-radius: 999px; padding: 8px 12px; font-weight: 800; white-space: nowrap; background: #f8fafc; }
+            table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+            th, td { border: 1px solid #dbe4f0; padding: 8px 9px; vertical-align: top; text-align: left; }
+            th { background: #f1f5f9; color: #475569; font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+            td { line-height: 1.45; }
+            .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+            .center { text-align: center; }
+            .muted, .subtext { color: #64748b; }
+            .subtext { margin-top: 3px; font-size: 11px; }
+            .empty { border: 1px dashed #cbd5e1; border-radius: 12px; padding: 24px; color: #64748b; text-align: center; }
+            .employee-page { break-before: page; page-break-before: always; }
+            .employee-section + .employee-page { break-before: auto; page-break-before: auto; }
+            @media print {
+              .employee-page { page-break-before: always; }
+              .employee-section + .employee-page { page-break-before: auto; }
+            }
           </style>
         </head>
         <body>
-          <h1>Monthly Summary Report</h1>
-          <p>${reportMonthLabel}</p>
-          <div class="grid">
-            <div class="card"><div class="label">Total Hours</div><div class="value">${report.totalHoursLogged.toFixed(1)}h</div></div>
-            <div class="card"><div class="label">Salaries Payable</div><div class="value">${formatCurrency(report.salariesPayable)}</div></div>
-            <div class="card"><div class="label">Approved Expenses</div><div class="value">${formatCurrency(report.approvedExpenses)}</div></div>
-            <div class="card"><div class="label">Pending Expenses</div><div class="value">${formatCurrency(report.pendingExpenses)}</div></div>
-          </div>
-          <h2>Employee Summary</h2>
-          <table>
-            <thead><tr><th>Employee</th><th>Department</th><th>Hours</th></tr></thead>
-            <tbody>
-              ${report.employeeRows.map((row) => `<tr><td>${row.name}</td><td>${row.department}</td><td>${row.hours.toFixed(1)}h</td></tr>`).join("")}
-            </tbody>
-          </table>
+          <main class="report-shell">
+            <section class="cover">
+              <div class="topline">
+                <span>Generated ${escapeHtml(generatedAt)}</span>
+                <span>Monthly Consolidated Report - ${escapeHtml(reportMonthLabel)}</span>
+              </div>
+              <h1>Monthly Consolidated Report</h1>
+              <p>${escapeHtml(reportMonthLabel)} project hours, payroll liability, expenses, and employee work detail.</p>
+              <div class="metrics">
+                <div class="metric"><div class="label">Total Hours</div><div class="value">${formatHours(report.totalHoursLogged)}</div></div>
+              </div>
+            </section>
+            ${
+              includeProjectTaskSummary
+                ? `
+                  <section class="section">
+                    <div class="section-heading">
+                      <div>
+                        <p class="eyebrow">Section 1</p>
+                        <h2>Project, Task & Short Description Hours</h2>
+                        <p>Consolidated hours across all employees for ${escapeHtml(reportMonthLabel)}.</p>
+                      </div>
+                      <div class="total-pill">${formatHours(report.totalHoursLogged)}</div>
+                    </div>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th style="width: 38px;">#</th>
+                          <th>Project</th>
+                          <th>Task & Short Description</th>
+                          <th>Sub-task</th>
+                          <th style="width: 70px;">People</th>
+                          <th style="width: 76px;" class="num">Hours</th>
+                        </tr>
+                      </thead>
+                      <tbody>${projectRowsHtml}</tbody>
+                    </table>
+                  </section>
+                `
+                : ""
+            }
+            ${
+              includeEmployeeDetails
+                ? `
+                  <section class="section employee-section">
+                    <div class="section-heading">
+                      <div>
+                        <p class="eyebrow">Section 2</p>
+                        <h2>Employee-wise Detailed Work</h2>
+                        <p>Each employee starts on a new page with project, task, short description, hours, and work notes.</p>
+                      </div>
+                      <div class="total-pill">${employeeExportReports.length} employee${employeeExportReports.length !== 1 ? "s" : ""}</div>
+                    </div>
+                  </section>
+                  ${employeeDetailsHtml}
+                `
+                : ""
+            }
+          </main>
         </body>
       </html>
     `);
@@ -356,7 +569,7 @@ export default function AdminReportsPage() {
               onChange={(event) => setSelectedMonth(event.target.value)}
               className="w-[220px]"
             />
-            <Button className="rounded-xl" variant="outline" onClick={exportPdf}>
+            <Button className="rounded-xl" variant="outline" onClick={() => setExportOptionsOpen(true)}>
               <Download className="mr-2 h-4 w-4" />
               Export PDF
             </Button>
@@ -476,6 +689,11 @@ export default function AdminReportsPage() {
                           </TableCell>
                           <TableCell className="align-middle">
                             <p className="font-medium text-foreground">{row.task}</p>
+                            {row.description ? (
+                              <p className="mt-1 max-w-[26rem] text-xs leading-5 text-muted-foreground">
+                                {row.description}
+                              </p>
+                            ) : null}
                             <p className="mt-1 text-xs text-muted-foreground">
                               {row.rows} row{row.rows !== 1 ? "s" : ""} - {row.workNotes} work note
                               {row.workNotes !== 1 ? "s" : ""}
@@ -761,6 +979,69 @@ export default function AdminReportsPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Dialog open={exportOptionsOpen} onOpenChange={setExportOptionsOpen}>
+        <DialogContent className="max-w-xl rounded-2xl border-border/70 bg-card p-0 shadow-2xl">
+          <DialogHeader className="border-b border-border/60 px-6 py-5">
+            <DialogTitle>Export monthly report</DialogTitle>
+            <DialogDescription>
+              Choose exactly what should be included in the consolidated PDF for {monthLabel}.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 px-6 py-5">
+            <label className="flex cursor-pointer items-start gap-4 rounded-2xl border border-border/60 bg-secondary/10 p-4 transition hover:bg-secondary/20">
+              <Checkbox
+                className="mt-1"
+                checked={includeProjectTaskSummary}
+                onCheckedChange={(checked) => setIncludeProjectTaskSummary(checked === true)}
+              />
+              <span className="space-y-1">
+                <span className="block font-semibold text-foreground">Overall project, task and short description hours</span>
+                <span className="block text-sm text-muted-foreground">
+                  Prints one consolidated table with project, task, short description, sub-task, people count, and total hours.
+                </span>
+              </span>
+            </label>
+
+            <label className="flex cursor-pointer items-start gap-4 rounded-2xl border border-border/60 bg-secondary/10 p-4 transition hover:bg-secondary/20">
+              <Checkbox
+                className="mt-1"
+                checked={includeEmployeeDetails}
+                onCheckedChange={(checked) => setIncludeEmployeeDetails(checked === true)}
+              />
+              <span className="space-y-1">
+                <span className="block font-semibold text-foreground">Employee-wise detailed pages</span>
+                <span className="block text-sm text-muted-foreground">
+                  Adds one page per employee with their project, task, short description, sub-task, hours, and work notes.
+                </span>
+              </span>
+            </label>
+
+            {!includeProjectTaskSummary && !includeEmployeeDetails ? (
+              <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-300">
+                Select at least one section before generating the PDF.
+              </p>
+            ) : null}
+          </div>
+
+          <DialogFooter className="border-t border-border/60 px-6 py-4">
+            <Button variant="outline" className="rounded-xl" onClick={() => setExportOptionsOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              className="rounded-xl"
+              disabled={!includeProjectTaskSummary && !includeEmployeeDetails}
+              onClick={() => {
+                setExportOptionsOpen(false);
+                exportPdf();
+              }}
+            >
+              Generate PDF
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </DashboardLayout>
   );
 }
