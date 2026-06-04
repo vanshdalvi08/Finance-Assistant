@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { addDays, format, startOfWeek } from "date-fns";
 import { BarChart3, ChevronDown, ChevronRight, Download, Receipt, Wallet, WalletCards, Clock3, CalendarDays } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
-import { api, type DayKey, type MonthCalendarDay, type TimesheetEntry } from "@/lib/api";
+import { api, type DayKey, type MonthCalendarDay, type ProjectBudgetTask, type TimesheetEntry } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -66,14 +66,28 @@ function lineHoursInMonth(entry: TimesheetEntry, line: TimesheetEntry["lines"][n
   }, 0);
 }
 
-function lineWorkNotesInMonth(entry: TimesheetEntry, line: TimesheetEntry["lines"][number], month: string) {
-  return DAY_KEYS.flatMap((day, index) => {
-    const date = weekDateIso(entry.weekStart, index);
-    const note = line.workNotes?.[day]?.trim();
-    if (!isInMonth(date, month) || !note) {
-      return [];
-    }
-    return `${format(new Date(date), "dd MMM")}: ${note}`;
+function taskLineDisplayParts(
+  line: { task?: string; subTask?: string; projectTaskId?: string },
+  taskCatalogLookup?: Map<string, ProjectBudgetTask>,
+) {
+  const catalogTask = line.projectTaskId ? taskCatalogLookup?.get(line.projectTaskId) : undefined;
+  const taskName = catalogTask?.name?.trim() || line.task?.trim() || "Custom task";
+  const shortDescription = catalogTask?.description?.trim() || "";
+
+  return { taskName, shortDescription };
+}
+
+function monthDateRows(month: string) {
+  const [year, monthNumber] = month.split("-").map(Number);
+  const daysInMonth = new Date(year, monthNumber, 0).getDate();
+
+  return Array.from({ length: daysInMonth }, (_, index) => {
+    const date = new Date(year, monthNumber - 1, index + 1);
+    return {
+      iso: format(date, "yyyy-MM-dd"),
+      label: format(date, "dd MMM yyyy"),
+      day: format(date, "EEE"),
+    };
   });
 }
 
@@ -131,10 +145,20 @@ export default function AdminReportsPage() {
   const { data: salaries = [] } = useQuery({ queryKey: ["salaries"], queryFn: api.getSalaries });
   const { data: expenses = [] } = useQuery({ queryKey: ["expenses"], queryFn: () => api.getExpenses() });
   const { data: funds = [] } = useQuery({ queryKey: ["funds"], queryFn: api.getFunds });
+  const { data: projectCatalog = [] } = useQuery({ queryKey: ["project-catalog"], queryFn: api.getProjectCatalog });
   const { data: projectSummary = [] } = useQuery({
     queryKey: ["projectBudgetSummary"],
     queryFn: api.getProjectBudgetSummary,
   });
+  const taskCatalogLookup = useMemo(
+    () =>
+      new Map(
+        projectCatalog.flatMap((project) =>
+          project.tasks.map((task) => [task.id, task] as const),
+        ),
+      ),
+    [projectCatalog],
+  );
 
   useEffect(() => {
     if (!selectedEmployeeId && employees.length > 0) {
@@ -187,7 +211,6 @@ export default function AdminReportsPage() {
           subTask: string;
           hours: number;
           employeeIds: Set<string>;
-          workNotes: number;
           rows: number;
         }
       >();
@@ -199,8 +222,9 @@ export default function AdminReportsPage() {
             continue;
           }
           const project = line.project?.trim() || "Custom project";
-          const task = line.task?.trim() || "Custom task";
-          const description = line.notes?.trim() || "";
+          const { taskName, shortDescription } = taskLineDisplayParts(line, taskCatalogLookup);
+          const task = taskName;
+          const description = shortDescription;
           const subTask = line.subTask?.trim() || "";
           const key = `${project}::${task}::${description}::${subTask}`;
           const current =
@@ -213,12 +237,10 @@ export default function AdminReportsPage() {
               subTask,
               hours: 0,
               employeeIds: new Set<string>(),
-              workNotes: 0,
               rows: 0,
             };
           current.hours += hours;
           current.employeeIds.add(entry.employeeId);
-          current.workNotes += lineWorkNotesInMonth(entry, line, selectedMonth).length;
           current.rows += 1;
           taskHoursLookup.set(key, current);
         }
@@ -273,7 +295,7 @@ export default function AdminReportsPage() {
       taskHourRows,
       projectRows: projectSummary,
     };
-  }, [employees, expenses, funds, projectSummary, salaries, selectedMonth, taskHoursEmployeeScope, timesheets]);
+  }, [employees, expenses, funds, projectSummary, salaries, selectedMonth, taskCatalogLookup, taskHoursEmployeeScope, timesheets]);
 
   const { data: employeeMonthCalendar } = useQuery({
     queryKey: ["employee-month-calendar-report", selectedEmployeeId, selectedMonth],
@@ -330,39 +352,101 @@ export default function AdminReportsPage() {
 
   const employeeExportReports = useMemo(() => {
     const monthTimesheets = timesheets.filter((entry) => weekTouchesMonth(entry.weekStart, selectedMonth));
+    const days = monthDateRows(selectedMonth);
 
     return employees
       .map((employee) => {
-        const rows = monthTimesheets
+        const taskSummaryLookup = new Map<
+          string,
+          {
+            id: string;
+            project: string;
+            task: string;
+            shortDescription: string;
+            subTask: string;
+            hours: number;
+          }
+        >();
+        const workByDate = new Map<
+          string,
+          Array<{
+            project: string;
+            task: string;
+            shortDescription: string;
+            subTask: string;
+            hours: number;
+            workNote: string;
+          }>
+        >();
+
+        monthTimesheets
           .filter((entry) => entry.employeeId === employee.id)
-          .flatMap((entry) =>
-            entry.lines.flatMap((line) => {
+          .forEach((entry) => {
+            entry.lines.forEach((line) => {
               const hours = lineHoursInMonth(entry, line, selectedMonth);
               if (hours <= 0) {
-                return [];
+                return;
               }
-              return {
-                id: `${entry.id}-${line.id}`,
-                project: line.project?.trim() || "Custom project",
-                task: line.task?.trim() || "Custom task",
-                description: line.notes?.trim() || "",
-                subTask: line.subTask?.trim() || "",
-                hours,
-                workNotes: lineWorkNotesInMonth(entry, line, selectedMonth),
-              };
-            }),
-          )
-          .sort((left, right) => left.project.localeCompare(right.project) || left.task.localeCompare(right.task));
+              const { taskName, shortDescription } = taskLineDisplayParts(line, taskCatalogLookup);
+              const project = line.project?.trim() || "Custom project";
+              const task = taskName;
+              const subTask = line.subTask?.trim() || "";
+              const key = `${project}::${task}::${shortDescription}::${subTask}`;
+              const currentSummary =
+                taskSummaryLookup.get(key) ?? {
+                  id: key,
+                  project,
+                  task,
+                  shortDescription,
+                  subTask,
+                  hours: 0,
+                };
+
+              currentSummary.hours += hours;
+              taskSummaryLookup.set(key, currentSummary);
+
+              DAY_KEYS.forEach((day, index) => {
+                const date = weekDateIso(entry.weekStart, index);
+                const dayHours = Number(line.hours?.[day] ?? 0);
+                if (!isInMonth(date, selectedMonth) || dayHours <= 0) {
+                  return;
+                }
+                const dateRows = workByDate.get(date) ?? [];
+                dateRows.push({
+                  project,
+                  task,
+                  shortDescription,
+                  subTask,
+                  hours: dayHours,
+                  workNote: line.workNotes?.[day]?.trim() || "",
+                });
+                workByDate.set(date, dateRows);
+              });
+            });
+          });
+
+        const taskSummaryRows = [...taskSummaryLookup.values()].sort(
+          (left, right) => right.hours - left.hours || left.project.localeCompare(right.project) || left.task.localeCompare(right.task),
+        );
+        const dailyRows = days.map((day) => {
+          const entries = workByDate.get(day.iso) ?? [];
+          return {
+            ...day,
+            entries,
+            hours: entries.reduce((sum, entry) => sum + entry.hours, 0),
+          };
+        });
 
         return {
           employee,
-          rows,
-          totalHours: rows.reduce((sum, row) => sum + row.hours, 0),
+          taskSummaryRows,
+          dailyRows,
+          totalHours: taskSummaryRows.reduce((sum, row) => sum + row.hours, 0),
         };
       })
       .filter((entry) => entry.totalHours > 0)
       .sort((left, right) => left.employee.name.localeCompare(right.employee.name));
-  }, [employees, selectedMonth, timesheets]);
+  }, [employees, selectedMonth, taskCatalogLookup, timesheets]);
 
   function exportPdf() {
     if (!includeProjectTaskSummary && !includeEmployeeDetails) {
@@ -384,10 +468,8 @@ export default function AdminReportsPage() {
                 <tr>
                   <td class="muted center">${index + 1}</td>
                   <td><strong>${escapeHtml(row.project)}</strong></td>
-                  <td>
-                    <strong>${escapeHtml(row.task)}</strong>
-                    ${row.description ? `<div class="subtext">${escapeHtml(row.description)}</div>` : ""}
-                  </td>
+                  <td><strong>${escapeHtml(row.task)}</strong></td>
+                  <td>${escapeHtml(row.description || "-")}</td>
                   <td>${escapeHtml(row.subTask || "-")}</td>
                   <td class="center">${row.employeeCount}</td>
                   <td class="num">${formatHours(row.hours)}</td>
@@ -395,13 +477,13 @@ export default function AdminReportsPage() {
               `,
             )
             .join("")
-        : `<tr><td colspan="6" class="empty">No project or task hours logged for ${escapeHtml(reportMonthLabel)}.</td></tr>`;
+        : `<tr><td colspan="7" class="empty">No project or task hours logged for ${escapeHtml(reportMonthLabel)}.</td></tr>`;
 
     const employeeDetailsHtml =
       employeeExportReports.length > 0
         ? employeeExportReports
             .map(
-              ({ employee, rows, totalHours }) => `
+              ({ employee, taskSummaryRows, dailyRows, totalHours }) => `
                 <section class="employee-page">
                   <div class="section-heading">
                     <div>
@@ -411,35 +493,97 @@ export default function AdminReportsPage() {
                     </div>
                     <div class="total-pill">${formatHours(totalHours)}</div>
                   </div>
+                  <div class="employee-subsection">
+                    <div class="mini-heading">
+                      <strong>Task contribution summary</strong>
+                      <span>Total contributed hours by task and short description</span>
+                    </div>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Project</th>
+                          <th>Task</th>
+                          <th>Short Description</th>
+                          <th>Sub-task</th>
+                          <th class="num">Hours</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${taskSummaryRows
+                          .map(
+                            (row) => `
+                              <tr>
+                                <td><strong>${escapeHtml(row.project)}</strong></td>
+                                <td><strong>${escapeHtml(row.task)}</strong></td>
+                                <td>${escapeHtml(row.shortDescription || "-")}</td>
+                                <td>${escapeHtml(row.subTask || "-")}</td>
+                                <td class="num">${formatHours(row.hours)}</td>
+                              </tr>
+                            `,
+                          )
+                          .join("")}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div class="employee-subsection">
+                    <div class="mini-heading">
+                      <strong>Daily work log</strong>
+                      <span>One row for every day in ${escapeHtml(reportMonthLabel)}</span>
+                    </div>
                   <table>
                     <thead>
                       <tr>
-                        <th>Project</th>
-                        <th>Task</th>
-                        <th>Sub-task</th>
+                        <th style="width: 92px;">Date</th>
+                        <th style="width: 48px;">Day</th>
+                        <th>Task, short description & sub-task</th>
                         <th class="num">Hours</th>
                         <th>Work Notes</th>
                       </tr>
                     </thead>
                     <tbody>
-                      ${rows
+                      ${dailyRows
                         .map(
-                          (row) => `
+                          (day) => `
                             <tr>
-                              <td><strong>${escapeHtml(row.project)}</strong></td>
                               <td>
-                                <strong>${escapeHtml(row.task)}</strong>
-                                ${row.description ? `<div class="subtext">${escapeHtml(row.description)}</div>` : ""}
+                                <strong>${escapeHtml(day.label)}</strong>
                               </td>
-                              <td>${escapeHtml(row.subTask || "-")}</td>
-                              <td class="num">${formatHours(row.hours)}</td>
-                              <td>${row.workNotes.length > 0 ? row.workNotes.map((note) => `<div>${escapeHtml(note)}</div>`).join("") : "<span class=\"muted\">No work notes</span>"}</td>
+                              <td>${escapeHtml(day.day)}</td>
+                              <td>
+                                ${
+                                  day.entries.length > 0
+                                    ? day.entries
+                                        .map(
+                                          (entry) => `
+                                            <div class="day-task">
+                                              <strong>${escapeHtml(entry.project)} / ${escapeHtml(entry.task)}</strong>
+                                              ${entry.shortDescription ? `<div class="subtext">Short description: ${escapeHtml(entry.shortDescription)}</div>` : ""}
+                                              ${entry.subTask ? `<div class="subtext">Sub-task: ${escapeHtml(entry.subTask)}</div>` : ""}
+                                            </div>
+                                          `,
+                                        )
+                                        .join("")
+                                    : `<span class="muted">No work logged</span>`
+                                }
+                              </td>
+                              <td class="num">${day.hours > 0 ? formatHours(day.hours) : "-"}</td>
+                              <td>
+                                ${
+                                  day.entries.some((entry) => entry.workNote)
+                                    ? day.entries
+                                        .filter((entry) => entry.workNote)
+                                        .map((entry) => `<div>${escapeHtml(entry.workNote)}</div>`)
+                                        .join("")
+                                    : `<span class="muted">No work note</span>`
+                                }
+                              </td>
                             </tr>
                           `,
                         )
                         .join("")}
                     </tbody>
                   </table>
+                  </div>
                 </section>
               `,
             )
@@ -453,12 +597,12 @@ export default function AdminReportsPage() {
           <style>
             @page { size: A4; margin: 18mm 14mm; }
             * { box-sizing: border-box; }
-            body { margin: 0; color: #0f172a; font-family: "Segoe UI", Arial, sans-serif; background: #ffffff; font-size: 12px; }
+            body { margin: 0; color: #0f172a; font-family: "Segoe UI", Arial, sans-serif; background: #ffffff; font-size: 11px; }
             .report-shell { padding: 0; }
             .cover { border-bottom: 2px solid #0f172a; padding-bottom: 18px; margin-bottom: 18px; }
             .topline { display: flex; justify-content: space-between; gap: 24px; color: #64748b; font-size: 11px; }
-            h1 { margin: 28px 0 4px; font-size: 30px; line-height: 1.1; letter-spacing: -0.04em; }
-            h2 { margin: 0; font-size: 20px; line-height: 1.2; }
+            h1 { margin: 28px 0 4px; font-size: 28px; line-height: 1.1; letter-spacing: -0.04em; }
+            h2 { margin: 0; font-size: 18px; line-height: 1.2; }
             p { margin: 0; color: #475569; }
             .metrics { display: grid; grid-template-columns: minmax(180px, 240px); gap: 10px; margin-top: 20px; }
             .metric { border: 1px solid #dbe4f0; border-radius: 12px; padding: 12px; background: #f8fafc; }
@@ -468,14 +612,18 @@ export default function AdminReportsPage() {
             .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 12px; }
             .total-pill { border: 1px solid #dbe4f0; border-radius: 999px; padding: 8px 12px; font-weight: 800; white-space: nowrap; background: #f8fafc; }
             table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-            th, td { border: 1px solid #dbe4f0; padding: 8px 9px; vertical-align: top; text-align: left; }
-            th { background: #f1f5f9; color: #475569; font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
-            td { line-height: 1.45; }
+            th, td { border: 1px solid #dbe4f0; padding: 7px 8px; vertical-align: top; text-align: left; }
+            th { background: #f1f5f9; color: #475569; font-size: 9px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+            td { line-height: 1.42; }
             .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
             .center { text-align: center; }
             .muted, .subtext { color: #64748b; }
             .subtext { margin-top: 3px; font-size: 11px; }
             .empty { border: 1px dashed #cbd5e1; border-radius: 12px; padding: 24px; color: #64748b; text-align: center; }
+            .employee-subsection { margin-top: 14px; }
+            .mini-heading { align-items: baseline; display: flex; gap: 10px; justify-content: space-between; margin-bottom: 8px; }
+            .mini-heading span { color: #64748b; font-size: 10px; }
+            .day-task + .day-task { border-top: 1px solid #e2e8f0; margin-top: 6px; padding-top: 6px; }
             .employee-page { break-before: page; page-break-before: always; }
             .employee-section + .employee-page { break-before: auto; page-break-before: auto; }
             @media print {
@@ -514,7 +662,8 @@ export default function AdminReportsPage() {
                         <tr>
                           <th style="width: 38px;">#</th>
                           <th>Project</th>
-                          <th>Task & Short Description</th>
+                          <th>Task</th>
+                          <th>Short Description</th>
                           <th>Sub-task</th>
                           <th style="width: 70px;">People</th>
                           <th style="width: 76px;" class="num">Hours</th>
@@ -663,6 +812,9 @@ export default function AdminReportsPage() {
                           Task
                         </TableHead>
                         <TableHead className="w-[24%] text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+                          Short Description
+                        </TableHead>
+                        <TableHead className="w-[24%] text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
                           Sub-task
                         </TableHead>
                         <TableHead className="w-[72px] text-right text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
@@ -689,15 +841,9 @@ export default function AdminReportsPage() {
                           </TableCell>
                           <TableCell className="align-middle">
                             <p className="font-medium text-foreground">{row.task}</p>
-                            {row.description ? (
-                              <p className="mt-1 max-w-[26rem] text-xs leading-5 text-muted-foreground">
-                                {row.description}
-                              </p>
-                            ) : null}
-                            <p className="mt-1 text-xs text-muted-foreground">
-                              {row.rows} row{row.rows !== 1 ? "s" : ""} - {row.workNotes} work note
-                              {row.workNotes !== 1 ? "s" : ""}
-                            </p>
+                          </TableCell>
+                          <TableCell className="align-middle text-sm leading-6 text-muted-foreground">
+                            {row.description || "No short description"}
                           </TableCell>
                           <TableCell className="align-middle text-sm text-muted-foreground">
                             {row.subTask || "No sub-task"}
@@ -1013,7 +1159,7 @@ export default function AdminReportsPage() {
               <span className="space-y-1">
                 <span className="block font-semibold text-foreground">Employee-wise detailed pages</span>
                 <span className="block text-sm text-muted-foreground">
-                  Adds one page per employee with their project, task, short description, sub-task, hours, and work notes.
+                  Adds employee pages with task contribution totals first, then a date-wise monthly work log with work notes.
                 </span>
               </span>
             </label>
