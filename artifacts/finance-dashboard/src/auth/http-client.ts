@@ -48,6 +48,14 @@ function getLocalDevApiBaseUrl(configuredBaseUrl: string | undefined) {
 
 function getApiBaseUrl() {
   const configuredBaseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "");
+
+  // Keep production auth cookies same-site even if an older Render API URL
+  // remains configured in the frontend environment.
+  const sameSiteBaseUrl = getSameSiteApiBaseUrl();
+  if (sameSiteBaseUrl) {
+    return sameSiteBaseUrl;
+  }
+
   if (configuredBaseUrl) {
     if (typeof window !== "undefined") {
       const configuredHost = (() => {
@@ -67,11 +75,6 @@ function getApiBaseUrl() {
     }
 
     return configuredBaseUrl;
-  }
-
-  const sameSiteBaseUrl = getSameSiteApiBaseUrl();
-  if (sameSiteBaseUrl) {
-    return sameSiteBaseUrl;
   }
 
   const localDevBaseUrl = getLocalDevApiBaseUrl(undefined);
@@ -166,8 +169,8 @@ function shouldAttachCsrfHeader(config: AxiosRequestConfig) {
   return url.includes("/auth/refresh") || url.includes("/auth/logout");
 }
 
-async function ensureCsrfTokenCookie() {
-  if (getCsrfToken()) {
+async function ensureCsrfTokenCookie(force = false) {
+  if (!force && getCsrfToken()) {
     return;
   }
 
@@ -185,6 +188,22 @@ async function ensureCsrfTokenCookie() {
   }
 
   await csrfBootstrapPromise;
+}
+
+async function postRefreshSession() {
+  try {
+    return await authlessAxios.post<AuthSession>("/auth/refresh");
+  } catch (error) {
+    if (!axios.isAxiosError(error) || error.response?.status !== 403) {
+      throw error;
+    }
+
+    // A restored browser tab can retain a readable CSRF value after its
+    // matching cookie has changed. Re-bootstrap once before expiring login.
+    clearCsrfToken();
+    await ensureCsrfTokenCookie(true);
+    return authlessAxios.post<AuthSession>("/auth/refresh");
+  }
 }
 
 async function withCsrfHeader(config: InternalAxiosRequestConfig) {
@@ -206,8 +225,7 @@ async function withCsrfHeader(config: InternalAxiosRequestConfig) {
 
 async function performRefresh(): Promise<AuthSession> {
   if (!refreshPromise) {
-    refreshPromise = authlessAxios
-      .post<AuthSession>("/auth/refresh")
+    refreshPromise = postRefreshSession()
       .then((response) => {
         const tabSessionUserId = getTabSessionUserId();
         if (tabSessionUserId && tabSessionUserId !== response.data.user.id) {
