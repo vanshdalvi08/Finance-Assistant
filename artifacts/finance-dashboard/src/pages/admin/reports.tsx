@@ -40,6 +40,10 @@ function isInMonth(date: string, month: string) {
   return date.slice(0, 7) === month;
 }
 
+function salaryMonthDate(salary: { source?: string; weekStart?: string; date: string }) {
+  return salary.source === "timesheet" && salary.weekStart ? salary.weekStart : salary.date;
+}
+
 function weekDateIso(weekStart: string, dayIndex: number) {
   return format(addDays(new Date(weekStart), dayIndex), "yyyy-MM-dd");
 }
@@ -186,7 +190,7 @@ export default function AdminReportsPage() {
       taskHoursEmployeeScope === "all"
         ? monthTimesheets
         : monthTimesheets.filter((entry) => entry.employeeId === taskHoursEmployeeScope);
-    const monthSalaries = salaries.filter((salary) => isInMonth(salary.date, selectedMonth));
+    const monthSalaries = salaries.filter((salary) => isInMonth(salaryMonthDate(salary), selectedMonth));
     const monthExpenses = expenses.filter((expense) => isInMonth(expense.date, selectedMonth));
     const monthFunds = funds.filter((fund) => isInMonth(fund.date, selectedMonth));
 
