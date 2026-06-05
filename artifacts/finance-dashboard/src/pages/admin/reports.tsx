@@ -1147,7 +1147,7 @@ export default function AdminReportsPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {report.taskHourRows.slice(0, 12).map((row, index) => (
+                      {report.taskHourRows.map((row, index) => (
                         <TableRow key={row.id} className="border-border/50">
                           <TableCell className="pl-6 align-middle">
                             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-secondary/60 text-xs font-semibold text-muted-foreground">
