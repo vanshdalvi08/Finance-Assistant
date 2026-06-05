@@ -57,6 +57,7 @@ const businessIdSchema = z.string().trim().min(1);
 const approvalStatusSchema = z.enum(["draft", "submitted", "approved", "rejected"]);
 const dayKeySchema = z.enum(["mon", "tue", "wed", "thu", "fri", "sat", "sun"]);
 const dailyReviewActionSchema = z.enum(["reviewed", "reverted", "holiday", "locked", "clear_review", "clear_holiday", "clear_lock"]);
+const monthQuerySchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
 
 const timesheetLineSchema = z.object({
   id: businessIdSchema.optional(),
@@ -761,7 +762,14 @@ router.get("/timesheets", requireTenantRole("admin", "employee"), async (request
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const tenantEmployees = await loadEmployees(tenantId);
   const tenantEmployeeIds = new Set(tenantEmployees.map((employee) => employee.id));
-  const employeeId = scopedEmployeeId(request, (request.query as { employeeId?: string }).employeeId);
+  const query = request.query as { employeeId?: string; month?: string };
+  const employeeId = scopedEmployeeId(request, query.employeeId);
+  const parsedMonth = query.month ? monthQuerySchema.safeParse(query.month) : null;
+  if (parsedMonth && !parsedMonth.success) {
+    response.status(400).json({ message: "Month must use YYYY-MM format" });
+    return;
+  }
+
   if (employeeId) {
     try {
       assertTenantEmployeeAccess(employeeId, tenantEmployeeIds, request.auth?.user.role, request.auth?.user.id, () => new Error("Forbidden"));
@@ -781,6 +789,18 @@ router.get("/timesheets", requireTenantRole("admin", "employee"), async (request
     timesheets = timesheets.filter((entry) => entry.employeeId === request.auth?.user.id);
   } else {
     timesheets = timesheets.filter((entry) => tenantEmployeeIds.has(entry.employeeId));
+  }
+
+  if (parsedMonth?.success) {
+    const [year, month] = parsedMonth.data.split("-").map(Number);
+    const monthStart = Date.UTC(year, month - 1, 1);
+    const nextMonthStart = Date.UTC(year, month, 1);
+
+    timesheets = timesheets.filter((entry) => {
+      const weekStart = new Date(normalizeWeekStart(entry.weekStart)).getTime();
+      const weekEndExclusive = weekStart + 7 * 24 * 60 * 60 * 1000;
+      return weekStart < nextMonthStart && weekEndExclusive > monthStart;
+    });
   }
 
   response.json({ timesheets });

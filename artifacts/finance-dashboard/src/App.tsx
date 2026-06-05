@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Redirect, Route, Switch, Router as WouterRouter } from "wouter";
 import { AppProviders } from "@/app/providers";
 import { useAuthStore } from "@/store/auth";
@@ -36,9 +37,35 @@ import NotFoundPage from "@/pages/not-found";
 import type { UserRole } from "@/auth/types";
 
 function FullScreenLoader() {
+  const [isSlow, setIsSlow] = useState(false);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setIsSlow(true), 5_000);
+    return () => window.clearTimeout(timeout);
+  }, []);
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">
-      Booting your workspace...
+    <div className="flex min-h-screen items-center justify-center bg-background px-6">
+      <div className="w-full max-w-sm rounded-2xl border border-border/70 bg-card p-7 text-center shadow-sm">
+        <div className="mx-auto mb-5 h-9 w-9 animate-spin rounded-full border-2 border-primary/20 border-t-primary" />
+        <p className="text-base font-semibold text-foreground">
+          {isSlow ? "The server is taking longer than usual" : "Opening your workspace"}
+        </p>
+        <p className="mt-2 text-sm leading-6 text-muted-foreground">
+          {isSlow
+            ? "We are still trying to reconnect. You can safely retry without losing saved work."
+            : "Restoring your secure session..."}
+        </p>
+        {isSlow ? (
+          <button
+            type="button"
+            className="mt-5 inline-flex h-10 items-center justify-center rounded-full bg-primary px-5 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90"
+            onClick={() => window.location.reload()}
+          >
+            Retry connection
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }

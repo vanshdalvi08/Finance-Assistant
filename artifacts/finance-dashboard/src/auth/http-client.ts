@@ -16,6 +16,7 @@ const CSRF_HEADER_NAME = "X-CSRF-Token";
 const SAME_SITE_FRONTEND_HOST = "payroll.reforix.com";
 const SAME_SITE_API_BASE_URL = "https://api.payroll.reforix.com/api";
 const LOCAL_DEV_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+const API_REQUEST_TIMEOUT_MS = 30_000;
 
 function getSameSiteApiBaseUrl() {
   if (typeof window === "undefined") {
@@ -124,6 +125,7 @@ type RetriableRequestConfig = InternalAxiosRequestConfig & {
 const authAxios = axios.create({
   baseURL: getApiBaseUrl(),
   withCredentials: true,
+  timeout: API_REQUEST_TIMEOUT_MS,
   headers: {
     Accept: "application/json",
   },
@@ -132,6 +134,7 @@ const authAxios = axios.create({
 const authlessAxios = axios.create({
   baseURL: getApiBaseUrl(),
   withCredentials: true,
+  timeout: API_REQUEST_TIMEOUT_MS,
   headers: {
     Accept: "application/json",
   },

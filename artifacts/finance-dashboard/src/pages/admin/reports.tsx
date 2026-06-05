@@ -141,7 +141,10 @@ export default function AdminReportsPage() {
   const [includeEmployeeDetails, setIncludeEmployeeDetails] = useState(true);
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
-  const { data: timesheets = [] } = useQuery({ queryKey: ["timesheets"], queryFn: () => api.getTimesheets() });
+  const { data: timesheets = [] } = useQuery({
+    queryKey: ["timesheets", "reports", selectedMonth],
+    queryFn: () => api.getTimesheets({ month: selectedMonth }),
+  });
   const { data: salaries = [] } = useQuery({ queryKey: ["salaries"], queryFn: api.getSalaries });
   const { data: expenses = [] } = useQuery({ queryKey: ["expenses"], queryFn: () => api.getExpenses() });
   const { data: funds = [] } = useQuery({ queryKey: ["funds"], queryFn: api.getFunds });
@@ -466,7 +469,7 @@ export default function AdminReportsPage() {
             .map(
               (row, index) => `
                 <tr>
-                  <td class="muted center">${index + 1}</td>
+                  <td class="row-index center">${index + 1}</td>
                   <td><strong>${escapeHtml(row.project)}</strong></td>
                   <td><strong>${escapeHtml(row.task)}</strong></td>
                   <td>${escapeHtml(row.description || "-")}</td>
@@ -498,7 +501,7 @@ export default function AdminReportsPage() {
                       <strong>Task contribution summary</strong>
                       <span>Total contributed hours by task and short description</span>
                     </div>
-                    <table>
+                    <table class="report-table summary-table">
                       <thead>
                         <tr>
                           <th>Project</th>
@@ -530,7 +533,7 @@ export default function AdminReportsPage() {
                       <strong>Daily work log</strong>
                       <span>One row for every day in ${escapeHtml(reportMonthLabel)}</span>
                     </div>
-                  <table>
+                  <table class="report-table daily-table">
                     <thead>
                       <tr>
                         <th style="width: 92px;">Date</th>
@@ -544,7 +547,7 @@ export default function AdminReportsPage() {
                       ${dailyRows
                         .map(
                           (day) => `
-                            <tr>
+                            <tr class="${day.entries.length === 0 ? "is-empty-day" : ""}">
                               <td>
                                 <strong>${escapeHtml(day.label)}</strong>
                               </td>
@@ -595,35 +598,42 @@ export default function AdminReportsPage() {
         <head>
           <title>Monthly Summary - ${reportMonthLabel}</title>
           <style>
-            @page { size: A4; margin: 18mm 14mm; }
+            @page { size: A4; margin: 16mm 13mm; }
             * { box-sizing: border-box; }
-            body { margin: 0; color: #0f172a; font-family: "Segoe UI", Arial, sans-serif; background: #ffffff; font-size: 11px; }
+            body { margin: 0; color: #111827; font-family: "Segoe UI", Arial, sans-serif; background: #ffffff; font-size: 10.5px; }
             .report-shell { padding: 0; }
-            .cover { border-bottom: 2px solid #0f172a; padding-bottom: 18px; margin-bottom: 18px; }
-            .topline { display: flex; justify-content: space-between; gap: 24px; color: #64748b; font-size: 11px; }
-            h1 { margin: 28px 0 4px; font-size: 28px; line-height: 1.1; letter-spacing: -0.04em; }
-            h2 { margin: 0; font-size: 18px; line-height: 1.2; }
-            p { margin: 0; color: #475569; }
+            .cover { border-bottom: 1.5px solid #111827; padding-bottom: 16px; margin-bottom: 16px; }
+            .topline { display: flex; justify-content: space-between; gap: 24px; color: #667085; font-size: 10px; }
+            h1 { margin: 24px 0 4px; font-size: 27px; line-height: 1.08; letter-spacing: -0.04em; }
+            h2 { margin: 0; font-size: 17px; line-height: 1.2; letter-spacing: -0.02em; }
+            p { margin: 0; color: #526179; }
             .metrics { display: grid; grid-template-columns: minmax(180px, 240px); gap: 10px; margin-top: 20px; }
-            .metric { border: 1px solid #dbe4f0; border-radius: 12px; padding: 12px; background: #f8fafc; }
-            .label, .eyebrow { color: #64748b; font-size: 10px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+            .metric { border: 1px solid #d9e2ef; border-radius: 13px; padding: 12px 14px; background: #f8fafc; }
+            .label, .eyebrow { color: #667085; font-size: 9px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
             .value { margin-top: 8px; color: #0f172a; font-size: 22px; font-weight: 800; }
             .section { margin-top: 22px; }
             .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 12px; }
-            .total-pill { border: 1px solid #dbe4f0; border-radius: 999px; padding: 8px 12px; font-weight: 800; white-space: nowrap; background: #f8fafc; }
-            table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-            th, td { border: 1px solid #dbe4f0; padding: 7px 8px; vertical-align: top; text-align: left; }
-            th { background: #f1f5f9; color: #475569; font-size: 9px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
-            td { line-height: 1.42; }
+            .total-pill { border: 1px solid #d9e2ef; border-radius: 999px; padding: 7px 12px; font-weight: 800; white-space: nowrap; background: #f8fafc; color: #0f172a; }
+            .report-table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; border: 1px solid #d9e2ef; border-radius: 12px; overflow: hidden; background: #ffffff; }
+            .report-table th, .report-table td { border: 0; border-bottom: 1px solid #e7edf5; padding: 8px 9px; vertical-align: top; text-align: left; }
+            .report-table th { background: #f6f8fb; color: #667085; font-size: 8.5px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+            .report-table tr:last-child td { border-bottom: 0; }
+            .report-table tbody tr:nth-child(even) td { background: #fbfcfe; }
+            .report-table td { line-height: 1.45; }
+            .summary-table td { padding-top: 9px; padding-bottom: 9px; }
+            .daily-table td { padding-top: 7px; padding-bottom: 7px; }
+            .daily-table .is-empty-day td { color: #98a2b3; background: #fcfdff; }
             .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
             .center { text-align: center; }
-            .muted, .subtext { color: #64748b; }
-            .subtext { margin-top: 3px; font-size: 11px; }
+            .muted, .subtext { color: #667085; }
+            .subtext { margin-top: 2px; font-size: 9.5px; line-height: 1.38; }
+            .row-index { color: #667085; font-weight: 700; }
             .empty { border: 1px dashed #cbd5e1; border-radius: 12px; padding: 24px; color: #64748b; text-align: center; }
-            .employee-subsection { margin-top: 14px; }
+            .employee-subsection { margin-top: 15px; padding: 12px; border: 1px solid #e1e8f0; border-radius: 16px; background: #fbfcfe; }
             .mini-heading { align-items: baseline; display: flex; gap: 10px; justify-content: space-between; margin-bottom: 8px; }
-            .mini-heading span { color: #64748b; font-size: 10px; }
-            .day-task + .day-task { border-top: 1px solid #e2e8f0; margin-top: 6px; padding-top: 6px; }
+            .mini-heading strong { color: #111827; font-size: 12px; }
+            .mini-heading span { color: #667085; font-size: 9.5px; }
+            .day-task + .day-task { border-top: 1px solid #edf2f7; margin-top: 5px; padding-top: 5px; }
             .employee-page { break-before: page; page-break-before: always; }
             .employee-section + .employee-page { break-before: auto; page-break-before: auto; }
             @media print {
@@ -657,7 +667,7 @@ export default function AdminReportsPage() {
                       </div>
                       <div class="total-pill">${formatHours(report.totalHoursLogged)}</div>
                     </div>
-                    <table>
+                    <table class="report-table summary-table">
                       <thead>
                         <tr>
                           <th style="width: 38px;">#</th>

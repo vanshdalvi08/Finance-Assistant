@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { Component, useEffect, type ErrorInfo, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { ThemeProvider } from "@/components/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -22,7 +22,46 @@ const queryClient = new QueryClient({
   },
 });
 
-function AuthBootstrap({ children }: { children: React.ReactNode }) {
+class AppErrorBoundary extends Component<
+  { children: ReactNode },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("Application render failed", error, info);
+  }
+
+  render() {
+    if (!this.state.hasError) {
+      return this.props.children;
+    }
+
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background px-6">
+        <div className="w-full max-w-md rounded-2xl border border-border/70 bg-card p-8 text-center shadow-sm">
+          <p className="text-lg font-semibold text-foreground">This page could not finish loading</p>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            Your saved data is safe. Reload the workspace to restore the connection.
+          </p>
+          <button
+            type="button"
+            className="mt-6 inline-flex h-10 items-center justify-center rounded-full bg-primary px-5 text-sm font-semibold text-primary-foreground transition hover:bg-primary/90"
+            onClick={() => window.location.reload()}
+          >
+            Reload workspace
+          </button>
+        </div>
+      </div>
+    );
+  }
+}
+
+function AuthBootstrap({ children }: { children: ReactNode }) {
   const hydrateFromStorage = useAuthStore((state) => state.hydrateFromStorage);
 
   useEffect(() => {
@@ -96,12 +135,14 @@ function AuthDataBootstrap() {
   return null;
 }
 
-export function AppProviders({ children }: { children: React.ReactNode }) {
+export function AppProviders({ children }: { children: ReactNode }) {
   return (
     <ThemeProvider defaultTheme="dark">
       <QueryClientProvider client={queryClient}>
         <TooltipProvider>
-          <AuthBootstrap>{children}</AuthBootstrap>
+          <AppErrorBoundary>
+            <AuthBootstrap>{children}</AuthBootstrap>
+          </AppErrorBoundary>
           <AuthDataBootstrap />
           <Toaster />
         </TooltipProvider>

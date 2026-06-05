@@ -1788,8 +1788,11 @@ export const api = {
   paySalaryRecord: async (id: string, input?: { note?: string; accountId?: string }) =>
     (await businessPost<{ salary: Salary }>(`/salaries/${id}/pay`, input ?? {})).salary,
 
-  getTimesheets: async (scope?: { employeeId?: string }) => {
-    const path = withQuery("/timesheets", { employeeId: scope?.employeeId });
+  getTimesheets: async (scope?: { employeeId?: string; month?: string }) => {
+    const path = withQuery("/timesheets", {
+      employeeId: scope?.employeeId,
+      month: scope?.month,
+    });
     return (await businessGet<{ timesheets: TimesheetEntry[] }>(path)).timesheets.map(normalizeTimesheet);
   },
 
