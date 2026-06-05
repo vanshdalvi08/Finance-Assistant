@@ -499,7 +499,11 @@ export default function AdminReportsPage() {
     const generatedDate = new Date();
     const documentNumber = `REFO-RPT-${format(generatedDate, "yyMMdd-HHmm")}`;
     const documentDate = format(generatedDate, "dd/MM/yyyy");
-    const companyDisplayName = (companyInfo?.companyName || "REFORIX ENGINEERING SERVICES").toUpperCase();
+    const configuredCompanyName = (companyInfo?.companyName || "").trim();
+    const companyDisplayName =
+      !configuredCompanyName || configuredCompanyName.toUpperCase() === "REFORIX"
+        ? "REFORIX ENGINEERING SERVICES"
+        : configuredCompanyName.toUpperCase();
     const footerAddress =
       companyInfo?.address?.trim() || "Vastu Anand, Building No. 16, Parsik Nagar, Thane, Maharashtra, India";
     const footerWebsite = companyInfo?.website?.trim() || "www.reforix.com";
@@ -773,10 +777,10 @@ export default function AdminReportsPage() {
               padding: 0;
             }
             .report-shell {
-              padding: 4mm 12mm 5mm;
+              padding: 6mm 12mm 5mm;
             }
             .document-title {
-              margin: -4mm -12mm 16px;
+              margin: -6mm -12mm 20px;
               border-bottom: 1px solid #a9a9a9;
               padding: 2.2mm 12mm;
               color: #111111;
@@ -835,22 +839,22 @@ export default function AdminReportsPage() {
               text-transform: uppercase;
             }
             .report-table tr:last-child td { border-bottom: 0; }
-            .report-table td { color: #243044; font-size: 9.5px; line-height: 1.35; }
+            .report-table td { color: #243044; font-size: 10.25px; line-height: 1.4; }
             .summary-table td { padding-top: 7px; padding-bottom: 7px; }
             .daily-table th:nth-child(1) { width: 22mm !important; }
             .daily-table th:nth-child(2) { width: 12mm !important; }
             .daily-table th:nth-child(4) { width: 15mm !important; }
             .daily-table th:nth-child(5) { width: 42mm !important; }
-            .daily-table td { padding-top: 5px; padding-bottom: 5px; }
+            .daily-table td { padding-top: 5.5px; padding-bottom: 5.5px; }
             .daily-table .is-empty-day td {
               color: #98a2b3;
               background: #fafbfc;
-              font-size: 9px;
+              font-size: 9.75px;
             }
             .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
             .center { text-align: center; }
             .muted, .subtext { color: #667085; }
-            .subtext { margin-top: 1px; font-size: 8.5px; line-height: 1.3; }
+            .subtext { margin-top: 1px; font-size: 9px; line-height: 1.35; }
             .row-index { color: #667085; font-weight: 700; }
             .empty { border: 1px dashed #cbd5e1; border-radius: 12px; padding: 24px; color: #64748b; text-align: center; }
             .employee-heading {
