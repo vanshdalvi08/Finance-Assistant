@@ -5,6 +5,7 @@ import {
   type BusinessStore,
   type SalaryRecord,
   createId,
+  effectiveHourlyRate,
   effectiveMonthlySalary,
   loadEmployeeProfile,
   loadEmployees,
@@ -63,11 +64,13 @@ function payrollMonthKey(value: string) {
   return normalizeWeekStart(value).slice(0, 7);
 }
 
-async function reconcileMonthlyTimesheetPayroll(tenantId: string, employeeId?: string | null) {
+async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string | null) {
   const employees = (await loadEmployees(tenantId)).filter(
     (employee) =>
-      employee.payType === "monthly" &&
-      effectiveMonthlySalary(employee) > 0 &&
+      (
+        (employee.payType === "monthly" && effectiveMonthlySalary(employee) > 0) ||
+        (employee.payType === "hourly" && effectiveHourlyRate(employee) > 0)
+      ) &&
       (!employeeId || employee.id === employeeId),
   );
   if (employees.length === 0) {
@@ -76,32 +79,68 @@ async function reconcileMonthlyTimesheetPayroll(tenantId: string, employeeId?: s
 
   const employeeById = new Map(employees.map((employee) => [employee.id, employee]));
   const store = await readStore();
-  const approvedGroups = new Map<string, typeof store.timesheets>();
+  const approvedTimesheets = store.timesheets.filter(
+    (timesheet) =>
+      timesheet.status === "approved" &&
+      employeeById.has(timesheet.employeeId),
+  );
+  const approvedMonthlyGroups = new Map<string, typeof store.timesheets>();
 
-  for (const timesheet of store.timesheets) {
-    if (
-      timesheet.status !== "approved" ||
-      !employeeById.has(timesheet.employeeId)
-    ) {
+  for (const timesheet of approvedTimesheets) {
+    const employee = employeeById.get(timesheet.employeeId);
+    if (employee?.payType !== "monthly") {
       continue;
     }
     const key = `${timesheet.employeeId}:${payrollMonthKey(timesheet.weekStart)}`;
-    approvedGroups.set(key, [...(approvedGroups.get(key) ?? []), timesheet]);
+    approvedMonthlyGroups.set(key, [...(approvedMonthlyGroups.get(key) ?? []), timesheet]);
   }
 
-  const needsReconciliation = Array.from(approvedGroups.entries()).some(([key, timesheets]) => {
-    const [groupEmployeeId = "", monthKey = ""] = key.split(":");
+  const needsHourlyReconciliation = approvedTimesheets.some((timesheet) => {
+    const employee = employeeById.get(timesheet.employeeId);
+    if (employee?.payType !== "hourly") {
+      return false;
+    }
+    const hours = sumTimesheetHours(timesheet);
+    if (hours <= 0) {
+      return false;
+    }
     const existing = store.salaries.find(
       (salary) =>
         tenantSalaryFilter(salary, tenantId) &&
         salary.source === "timesheet" &&
-        salary.employeeId === groupEmployeeId &&
-        salary.rate == null &&
-        payrollMonthKey(salary.weekStart ?? salary.date) === monthKey,
+        salary.timesheetId === timesheet.id,
     );
-    const hours = timesheets.reduce((total, timesheet) => total + sumTimesheetHours(timesheet), 0);
-    return !existing || (existing.status === "pending" && Number(existing.hours ?? 0) !== hours);
+    const rate = effectiveHourlyRate(employee);
+    return (
+      !existing ||
+      (
+        existing.status === "pending" &&
+        (
+          Number(existing.hours ?? 0) !== hours ||
+          Number(existing.rate ?? 0) !== rate ||
+          existing.amount !== Math.round(hours * rate)
+        )
+      )
+    );
   });
+
+  const needsMonthlyReconciliation = Array.from(approvedMonthlyGroups.entries()).some(
+    ([key, timesheets]) => {
+      const [groupEmployeeId = "", monthKey = ""] = key.split(":");
+      const existing = store.salaries.find(
+        (salary) =>
+          tenantSalaryFilter(salary, tenantId) &&
+          salary.source === "timesheet" &&
+          salary.employeeId === groupEmployeeId &&
+          salary.rate == null &&
+          payrollMonthKey(salary.weekStart ?? salary.date) === monthKey,
+      );
+      const hours = timesheets.reduce((total, timesheet) => total + sumTimesheetHours(timesheet), 0);
+      return !existing || (existing.status === "pending" && Number(existing.hours ?? 0) !== hours);
+    },
+  );
+
+  const needsReconciliation = needsHourlyReconciliation || needsMonthlyReconciliation;
   if (!needsReconciliation) {
     return;
   }
@@ -118,6 +157,50 @@ async function reconcileMonthlyTimesheetPayroll(tenantId: string, employeeId?: s
       ) {
         continue;
       }
+      const employee = employeeById.get(timesheet.employeeId);
+      if (employee?.payType === "hourly") {
+        const existingIndex = nextSalaries.findIndex(
+          (salary) =>
+            tenantSalaryFilter(salary, tenantId) &&
+            salary.source === "timesheet" &&
+            salary.timesheetId === timesheet.id,
+        );
+        const existing = existingIndex >= 0 ? nextSalaries[existingIndex] : undefined;
+        if (existing?.status === "paid") {
+          continue;
+        }
+
+        const hours = sumTimesheetHours(timesheet);
+        if (hours <= 0) {
+          continue;
+        }
+        const rate = effectiveHourlyRate(employee);
+        const salary: SalaryRecord = {
+          id: existing?.id ?? createId("sal"),
+          tenantId,
+          employeeId: employee.id,
+          employeeNameSnapshot: employee.name,
+          amount: Math.round(hours * rate),
+          date: existing?.date ?? updatedAt,
+          note: existing?.note || `Timesheet payout for week of ${timesheet.weekStart}`,
+          status: "pending",
+          source: "timesheet",
+          weekStart: timesheet.weekStart,
+          hours,
+          rate,
+          timesheetId: timesheet.id,
+          createdAt: existing?.createdAt ?? updatedAt,
+          updatedAt,
+        };
+
+        if (existingIndex >= 0) {
+          nextSalaries[existingIndex] = salary;
+        } else {
+          nextSalaries.unshift(salary);
+        }
+        continue;
+      }
+
       const key = `${timesheet.employeeId}:${payrollMonthKey(timesheet.weekStart)}`;
       currentApprovedGroups.set(key, [...(currentApprovedGroups.get(key) ?? []), timesheet]);
     }
@@ -291,7 +374,7 @@ async function claimSalaryPayIdempotency(actor: SalaryActor, key: string, reques
 }
 
 export async function listSalariesForActor(tenantId: string, requesterRole?: string, requesterUserId?: string, employeeId?: string | null) {
-  await reconcileMonthlyTimesheetPayroll(
+  await reconcileTimesheetPayroll(
     tenantId,
     employeeId ?? (requesterRole === "employee" ? requesterUserId : null),
   );

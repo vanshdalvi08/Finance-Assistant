@@ -41,9 +41,11 @@ type SalaryRecord = {
 
 type PendingPayrollGroup = {
   key: string;
+  monthKey: string;
   employeeId?: string;
   employeeName: string;
   records: SalaryRecord[];
+  approvedTimesheets: TimesheetEntry[];
   totalHours: number;
   totalAmount: number;
   hourlyRate?: number;
@@ -57,6 +59,15 @@ type WorklogDay = {
   monthLabel: string;
   hours: number;
   workNote: string;
+};
+
+type PayrollWorklogEntry = {
+  key: string;
+  source: "timesheet" | "manual";
+  weekStart?: string;
+  date: string;
+  hours?: number;
+  timesheet?: TimesheetEntry;
 };
 
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
@@ -131,6 +142,18 @@ function monthLabelFromRecord(record: SalaryRecord) {
 function monthKeyFromRecord(record: SalaryRecord) {
   const sourceDate = record.weekStart ?? record.date;
   return sourceDate ? format(new Date(sourceDate), "yyyy-MM") : "unknown";
+}
+
+function monthKeyFromTimesheet(timesheet: TimesheetEntry) {
+  return format(new Date(timesheet.weekStart), "yyyy-MM");
+}
+
+function timesheetTotalHours(timesheet: TimesheetEntry) {
+  return timesheet.lines.reduce(
+    (total, line) =>
+      total + DAY_KEYS.reduce((lineTotal, dayKey) => lineTotal + Number(line.hours?.[dayKey] ?? 0), 0),
+    0,
+  );
 }
 
 function weekRangeLabel(sourceDate: string) {
@@ -215,14 +238,17 @@ export default function Salary() {
       const employee = employees.find((item) => item.id === record.employeeId);
       const employeeName = record.employeeNameSnapshot ?? employee?.name ?? "Unknown";
       const employeeKey = record.employeeId?.trim() || employeeName.toLowerCase();
-      const key = `${employeeKey}:${monthKeyFromRecord(record)}`;
+      const monthKey = monthKeyFromRecord(record);
+      const key = `${employeeKey}:${monthKey}`;
       const existing =
         groups.get(key) ??
         ({
           key,
+          monthKey,
           employeeId: record.employeeId,
           employeeName,
           records: [],
+          approvedTimesheets: [],
           totalHours: 0,
           totalAmount: 0,
           hourlyRate: undefined,
@@ -243,20 +269,48 @@ export default function Salary() {
     }
 
     return Array.from(groups.values())
-      .map((group) => ({
-        ...group,
-        records: [...group.records].sort((left, right) => {
+      .map((group) => {
+        const isMonthlyTimesheetPayroll = group.records.some(
+          (record) => record.source === "timesheet" && record.rate == null,
+        );
+        const pendingTimesheetIds = new Set(
+          group.records
+            .map((record) => record.timesheetId)
+            .filter((timesheetId): timesheetId is string => Boolean(timesheetId)),
+        );
+
+        return {
+          ...group,
+          approvedTimesheets: group.employeeId
+            ? timesheetEntries
+                .filter(
+                  (timesheet) =>
+                    timesheet.employeeId === group.employeeId &&
+                    timesheet.status === "approved" &&
+                    (
+                      isMonthlyTimesheetPayroll
+                        ? monthKeyFromTimesheet(timesheet) === group.monthKey
+                        : pendingTimesheetIds.has(timesheet.id)
+                    ),
+                )
+                .sort(
+                  (left, right) =>
+                    new Date(left.weekStart).getTime() - new Date(right.weekStart).getTime(),
+                )
+            : [],
+          records: [...group.records].sort((left, right) => {
           const leftDate = new Date(left.weekStart ?? left.date).getTime();
           const rightDate = new Date(right.weekStart ?? right.date).getTime();
           return leftDate - rightDate;
-        }),
-        totalAmount:
-          typeof group.hourlyRate === "number" && group.hourlyRate > 0
-            ? Math.round(group.totalHours * group.hourlyRate)
-            : group.totalAmount,
-      }))
+          }),
+          totalAmount:
+            typeof group.hourlyRate === "number" && group.hourlyRate > 0
+              ? Math.round(group.totalHours * group.hourlyRate)
+              : group.totalAmount,
+        };
+      })
       .sort((left, right) => right.totalAmount - left.totalAmount);
-  }, [employees, pendingPayroll]);
+  }, [employees, pendingPayroll, timesheetEntries]);
 
   useEffect(() => {
     if (pendingPayrollGroups.length === 0 || activeAccounts.length === 0) {
@@ -690,6 +744,29 @@ export default function Salary() {
                       </TableRow>
                     ) : (
                       pendingPayrollGroups.map((group) => {
+                        const isTimesheetGroup = group.records.some((record) => record.source === "timesheet");
+                        const displayedEntryCount = isTimesheetGroup
+                          ? group.approvedTimesheets.length
+                          : group.records.length;
+                        const worklogEntries: PayrollWorklogEntry[] =
+                          group.approvedTimesheets.length > 0
+                            ? group.approvedTimesheets.map((timesheet) => ({
+                                key: timesheet.id,
+                                source: "timesheet",
+                                weekStart: timesheet.weekStart,
+                                date: timesheet.weekStart,
+                                hours: timesheetTotalHours(timesheet),
+                                timesheet,
+                              }))
+                            : group.records.map((record) => ({
+                                key: record.id,
+                                source: record.source ?? "manual",
+                                weekStart: record.weekStart,
+                                date: record.date,
+                                hours: record.hours,
+                                timesheet: record.timesheetId ? timesheetById.get(record.timesheetId) : undefined,
+                              }));
+
                         return (
                           <TableRow key={group.key} className="border-border/50">
                             <TableCell className="font-medium">
@@ -701,7 +778,14 @@ export default function Salary() {
                               </div>
                             </TableCell>
                             <TableCell className="text-muted-foreground">
-                              {group.records.length} {group.records.length === 1 ? "entry" : "entries"}
+                              {displayedEntryCount}{" "}
+                              {isTimesheetGroup
+                                ? displayedEntryCount === 1
+                                  ? "approved week"
+                                  : "approved weeks"
+                                : displayedEntryCount === 1
+                                  ? "entry"
+                                  : "entries"}
                             </TableCell>
                             <TableCell className="text-right tabular-nums text-muted-foreground">
                               {group.totalHours || "-"}
@@ -745,7 +829,10 @@ export default function Salary() {
                                     <Card className="border-border/60">
                                       <CardContent className="pt-5">
                                         <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Pending Entries</div>
-                                        <div className="mt-2 text-2xl font-semibold">{group.records.length}</div>
+                                        <div className="mt-2 text-2xl font-semibold">{displayedEntryCount}</div>
+                                        <div className="mt-1 text-xs text-muted-foreground">
+                                          {isTimesheetGroup ? "Approved weeks" : "Payroll records"}
+                                        </div>
                                       </CardContent>
                                     </Card>
                                     <Card className="border-border/60">
@@ -773,7 +860,13 @@ export default function Salary() {
                                             <div>
                                               <div className="font-medium">Combined payroll payout</div>
                                               <div className="mt-1 text-xs text-muted-foreground">
-                                                {group.records.length} weekly entries combined into one payment.
+                                                {isTimesheetGroup
+                                                  ? `${displayedEntryCount} approved ${
+                                                      displayedEntryCount === 1 ? "week" : "weeks"
+                                                    } combined into one payment.`
+                                                  : `${displayedEntryCount} payroll ${
+                                                      displayedEntryCount === 1 ? "entry" : "entries"
+                                                    } combined into one payment.`}
                                               </div>
                                             </div>
                                             <div className="text-right">
@@ -810,7 +903,9 @@ export default function Salary() {
                                                   : "Select payout account"}
                                               </span>
                                               <span className="max-w-[220px] truncate">
-                                                {group.records.map((record) => weekRangeLabel(record.weekStart ?? record.date)).join(" • ")}
+                                                {worklogEntries
+                                                  .map((entry) => weekRangeLabel(entry.weekStart ?? entry.date))
+                                                  .join(" • ")}
                                               </span>
                                             </div>
 
@@ -852,8 +947,8 @@ export default function Salary() {
                                         <CardTitle className="text-sm">Month Work Hours & Work Notes</CardTitle>
                                       </CardHeader>
                                       <CardContent className="space-y-4">
-                                        {group.records.map((record) => {
-                                          const timesheet = record.timesheetId ? timesheetById.get(record.timesheetId) : undefined;
+                                        {worklogEntries.map((entry) => {
+                                          const timesheet = entry.timesheet;
                                           const worklogDays = timesheet ? buildWorklogDays(timesheet) : [];
                                           const groupedByMonth = worklogDays.reduce<Record<string, WorklogDay[]>>((accumulator, day) => {
                                             accumulator[day.monthLabel] = [...(accumulator[day.monthLabel] ?? []), day];
@@ -861,22 +956,22 @@ export default function Salary() {
                                           }, {});
 
                                           return (
-                                            <div key={`${record.id}-worklog`} className="rounded-2xl border border-border/60 bg-background/50 p-4">
+                                            <div key={`${entry.key}-worklog`} className="rounded-2xl border border-border/60 bg-background/50 p-4">
                                               <div className="mb-3 flex items-center justify-between gap-3">
                                                 <div>
                                                   <div className="font-medium">
-                                                    {record.weekStart ? weekRangeLabel(record.weekStart) : format(new Date(record.date), "dd MMM yyyy")}
+                                                    {entry.weekStart ? weekRangeLabel(entry.weekStart) : format(new Date(entry.date), "dd MMM yyyy")}
                                                   </div>
                                                   <div className="text-xs text-muted-foreground">
-                                                    {record.source === "timesheet" ? "Approved timesheet worklog" : "Manual payroll entry"}
+                                                    {entry.source === "timesheet" ? "Approved timesheet worklog" : "Manual payroll entry"}
                                                   </div>
                                                 </div>
-                                                <div className="text-sm font-medium tabular-nums">{typeof record.hours === "number" ? `${record.hours}h` : "-"}</div>
+                                                <div className="text-sm font-medium tabular-nums">{typeof entry.hours === "number" ? `${entry.hours}h` : "-"}</div>
                                               </div>
 
                                               {Object.keys(groupedByMonth).length > 0 ? (
                                                 Object.entries(groupedByMonth).map(([monthLabel, monthRows]) => (
-                                                  <div key={`${record.id}-${monthLabel}`} className="mb-4 last:mb-0">
+                                                  <div key={`${entry.key}-${monthLabel}`} className="mb-4 last:mb-0">
                                                     <div className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
                                                       {monthLabel}
                                                     </div>

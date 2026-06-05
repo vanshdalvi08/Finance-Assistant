@@ -520,6 +520,27 @@ test("deep smoke: approved hourly timesheet creates salary reflection", { concur
     assert.equal(reflectedSalary.rate, 100);
     assert.equal(reflectedSalary.amount, 500);
     reflectedSalaryId = reflectedSalary.id;
+
+    const deleteSalaryResponse = await api(`/business/salaries/${reflectedSalaryId}`, {
+      method: "DELETE",
+      token: adminToken,
+    });
+    assert.equal(deleteSalaryResponse.status, 204, JSON.stringify(deleteSalaryResponse.json));
+    reflectedSalaryId = null;
+
+    const reconciledResponse = await api("/business/salaries", {
+      token: adminToken,
+    });
+    assert.equal(reconciledResponse.status, 200, JSON.stringify(reconciledResponse.json));
+    const reconciledSalary = reconciledResponse.json.salaries.find(
+      (salary) => salary.timesheetId === timesheetId,
+    );
+    assert.ok(reconciledSalary, JSON.stringify(reconciledResponse.json));
+    assert.equal(reconciledSalary.employeeId, employee.id);
+    assert.equal(reconciledSalary.hours, 5);
+    assert.equal(reconciledSalary.rate, 100);
+    assert.equal(reconciledSalary.amount, 500);
+    reflectedSalaryId = reconciledSalary.id;
   } finally {
     if (reflectedSalaryId) {
       await api(`/business/salaries/${reflectedSalaryId}`, {

@@ -902,6 +902,14 @@ export default function AdminReportsPage() {
               html, body { background: #ffffff; }
               .print-frame > thead { display: table-header-group; }
               .print-frame > tfoot { display: table-footer-group; }
+              .print-frame > tfoot > tr > td { height: 9mm; }
+              .report-footer {
+                position: fixed;
+                right: 0;
+                bottom: 0;
+                left: 0;
+                z-index: 10;
+              }
               .employee-section { break-before: page; page-break-before: always; }
               .employee-page { page-break-before: always; }
               .employee-section + .employee-page { page-break-before: auto; }

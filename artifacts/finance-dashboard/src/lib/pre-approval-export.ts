@@ -69,7 +69,11 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
   const preApprovalCode = project.documentNumber?.trim() || `REFO-${formatDocDateCode(documentDate)}-${preApproval.id.slice(0, 4).toUpperCase()}`;
   const revision = project.revision?.trim() || "01";
   const documentTitle = preApproval.title || preApproval.project || preApproval.clientNameSnapshot || "Pre Approval";
-  const companyDisplayName = (company.companyName || "REFORIX ENGINEERING SERVICES").toUpperCase();
+  const configuredCompanyName = (company.companyName || "").trim();
+  const companyDisplayName =
+    !configuredCompanyName || configuredCompanyName.toUpperCase() === "REFORIX"
+      ? "REFORIX ENGINEERING SERVICES"
+      : configuredCompanyName.toUpperCase();
   const footerAddress = company.address?.trim() || "Vastu Anand, Building No. 16, Parsik Nagar, Thane, Maharashtra, India";
   const footerWebsite = company.website?.trim() || "www.reforix.com";
 
