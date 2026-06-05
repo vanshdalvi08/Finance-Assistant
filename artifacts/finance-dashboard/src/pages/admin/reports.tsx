@@ -896,6 +896,10 @@ export default function AdminReportsPage() {
             .mini-heading strong { color: #1f2937; font-size: 11px; font-weight: 700; }
             .day-task + .day-task { border-top: 1px solid #edf2f7; margin-top: 5px; padding-top: 5px; }
             .employee-section { break-before: page; page-break-before: always; }
+            .employee-section.employee-only {
+              break-before: auto;
+              page-break-before: auto;
+            }
             .employee-page { break-before: page; page-break-before: always; }
             .employee-section + .employee-page { break-before: auto; page-break-before: auto; }
             @media print {
@@ -911,6 +915,10 @@ export default function AdminReportsPage() {
                 z-index: 10;
               }
               .employee-section { break-before: page; page-break-before: always; }
+              .employee-section.employee-only {
+                break-before: auto;
+                page-break-before: auto;
+              }
               .employee-page { page-break-before: always; }
               .employee-section + .employee-page { page-break-before: auto; }
             }
@@ -1001,7 +1009,7 @@ export default function AdminReportsPage() {
             ${
               includeEmployeeDetails
                 ? `
-                  <section class="section employee-section">
+                  <section class="section employee-section${includeProjectTaskSummary ? "" : " employee-only"}">
                     <div class="section-heading">
                       <div>
                         <h2>Employee-wise Detailed Work</h2>
