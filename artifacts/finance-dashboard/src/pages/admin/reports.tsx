@@ -139,6 +139,7 @@ export default function AdminReportsPage() {
   const [exportOptionsOpen, setExportOptionsOpen] = useState(false);
   const [includeProjectTaskSummary, setIncludeProjectTaskSummary] = useState(true);
   const [includeEmployeeDetails, setIncludeEmployeeDetails] = useState(true);
+  const [selectedExportEmployeeIds, setSelectedExportEmployeeIds] = useState<string[] | null>(null);
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
   const { data: timesheets = [] } = useQuery({
@@ -152,6 +153,10 @@ export default function AdminReportsPage() {
   const { data: projectSummary = [] } = useQuery({
     queryKey: ["projectBudgetSummary"],
     queryFn: api.getProjectBudgetSummary,
+  });
+  const { data: companyInfo } = useQuery({
+    queryKey: ["companySettings"],
+    queryFn: api.getCompanySettings,
   });
   const taskCatalogLookup = useMemo(
     () =>
@@ -353,7 +358,7 @@ export default function AdminReportsPage() {
       ? openWeekId
       : employeeWeekReports[0]?.id ?? null;
 
-  const employeeExportReports = useMemo(() => {
+  const allEmployeeExportReports = useMemo(() => {
     const monthTimesheets = timesheets.filter((entry) => weekTouchesMonth(entry.weekStart, selectedMonth));
     const days = monthDateRows(selectedMonth);
 
@@ -450,9 +455,37 @@ export default function AdminReportsPage() {
       .filter((entry) => entry.totalHours > 0)
       .sort((left, right) => left.employee.name.localeCompare(right.employee.name));
   }, [employees, selectedMonth, taskCatalogLookup, timesheets]);
+  const employeeExportReports = useMemo(
+    () =>
+      selectedExportEmployeeIds === null
+        ? allEmployeeExportReports
+        : allEmployeeExportReports.filter((entry) => selectedExportEmployeeIds.includes(entry.employee.id)),
+    [allEmployeeExportReports, selectedExportEmployeeIds],
+  );
+  const allExportEmployeesSelected =
+    selectedExportEmployeeIds === null ||
+    (allEmployeeExportReports.length > 0 && selectedExportEmployeeIds.length === allEmployeeExportReports.length);
+  const canGenerateExport =
+    (includeProjectTaskSummary || includeEmployeeDetails) &&
+    (!includeEmployeeDetails || employeeExportReports.length > 0);
+
+  useEffect(() => {
+    if (selectedExportEmployeeIds === null) {
+      return;
+    }
+
+    const availableIds = new Set(allEmployeeExportReports.map((entry) => entry.employee.id));
+    setSelectedExportEmployeeIds((current) => {
+      if (current === null) {
+        return current;
+      }
+      const next = current.filter((id) => availableIds.has(id));
+      return next.length === current.length ? current : next;
+    });
+  }, [allEmployeeExportReports, selectedExportEmployeeIds]);
 
   function exportPdf() {
-    if (!includeProjectTaskSummary && !includeEmployeeDetails) {
+    if (!canGenerateExport) {
       return;
     }
 
@@ -463,6 +496,13 @@ export default function AdminReportsPage() {
 
     const reportMonthLabel = format(new Date(`${selectedMonth}-01T00:00:00`), "MMMM yyyy");
     const generatedAt = format(new Date(), "dd MMM yyyy, HH:mm");
+    const generatedDate = new Date();
+    const documentNumber = `REFO-RPT-${format(generatedDate, "yyMMdd-HHmm")}`;
+    const documentDate = format(generatedDate, "dd/MM/yyyy");
+    const companyDisplayName = (companyInfo?.companyName || "REFORIX ENGINEERING SERVICES").toUpperCase();
+    const footerAddress =
+      companyInfo?.address?.trim() || "Vastu Anand, Building No. 16, Parsik Nagar, Thane, Maharashtra, India";
+    const footerWebsite = companyInfo?.website?.trim() || "www.reforix.com";
     const projectRowsHtml =
       report.allTaskHourRows.length > 0
         ? report.allTaskHourRows
@@ -488,18 +528,16 @@ export default function AdminReportsPage() {
             .map(
               ({ employee, taskSummaryRows, dailyRows, totalHours }) => `
                 <section class="employee-page">
-                  <div class="section-heading">
+                  <div class="employee-heading">
                     <div>
-                      <p class="eyebrow">Employee Detail</p>
                       <h2>${escapeHtml(employee.name)}</h2>
                       <p>${escapeHtml(employee.department || "Department not set")}</p>
                     </div>
-                    <div class="total-pill">${formatHours(totalHours)}</div>
+                    <div class="employee-total"><span>Total hours</span><strong>${formatHours(totalHours)}</strong></div>
                   </div>
                   <div class="employee-subsection">
                     <div class="mini-heading">
                       <strong>Task contribution summary</strong>
-                      <span>Total contributed hours by task and short description</span>
                     </div>
                     <table class="report-table summary-table">
                       <thead>
@@ -531,7 +569,6 @@ export default function AdminReportsPage() {
                   <div class="employee-subsection">
                     <div class="mini-heading">
                       <strong>Daily work log</strong>
-                      <span>One row for every day in ${escapeHtml(reportMonthLabel)}</span>
                     </div>
                   <table class="report-table daily-table">
                     <thead>
@@ -598,59 +635,320 @@ export default function AdminReportsPage() {
         <head>
           <title>Monthly Summary - ${reportMonthLabel}</title>
           <style>
-            @page { size: A4; margin: 16mm 13mm; }
+            @page { size: A4; margin: 0; }
             * { box-sizing: border-box; }
-            body { margin: 0; color: #111827; font-family: "Segoe UI", Arial, sans-serif; background: #ffffff; font-size: 10.5px; }
-            .report-shell { padding: 0; }
-            .cover { border-bottom: 1.5px solid #111827; padding-bottom: 16px; margin-bottom: 16px; }
-            .topline { display: flex; justify-content: space-between; gap: 24px; color: #667085; font-size: 10px; }
-            h1 { margin: 24px 0 4px; font-size: 27px; line-height: 1.08; letter-spacing: -0.04em; }
-            h2 { margin: 0; font-size: 17px; line-height: 1.2; letter-spacing: -0.02em; }
-            p { margin: 0; color: #526179; }
-            .metrics { display: grid; grid-template-columns: minmax(180px, 240px); gap: 10px; margin-top: 20px; }
-            .metric { border: 1px solid #d9e2ef; border-radius: 13px; padding: 12px 14px; background: #f8fafc; }
-            .label, .eyebrow { color: #667085; font-size: 9px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
-            .value { margin-top: 8px; color: #0f172a; font-size: 22px; font-weight: 800; }
-            .section { margin-top: 22px; }
+            body {
+              margin: 0;
+              color: #111827;
+              font-family: "Aptos", "Segoe UI", Arial, sans-serif;
+              background: #ffffff;
+              font-size: 10.5px;
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
+            }
+            .report-header {
+              height: 29mm;
+              border-bottom: 1px solid #a9a9a9;
+              background: #ffffff;
+            }
+            .report-ribbon {
+              position: relative;
+              height: 4.5mm;
+              overflow: hidden;
+              background: #7186ba;
+            }
+            .report-ribbon::after {
+              content: "";
+              position: absolute;
+              top: -10mm;
+              right: 58mm;
+              width: 4mm;
+              height: 24mm;
+              background: #ffffff;
+              transform: rotate(31deg);
+            }
+            .report-header-main {
+              display: grid;
+              grid-template-columns: minmax(0, 1fr) 49mm;
+              align-items: center;
+              gap: 5mm;
+              height: 24.5mm;
+              padding: 0 8mm 0 9mm;
+            }
+            .report-brand {
+              display: grid;
+              grid-template-columns: 38mm 1px minmax(0, 1fr);
+              align-items: center;
+              gap: 5mm;
+              min-width: 0;
+            }
+            .report-logo {
+              margin: 0;
+              color: #000000;
+              font-family: "Arial Black", Arial, sans-serif;
+              font-size: 19px;
+              font-weight: 900;
+              letter-spacing: -0.02em;
+              line-height: 1;
+              text-align: center;
+              white-space: nowrap;
+            }
+            .report-logo sup {
+              margin-left: 1px;
+              font-family: "Segoe UI", Arial, sans-serif;
+              font-size: 5px;
+              vertical-align: top;
+            }
+            .report-brand-divider {
+              width: 1px;
+              height: 13mm;
+              background: #d7d7d7;
+            }
+            .report-company {
+              min-width: 0;
+              color: #000000;
+              font-size: 13px;
+              font-weight: 750;
+              line-height: 1.15;
+              text-align: center;
+              white-space: nowrap;
+            }
+            .report-meta {
+              display: grid;
+              gap: 0.8mm;
+              color: #111111;
+              font-size: 9.2px;
+              line-height: 1.25;
+            }
+            .report-meta-row {
+              display: grid;
+              grid-template-columns: 15mm 3mm minmax(0, 1fr);
+              gap: 1mm;
+              align-items: baseline;
+            }
+            .report-meta-row span:nth-child(2) {
+              text-align: center;
+            }
+            .report-meta-row span:last-child {
+              font-variant-numeric: tabular-nums;
+              white-space: nowrap;
+            }
+            .report-footer {
+              height: 9mm;
+              background: #7186ba;
+              color: #ffffff;
+              padding: 1.45mm 10mm 1.1mm;
+              text-align: center;
+            }
+            .report-footer strong {
+              display: block;
+              font-size: 6.6px;
+              line-height: 1.15;
+              text-transform: uppercase;
+            }
+            .report-footer span {
+              display: block;
+              color: rgba(255, 255, 255, 0.92);
+              font-size: 5.7px;
+              line-height: 1.15;
+            }
+            .print-frame {
+              width: 100%;
+              border: 0;
+              border-collapse: collapse;
+              border-spacing: 0;
+              table-layout: fixed;
+            }
+            .print-frame > thead,
+            .print-frame > tfoot {
+              display: table-header-group;
+            }
+            .print-frame > tfoot {
+              display: table-footer-group;
+            }
+            .print-frame > thead > tr > td,
+            .print-frame > tbody > tr > td,
+            .print-frame > tfoot > tr > td {
+              border: 0;
+              padding: 0;
+            }
+            .report-shell {
+              padding: 4mm 12mm 5mm;
+            }
+            .document-title {
+              margin: -4mm -12mm 16px;
+              border-bottom: 1px solid #a9a9a9;
+              padding: 2.2mm 12mm;
+              color: #111111;
+              font-size: 12px;
+              font-weight: 650;
+              line-height: 1.3;
+            }
+            .cover { border-bottom: 1px solid #263548; padding-bottom: 12px; margin-bottom: 17px; }
+            .topline { display: flex; justify-content: space-between; gap: 24px; color: #6b7280; font-size: 9px; }
+            h1 { margin: 11px 0 3px; color: #24344a; font-size: 21px; font-weight: 700; line-height: 1.12; letter-spacing: -0.02em; }
+            h2 { margin: 0; color: #2f4057; font-size: 15px; font-weight: 650; line-height: 1.2; letter-spacing: -0.01em; }
+            p { margin: 0; color: #5d6979; line-height: 1.4; }
+            .metrics { margin-top: 14px; }
+            .metric {
+              display: grid;
+              grid-template-columns: 1fr auto;
+              align-items: center;
+              max-width: 72mm;
+              border-top: 1px solid #cbd5e1;
+              border-bottom: 1px solid #cbd5e1;
+              padding: 2.4mm 0;
+            }
+            .label, .eyebrow { color: #718096; font-size: 8px; font-weight: 700; letter-spacing: .11em; text-transform: uppercase; }
+            .value { color: #24344a; font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+            .section { margin-top: 18px; }
             .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 12px; }
-            .total-pill { border: 1px solid #d9e2ef; border-radius: 999px; padding: 7px 12px; font-weight: 800; white-space: nowrap; background: #f8fafc; color: #0f172a; }
-            .report-table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; border: 1px solid #d9e2ef; border-radius: 12px; overflow: hidden; background: #ffffff; }
-            .report-table th, .report-table td { border: 0; border-bottom: 1px solid #e7edf5; padding: 8px 9px; vertical-align: top; text-align: left; }
-            .report-table th { background: #f6f8fb; color: #667085; font-size: 8.5px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+            .total-pill {
+              border-bottom: 2px solid #7186ba;
+              padding: 2px 0 4px;
+              color: #40536b;
+              font-size: 11px;
+              font-weight: 700;
+              white-space: nowrap;
+            }
+            .report-table {
+              width: 100%;
+              border-collapse: collapse;
+              table-layout: fixed;
+              border-top: 1px solid #aeb9c8;
+              border-bottom: 1px solid #aeb9c8;
+              background: #ffffff;
+            }
+            .report-table th, .report-table td {
+              border: 0;
+              border-bottom: 1px solid #dfe5ec;
+              padding: 6px 7px;
+              vertical-align: top;
+              text-align: left;
+            }
+            .report-table th {
+              background: #f2f5f8;
+              color: #334155;
+              font-size: 8px;
+              font-weight: 750;
+              letter-spacing: .08em;
+              text-transform: uppercase;
+            }
             .report-table tr:last-child td { border-bottom: 0; }
-            .report-table tbody tr:nth-child(even) td { background: #fbfcfe; }
-            .report-table td { line-height: 1.45; }
-            .summary-table td { padding-top: 9px; padding-bottom: 9px; }
-            .daily-table td { padding-top: 7px; padding-bottom: 7px; }
-            .daily-table .is-empty-day td { color: #98a2b3; background: #fcfdff; }
+            .report-table td { color: #243044; font-size: 9.5px; line-height: 1.35; }
+            .summary-table td { padding-top: 7px; padding-bottom: 7px; }
+            .daily-table th:nth-child(1) { width: 22mm !important; }
+            .daily-table th:nth-child(2) { width: 12mm !important; }
+            .daily-table th:nth-child(4) { width: 15mm !important; }
+            .daily-table th:nth-child(5) { width: 42mm !important; }
+            .daily-table td { padding-top: 5px; padding-bottom: 5px; }
+            .daily-table .is-empty-day td {
+              color: #98a2b3;
+              background: #fafbfc;
+              font-size: 9px;
+            }
             .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
             .center { text-align: center; }
             .muted, .subtext { color: #667085; }
-            .subtext { margin-top: 2px; font-size: 9.5px; line-height: 1.38; }
+            .subtext { margin-top: 1px; font-size: 8.5px; line-height: 1.3; }
             .row-index { color: #667085; font-weight: 700; }
             .empty { border: 1px dashed #cbd5e1; border-radius: 12px; padding: 24px; color: #64748b; text-align: center; }
-            .employee-subsection { margin-top: 15px; padding: 12px; border: 1px solid #e1e8f0; border-radius: 16px; background: #fbfcfe; }
-            .mini-heading { align-items: baseline; display: flex; gap: 10px; justify-content: space-between; margin-bottom: 8px; }
-            .mini-heading strong { color: #111827; font-size: 12px; }
-            .mini-heading span { color: #667085; font-size: 9.5px; }
+            .employee-heading {
+              display: flex;
+              align-items: flex-end;
+              justify-content: space-between;
+              gap: 18px;
+              margin-bottom: 13px;
+              border-bottom: 1px solid #aeb9c8;
+              padding-bottom: 7px;
+            }
+            .employee-heading p { margin-top: 2px; font-size: 9px; }
+            .employee-total {
+              display: grid;
+              grid-template-columns: auto auto;
+              align-items: center;
+              gap: 8px;
+              min-width: 34mm;
+              border-left: 2px solid #7186ba;
+              padding: 1.5mm 0 1.5mm 3mm;
+              color: #718096;
+              font-size: 7.8px;
+              letter-spacing: .08em;
+              text-transform: uppercase;
+            }
+            .employee-total strong {
+              color: #24344a;
+              font-size: 15px;
+              font-weight: 700;
+              letter-spacing: 0;
+              text-align: right;
+            }
+            .employee-subsection { margin-top: 14px; }
+            .mini-heading { margin-bottom: 6px; }
+            .mini-heading strong { color: #1f2937; font-size: 11px; font-weight: 700; }
             .day-task + .day-task { border-top: 1px solid #edf2f7; margin-top: 5px; padding-top: 5px; }
+            .employee-section { break-before: page; page-break-before: always; }
             .employee-page { break-before: page; page-break-before: always; }
             .employee-section + .employee-page { break-before: auto; page-break-before: auto; }
             @media print {
+              html, body { background: #ffffff; }
+              .print-frame > thead { display: table-header-group; }
+              .print-frame > tfoot { display: table-footer-group; }
+              .employee-section { break-before: page; page-break-before: always; }
               .employee-page { page-break-before: always; }
               .employee-section + .employee-page { page-break-before: auto; }
             }
           </style>
         </head>
         <body>
+          <table class="print-frame">
+            <thead>
+              <tr>
+                <td>
+                  <header class="report-header">
+                    <div class="report-ribbon"></div>
+                    <div class="report-header-main">
+                      <div class="report-brand">
+                        <p class="report-logo">REFORIX<sup>TM</sup></p>
+                        <div class="report-brand-divider"></div>
+                        <div class="report-company">${escapeHtml(companyDisplayName)}</div>
+                      </div>
+                      <div class="report-meta">
+                        <div class="report-meta-row">
+                          <span>Doc No</span><span>:</span><span>${escapeHtml(documentNumber)}</span>
+                        </div>
+                        <div class="report-meta-row">
+                          <span>Date</span><span>:</span><span>${escapeHtml(documentDate)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </header>
+                </td>
+              </tr>
+            </thead>
+            <tfoot>
+              <tr>
+                <td>
+                  <footer class="report-footer">
+                    <strong>${escapeHtml(companyDisplayName)}</strong>
+                    <span>${escapeHtml(footerAddress)}</span>
+                    <span>${escapeHtml(footerWebsite)}</span>
+                  </footer>
+                </td>
+              </tr>
+            </tfoot>
+            <tbody>
+              <tr>
+                <td>
           <main class="report-shell">
+            <div class="document-title">TITLE : Consolidated Report of Work Hours - ${escapeHtml(reportMonthLabel)}</div>
             <section class="cover">
               <div class="topline">
                 <span>Generated ${escapeHtml(generatedAt)}</span>
                 <span>Monthly Consolidated Report - ${escapeHtml(reportMonthLabel)}</span>
               </div>
-              <h1>Monthly Consolidated Report</h1>
-              <p>${escapeHtml(reportMonthLabel)} project hours, payroll liability, expenses, and employee work detail.</p>
+              <h1>Consolidated Work Hours Report</h1>
+              <p>${escapeHtml(reportMonthLabel)} project, task, short-description, and employee work-hour detail.</p>
               <div class="metrics">
                 <div class="metric"><div class="label">Total Hours</div><div class="value">${formatHours(report.totalHoursLogged)}</div></div>
               </div>
@@ -661,7 +959,6 @@ export default function AdminReportsPage() {
                   <section class="section">
                     <div class="section-heading">
                       <div>
-                        <p class="eyebrow">Section 1</p>
                         <h2>Project, Task & Short Description Hours</h2>
                         <p>Consolidated hours across all employees for ${escapeHtml(reportMonthLabel)}.</p>
                       </div>
@@ -691,9 +988,8 @@ export default function AdminReportsPage() {
                   <section class="section employee-section">
                     <div class="section-heading">
                       <div>
-                        <p class="eyebrow">Section 2</p>
                         <h2>Employee-wise Detailed Work</h2>
-                        <p>Each employee starts on a new page with project, task, short description, hours, and work notes.</p>
+                        <p>Project, task and date-wise work details for each employee.</p>
                       </div>
                       <div class="total-pill">${employeeExportReports.length} employee${employeeExportReports.length !== 1 ? "s" : ""}</div>
                     </div>
@@ -703,6 +999,10 @@ export default function AdminReportsPage() {
                 : ""
             }
           </main>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </body>
       </html>
     `);
@@ -1137,57 +1437,118 @@ export default function AdminReportsPage() {
       </div>
 
       <Dialog open={exportOptionsOpen} onOpenChange={setExportOptionsOpen}>
-        <DialogContent className="max-w-xl rounded-2xl border-border/70 bg-card p-0 shadow-2xl">
-          <DialogHeader className="border-b border-border/60 px-6 py-5">
-            <DialogTitle>Export monthly report</DialogTitle>
-            <DialogDescription>
-              Choose exactly what should be included in the consolidated PDF for {monthLabel}.
-            </DialogDescription>
+        <DialogContent className="max-w-lg gap-0 overflow-hidden rounded-xl border-border/70 bg-card p-0 shadow-2xl">
+          <DialogHeader className="px-5 pb-4 pt-5">
+            <DialogTitle className="text-lg">Export report</DialogTitle>
+            <DialogDescription>Select the sections and employees to include for {monthLabel}.</DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-3 px-6 py-5">
-            <label className="flex cursor-pointer items-start gap-4 rounded-2xl border border-border/60 bg-secondary/10 p-4 transition hover:bg-secondary/20">
+          <div className="border-y border-border/60 px-5">
+            <label className="flex cursor-pointer items-start gap-3 border-b border-border/50 py-4">
               <Checkbox
-                className="mt-1"
+                className="mt-0.5"
                 checked={includeProjectTaskSummary}
                 onCheckedChange={(checked) => setIncludeProjectTaskSummary(checked === true)}
               />
-              <span className="space-y-1">
-                <span className="block font-semibold text-foreground">Overall project, task and short description hours</span>
-                <span className="block text-sm text-muted-foreground">
-                  Prints one consolidated table with project, task, short description, sub-task, people count, and total hours.
+              <span>
+                <span className="block text-sm font-medium text-foreground">Project and task summary</span>
+                <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+                  Consolidated project, task, short-description and hour totals.
                 </span>
               </span>
             </label>
 
-            <label className="flex cursor-pointer items-start gap-4 rounded-2xl border border-border/60 bg-secondary/10 p-4 transition hover:bg-secondary/20">
-              <Checkbox
-                className="mt-1"
-                checked={includeEmployeeDetails}
-                onCheckedChange={(checked) => setIncludeEmployeeDetails(checked === true)}
-              />
-              <span className="space-y-1">
-                <span className="block font-semibold text-foreground">Employee-wise detailed pages</span>
-                <span className="block text-sm text-muted-foreground">
-                  Adds employee pages with task contribution totals first, then a date-wise monthly work log with work notes.
+            <div className="py-4">
+              <label className="flex cursor-pointer items-start gap-3">
+                <Checkbox
+                  className="mt-0.5"
+                  checked={includeEmployeeDetails}
+                  onCheckedChange={(checked) => setIncludeEmployeeDetails(checked === true)}
+                />
+                <span>
+                  <span className="block text-sm font-medium text-foreground">Employee detail pages</span>
+                  <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+                    Task contribution and daily work log for selected employees.
+                  </span>
                 </span>
-              </span>
-            </label>
+              </label>
+
+              {includeEmployeeDetails ? (
+                <div className="ml-7 mt-3 overflow-hidden rounded-lg border border-border/60">
+                  <label className="flex cursor-pointer items-center justify-between gap-3 bg-secondary/15 px-3 py-2.5">
+                    <span className="flex items-center gap-3">
+                      <Checkbox
+                        checked={allExportEmployeesSelected}
+                        onCheckedChange={(checked) => setSelectedExportEmployeeIds(checked === true ? null : [])}
+                      />
+                      <span className="text-sm font-medium">All employees</span>
+                    </span>
+                    <span className="text-xs text-muted-foreground">{allEmployeeExportReports.length}</span>
+                  </label>
+
+                  <div className="max-h-44 overflow-y-auto border-t border-border/50">
+                    {allEmployeeExportReports.length === 0 ? (
+                      <p className="px-3 py-4 text-sm text-muted-foreground">No employees have logged hours for this month.</p>
+                    ) : (
+                      allEmployeeExportReports.map(({ employee, totalHours }) => {
+                        const checked =
+                          selectedExportEmployeeIds === null || selectedExportEmployeeIds.includes(employee.id);
+
+                        return (
+                          <label
+                            key={employee.id}
+                            className="flex cursor-pointer items-center justify-between gap-3 border-b border-border/40 px-3 py-2.5 last:border-b-0"
+                          >
+                            <span className="flex min-w-0 items-center gap-3">
+                              <Checkbox
+                                checked={checked}
+                                onCheckedChange={(nextChecked) => {
+                                  setSelectedExportEmployeeIds((current) => {
+                                    const selectedIds =
+                                      current === null
+                                        ? allEmployeeExportReports.map((entry) => entry.employee.id)
+                                        : current;
+
+                                    return nextChecked === true
+                                      ? [...new Set([...selectedIds, employee.id])]
+                                      : selectedIds.filter((id) => id !== employee.id);
+                                  });
+                                }}
+                              />
+                              <span className="min-w-0">
+                                <span className="block truncate text-sm text-foreground">{employee.name}</span>
+                                <span className="block truncate text-xs text-muted-foreground">
+                                  {employee.department || "Department not set"}
+                                </span>
+                              </span>
+                            </span>
+                            <span className="shrink-0 text-xs font-medium tabular-nums text-muted-foreground">
+                              {formatHours(totalHours)}
+                            </span>
+                          </label>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              ) : null}
+            </div>
 
             {!includeProjectTaskSummary && !includeEmployeeDetails ? (
-              <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-300">
+              <p className="pb-3 text-sm text-amber-500">
                 Select at least one section before generating the PDF.
               </p>
+            ) : includeEmployeeDetails && employeeExportReports.length === 0 ? (
+              <p className="pb-3 text-sm text-amber-500">Select at least one employee with logged hours.</p>
             ) : null}
           </div>
 
-          <DialogFooter className="border-t border-border/60 px-6 py-4">
-            <Button variant="outline" className="rounded-xl" onClick={() => setExportOptionsOpen(false)}>
+          <DialogFooter className="px-5 py-4">
+            <Button variant="ghost" onClick={() => setExportOptionsOpen(false)}>
               Cancel
             </Button>
             <Button
-              className="rounded-xl"
-              disabled={!includeProjectTaskSummary && !includeEmployeeDetails}
+              disabled={!canGenerateExport}
               onClick={() => {
                 setExportOptionsOpen(false);
                 exportPdf();
