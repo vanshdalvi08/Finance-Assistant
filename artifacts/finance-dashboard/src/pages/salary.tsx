@@ -128,6 +128,11 @@ function monthLabelFromRecord(record: SalaryRecord) {
   return sourceDate ? format(new Date(sourceDate), "MMMM yyyy") : "Unknown month";
 }
 
+function monthKeyFromRecord(record: SalaryRecord) {
+  const sourceDate = record.weekStart ?? record.date;
+  return sourceDate ? format(new Date(sourceDate), "yyyy-MM") : "unknown";
+}
+
 function weekRangeLabel(sourceDate: string) {
   const weekStart = new Date(sourceDate);
   const weekEnd = addDays(weekStart, 6);
@@ -209,7 +214,8 @@ export default function Salary() {
     for (const record of pendingPayroll) {
       const employee = employees.find((item) => item.id === record.employeeId);
       const employeeName = record.employeeNameSnapshot ?? employee?.name ?? "Unknown";
-      const key = record.employeeId?.trim() || employeeName.toLowerCase();
+      const employeeKey = record.employeeId?.trim() || employeeName.toLowerCase();
+      const key = `${employeeKey}:${monthKeyFromRecord(record)}`;
       const existing =
         groups.get(key) ??
         ({

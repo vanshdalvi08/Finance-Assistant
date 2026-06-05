@@ -758,6 +758,18 @@ export function effectiveHourlyRate(employee?: UserProfile | null): number {
   return Math.max(0, Number(employee.hourlyRate ?? Math.round(employee.salary / 160)));
 }
 
+export function effectiveMonthlySalary(employee?: UserProfile | null): number {
+  if (!employee || employee.payType !== "monthly") {
+    return 0;
+  }
+
+  return Math.max(0, Math.round(Number(employee.salary ?? 0) / 12));
+}
+
+function payrollMonthKey(value: string): string {
+  return normalizeWeekStart(value).slice(0, 7);
+}
+
 export function cloneStore(store: BusinessStore): BusinessStore {
   return structuredClone(store);
 }
@@ -3169,28 +3181,74 @@ export async function reviewTimesheetFast(input: {
     }).timesheets[0];
 
     let salary: SalaryRecord | undefined;
-    if (input.status === "approved" && input.employee && input.employee.payType === "hourly" && effectiveHourlyRate(input.employee) > 0) {
-      const existingPayroll = current.salaries.find((item) => item.timesheetId === existing.id);
-      const hours = sumTimesheetHours(existing);
-      const rate = effectiveHourlyRate(input.employee);
-      salary = {
-        id: existingPayroll?.id ?? createId("sal"),
-        tenantId: input.employee.tenantId ?? DEFAULT_TENANT_ID,
-        employeeId: input.employee.id,
-        employeeNameSnapshot: input.employee.name,
-        amount: Math.round(hours * rate),
-        date: now,
-        note: input.note?.trim() || `Timesheet payout for week of ${existing.weekStart}`,
-        status: existingPayroll?.status === "paid" ? "paid" : "pending",
-        source: "timesheet",
-        paidAt: existingPayroll?.status === "paid" ? existingPayroll.paidAt ?? existingPayroll.date : undefined,
-        weekStart: existing.weekStart,
-        hours,
-        rate,
-        timesheetId: existing.id,
-        createdAt: existingPayroll?.createdAt ?? now,
-        updatedAt: now,
-      };
+    if (input.status === "approved" && input.employee) {
+      if (input.employee.payType === "hourly" && effectiveHourlyRate(input.employee) > 0) {
+        const existingPayroll = current.salaries.find((item) => item.timesheetId === existing.id);
+        const hours = sumTimesheetHours(existing);
+        const rate = effectiveHourlyRate(input.employee);
+        salary = {
+          id: existingPayroll?.id ?? createId("sal"),
+          tenantId: input.employee.tenantId ?? input.tenantId ?? DEFAULT_TENANT_ID,
+          employeeId: input.employee.id,
+          employeeNameSnapshot: input.employee.name,
+          amount: Math.round(hours * rate),
+          date: now,
+          note: input.note?.trim() || `Timesheet payout for week of ${existing.weekStart}`,
+          status: existingPayroll?.status === "paid" ? "paid" : "pending",
+          source: "timesheet",
+          paidAt: existingPayroll?.status === "paid" ? existingPayroll.paidAt ?? existingPayroll.date : undefined,
+          weekStart: existing.weekStart,
+          hours,
+          rate,
+          timesheetId: existing.id,
+          createdAt: existingPayroll?.createdAt ?? now,
+          updatedAt: now,
+        };
+      } else {
+        const monthlyAmount = effectiveMonthlySalary(input.employee);
+        if (monthlyAmount > 0) {
+          const monthKey = payrollMonthKey(existing.weekStart);
+          const existingPayroll = current.salaries.find(
+            (item) =>
+              (item.tenantId ?? DEFAULT_TENANT_ID) === input.tenantId &&
+              item.source === "timesheet" &&
+              item.employeeId === input.employee!.id &&
+              item.rate == null &&
+              payrollMonthKey(item.weekStart ?? item.date) === monthKey,
+          );
+          const approvedMonthTimesheets = current.timesheets
+            .map((timesheet) => (timesheet.id === reviewedEntry.id ? reviewedEntry : timesheet))
+            .filter(
+              (timesheet) =>
+                timesheet.employeeId === input.employee!.id &&
+                timesheet.status === "approved" &&
+                payrollMonthKey(timesheet.weekStart) === monthKey,
+            );
+          const monthHours = approvedMonthTimesheets.reduce(
+            (total, timesheet) => total + sumTimesheetHours(timesheet),
+            0,
+          );
+
+          salary = {
+            id: existingPayroll?.id ?? createId("sal"),
+            tenantId: input.employee.tenantId ?? input.tenantId ?? DEFAULT_TENANT_ID,
+            employeeId: input.employee.id,
+            employeeNameSnapshot: input.employee.name,
+            amount: monthlyAmount,
+            date: existingPayroll?.date ?? now,
+            note: input.note?.trim() || `Monthly salary for ${monthKey}`,
+            status: existingPayroll?.status === "paid" ? "paid" : "pending",
+            source: "timesheet",
+            paidAt: existingPayroll?.status === "paid" ? existingPayroll.paidAt ?? existingPayroll.date : undefined,
+            weekStart: existingPayroll?.weekStart ?? existing.weekStart,
+            hours: monthHours,
+            rate: undefined,
+            timesheetId: existingPayroll?.timesheetId ?? existing.id,
+            createdAt: existingPayroll?.createdAt ?? now,
+            updatedAt: now,
+          };
+        }
+      }
     }
 
     const auditEntry = createAuditEntry({

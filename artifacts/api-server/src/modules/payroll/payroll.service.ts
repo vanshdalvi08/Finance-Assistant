@@ -5,6 +5,7 @@ import {
   type BusinessStore,
   type SalaryRecord,
   createId,
+  effectiveMonthlySalary,
   loadEmployeeProfile,
   loadEmployees,
   normalizeDate,
@@ -12,6 +13,7 @@ import {
   nowIso,
   pushAuditEvent,
   readStore,
+  sumTimesheetHours,
   updateStore,
 } from "../../lib/business-store";
 import { assertEmployeeSelfAccess, assertTenantAccess } from "../../lib/policies";
@@ -55,6 +57,128 @@ export class SalaryServiceError extends Error {
 
 function tenantSalaryFilter(salary: SalaryRecord, tenantId: string) {
   return (salary.tenantId ?? DEFAULT_TENANT_ID) === tenantId;
+}
+
+function payrollMonthKey(value: string) {
+  return normalizeWeekStart(value).slice(0, 7);
+}
+
+async function reconcileMonthlyTimesheetPayroll(tenantId: string, employeeId?: string | null) {
+  const employees = (await loadEmployees(tenantId)).filter(
+    (employee) =>
+      employee.payType === "monthly" &&
+      effectiveMonthlySalary(employee) > 0 &&
+      (!employeeId || employee.id === employeeId),
+  );
+  if (employees.length === 0) {
+    return;
+  }
+
+  const employeeById = new Map(employees.map((employee) => [employee.id, employee]));
+  const store = await readStore();
+  const approvedGroups = new Map<string, typeof store.timesheets>();
+
+  for (const timesheet of store.timesheets) {
+    if (
+      timesheet.status !== "approved" ||
+      !employeeById.has(timesheet.employeeId)
+    ) {
+      continue;
+    }
+    const key = `${timesheet.employeeId}:${payrollMonthKey(timesheet.weekStart)}`;
+    approvedGroups.set(key, [...(approvedGroups.get(key) ?? []), timesheet]);
+  }
+
+  const needsReconciliation = Array.from(approvedGroups.entries()).some(([key, timesheets]) => {
+    const [groupEmployeeId = "", monthKey = ""] = key.split(":");
+    const existing = store.salaries.find(
+      (salary) =>
+        tenantSalaryFilter(salary, tenantId) &&
+        salary.source === "timesheet" &&
+        salary.employeeId === groupEmployeeId &&
+        salary.rate == null &&
+        payrollMonthKey(salary.weekStart ?? salary.date) === monthKey,
+    );
+    const hours = timesheets.reduce((total, timesheet) => total + sumTimesheetHours(timesheet), 0);
+    return !existing || (existing.status === "pending" && Number(existing.hours ?? 0) !== hours);
+  });
+  if (!needsReconciliation) {
+    return;
+  }
+
+  await updateStore((current) => {
+    const nextSalaries = [...current.salaries];
+    const updatedAt = nowIso();
+    const currentApprovedGroups = new Map<string, typeof current.timesheets>();
+
+    for (const timesheet of current.timesheets) {
+      if (
+        timesheet.status !== "approved" ||
+        !employeeById.has(timesheet.employeeId)
+      ) {
+        continue;
+      }
+      const key = `${timesheet.employeeId}:${payrollMonthKey(timesheet.weekStart)}`;
+      currentApprovedGroups.set(key, [...(currentApprovedGroups.get(key) ?? []), timesheet]);
+    }
+
+    for (const [key, timesheets] of currentApprovedGroups) {
+      const [groupEmployeeId = "", monthKey = ""] = key.split(":");
+      const employee = employeeById.get(groupEmployeeId);
+      if (!employee) {
+        continue;
+      }
+      const sortedTimesheets = [...timesheets].sort((left, right) =>
+        left.weekStart.localeCompare(right.weekStart),
+      );
+      const hours = sortedTimesheets.reduce(
+        (total, timesheet) => total + sumTimesheetHours(timesheet),
+        0,
+      );
+      const existingIndex = nextSalaries.findIndex(
+        (salary) =>
+          tenantSalaryFilter(salary, tenantId) &&
+          salary.source === "timesheet" &&
+          salary.employeeId === employee.id &&
+          salary.rate == null &&
+          payrollMonthKey(salary.weekStart ?? salary.date) === monthKey,
+      );
+      const existing = existingIndex >= 0 ? nextSalaries[existingIndex] : undefined;
+      if (existing?.status === "paid") {
+        continue;
+      }
+
+      const firstTimesheet = sortedTimesheets[0];
+      if (!firstTimesheet) {
+        continue;
+      }
+      const salary: SalaryRecord = {
+        id: existing?.id ?? createId("sal"),
+        tenantId,
+        employeeId: employee.id,
+        employeeNameSnapshot: employee.name,
+        amount: effectiveMonthlySalary(employee),
+        date: existing?.date ?? updatedAt,
+        note: existing?.note || `Monthly salary for ${monthKey}`,
+        status: "pending",
+        source: "timesheet",
+        weekStart: existing?.weekStart ?? firstTimesheet.weekStart,
+        hours,
+        rate: undefined,
+        timesheetId: existing?.timesheetId ?? firstTimesheet.id,
+        createdAt: existing?.createdAt ?? updatedAt,
+        updatedAt,
+      };
+
+      if (existingIndex >= 0) {
+        nextSalaries[existingIndex] = salary;
+      } else {
+        nextSalaries.unshift(salary);
+      }
+    }
+
+    return { ...current, salaries: nextSalaries };
+  });
 }
 
 function ensureFunds(store: BusinessStore, amount: number, label: string, tenantId: string, accountId: string) {
@@ -167,6 +291,10 @@ async function claimSalaryPayIdempotency(actor: SalaryActor, key: string, reques
 }
 
 export async function listSalariesForActor(tenantId: string, requesterRole?: string, requesterUserId?: string, employeeId?: string | null) {
+  await reconcileMonthlyTimesheetPayroll(
+    tenantId,
+    employeeId ?? (requesterRole === "employee" ? requesterUserId : null),
+  );
   const store = await readStore();
   const tenantEmployees = await loadEmployees(tenantId);
   const tenantEmployeeIds = new Set(tenantEmployees.map((employee) => employee.id));

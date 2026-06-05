@@ -537,3 +537,114 @@ test("deep smoke: approved hourly timesheet creates salary reflection", { concur
     });
   }
 });
+
+test("deep smoke: monthly employee receives one monthly payout across approved weeks", { concurrency: false }, async () => {
+  const adminToken = seed.tenantA.ownerSession.accessToken;
+  const suffix = randomSuffix("refactor-smoke-monthly-salary");
+  const createEmployeeResponse = await api("/admin/employees", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      name: `Monthly Employee ${suffix}`,
+      email: `${suffix}@example.com`,
+      phone: `${Math.floor(9000000000 + Math.random() * 99999999)}`,
+      position: "Monthly Engineer",
+      salary: 180000,
+      payType: "monthly",
+      hourlyRate: 0,
+      department: "Engineering",
+    },
+  });
+  assert.equal(createEmployeeResponse.status, 201, JSON.stringify(createEmployeeResponse.json));
+
+  const employee = createEmployeeResponse.json.user;
+  const employeeSession = await login(employee.email, createEmployeeResponse.json.temporaryPassword);
+  const timesheetIds = [];
+  let monthlySalaryId = null;
+
+  try {
+    for (const [weekStart, hours] of [
+      ["2026-06-01", { mon: 5, tue: 3 }],
+      ["2026-06-08", { mon: 4, wed: 2 }],
+    ]) {
+      const createResponse = await api("/business/timesheets", {
+        method: "POST",
+        token: employeeSession.accessToken,
+        body: {
+          employeeId: employee.id,
+          weekStart,
+          lines: [{ project: "Monthly Salary Project", task: "Monthly task", hours }],
+        },
+      });
+      assert.ok([200, 201].includes(createResponse.status), JSON.stringify(createResponse.json));
+      const timesheetId = createResponse.json.timesheet.id;
+      timesheetIds.push(timesheetId);
+
+      const submitResponse = await api(`/business/timesheets/${timesheetId}/submit`, {
+        method: "POST",
+        token: employeeSession.accessToken,
+        body: {},
+      });
+      const approveResponse = await api(`/business/timesheets/${timesheetId}/approve`, {
+        method: "POST",
+        token: adminToken,
+        body: { note: "monthly salary smoke" },
+      });
+      assert.equal(submitResponse.status, 200, JSON.stringify(submitResponse.json));
+      assert.equal(approveResponse.status, 200, JSON.stringify(approveResponse.json));
+    }
+
+    const salariesResponse = await api("/business/salaries", { token: adminToken });
+    assert.equal(salariesResponse.status, 200, JSON.stringify(salariesResponse.json));
+
+    const monthlySalaries = salariesResponse.json.salaries.filter(
+      (salary) =>
+        salary.employeeId === employee.id &&
+        salary.source === "timesheet" &&
+        salary.rate == null &&
+        salary.weekStart?.startsWith("2026-06"),
+    );
+    assert.equal(monthlySalaries.length, 1, JSON.stringify(monthlySalaries));
+    assert.equal(monthlySalaries[0].amount, 15000);
+    assert.equal(monthlySalaries[0].hours, 14);
+    monthlySalaryId = monthlySalaries[0].id;
+
+    const deleteSalaryResponse = await api(`/business/salaries/${monthlySalaryId}`, {
+      method: "DELETE",
+      token: adminToken,
+    });
+    assert.equal(deleteSalaryResponse.status, 204, JSON.stringify(deleteSalaryResponse.json));
+    monthlySalaryId = null;
+
+    const reconciledResponse = await api("/business/salaries", { token: adminToken });
+    assert.equal(reconciledResponse.status, 200, JSON.stringify(reconciledResponse.json));
+    const reconciledSalary = reconciledResponse.json.salaries.find(
+      (salary) =>
+        salary.employeeId === employee.id &&
+        salary.source === "timesheet" &&
+        salary.rate == null &&
+        salary.weekStart?.startsWith("2026-06"),
+    );
+    assert.ok(reconciledSalary, JSON.stringify(reconciledResponse.json));
+    assert.equal(reconciledSalary.amount, 15000);
+    assert.equal(reconciledSalary.hours, 14);
+    monthlySalaryId = reconciledSalary.id;
+  } finally {
+    if (monthlySalaryId) {
+      await api(`/business/salaries/${monthlySalaryId}`, {
+        method: "DELETE",
+        token: adminToken,
+      });
+    }
+    for (const timesheetId of timesheetIds) {
+      await api(`/business/timesheets/${timesheetId}`, {
+        method: "DELETE",
+        token: adminToken,
+      });
+    }
+    await api(`/admin/employees/${employee.id}`, {
+      method: "DELETE",
+      token: adminToken,
+    });
+  }
+});
