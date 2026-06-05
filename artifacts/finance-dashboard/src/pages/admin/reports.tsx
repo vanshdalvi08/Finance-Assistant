@@ -971,8 +971,6 @@ export default function AdminReportsPage() {
                 <span>Generated ${escapeHtml(generatedAt)}</span>
                 <span>Monthly Consolidated Report - ${escapeHtml(reportMonthLabel)}</span>
               </div>
-              <h1>Consolidated Work Hours Report</h1>
-              <p>${escapeHtml(reportMonthLabel)} project, task, short-description, and employee work-hour detail.</p>
               <div class="metrics">
                 <div class="metric"><div class="label">Total Hours</div><div class="value">${formatHours(report.totalHoursLogged)}</div></div>
               </div>
