@@ -39,7 +39,7 @@ const createTenantSchema = z.object({
   ownerPhone: z.string().trim().min(7),
   ownerPosition: z.string().trim().min(2).optional(),
   ownerDepartment: z.string().trim().min(2).optional(),
-  ownerPassword: z.string().trim().min(8).optional(),
+  ownerPassword: z.string().trim().min(12).max(72).optional(),
 });
 
 const tenantStatusSchema = z.object({

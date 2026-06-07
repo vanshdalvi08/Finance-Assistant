@@ -216,6 +216,35 @@ function notificationActor(request: Request) {
   } as const;
 }
 
+function salaryResponse(salary: SalaryRecord, role?: string) {
+  const shared = {
+    id: salary.id,
+    employeeId: salary.employeeId,
+    employeeNameSnapshot: salary.employeeNameSnapshot,
+    amount: salary.amount,
+    date: salary.date,
+    status: salary.status,
+    source: salary.source,
+    paidAt: salary.paidAt,
+    weekStart: salary.weekStart,
+    hours: salary.hours,
+    rate: salary.rate,
+  };
+
+  if (role === "employee") {
+    return shared;
+  }
+
+  return {
+    ...shared,
+    accountId: salary.accountId,
+    note: salary.note,
+    timesheetId: salary.timesheetId,
+    createdAt: salary.createdAt,
+    updatedAt: salary.updatedAt,
+  };
+}
+
 function handleServiceError(error: unknown, response: Response) {
   if (!(error instanceof SalaryServiceError)) {
     throw error;
@@ -265,7 +294,9 @@ router.get("/salaries", requireTenantRole("admin", "employee"), async (request, 
       request.auth?.user.id,
       scopedEmployeeId(request, (request.query as { employeeId?: string }).employeeId),
     );
-    response.json({ salaries });
+    response.json({
+      salaries: salaries.map((salary) => salaryResponse(salary, request.auth?.user.role)),
+    });
   } catch (error) {
     if (handleServiceError(error, response)) {
       return;
@@ -312,7 +343,7 @@ router.post("/salaries", requireTenantRole("admin"), async (request, response) =
         request.auth?.user.role,
         request.auth?.user.id,
       );
-      response.json({ salary: replayed, duplicate: true });
+      response.json({ salary: salaryResponse(replayed, request.auth?.user.role), duplicate: true });
       return;
     }
     response.status(409).json({ message: "This salary request is already being processed. Please retry shortly." });
@@ -346,7 +377,10 @@ router.post("/salaries", requireTenantRole("admin"), async (request, response) =
       .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
   }
 
-  response.status(created ? 201 : 200).json({ salary, duplicate: false });
+  response.status(created ? 201 : 200).json({
+    salary: salaryResponse(salary, request.auth?.user.role),
+    duplicate: false,
+  });
 });
 
 router.post("/salaries/historical", requireTenantRole("admin"), async (request, response) => {
@@ -387,7 +421,7 @@ router.post("/salaries/historical", requireTenantRole("admin"), async (request, 
         request.auth?.user.role,
         request.auth?.user.id,
       );
-      response.json({ salary: replayed, duplicate: true });
+      response.json({ salary: salaryResponse(replayed, request.auth?.user.role), duplicate: true });
       return;
     }
     response.status(409).json({ message: "This historical salary request is already being processed. Please retry shortly." });
@@ -432,7 +466,10 @@ router.post("/salaries/historical", requireTenantRole("admin"), async (request, 
       .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
   }
 
-  response.status(created ? 201 : 200).json({ salary, duplicate: false });
+  response.status(created ? 201 : 200).json({
+    salary: salaryResponse(salary, request.auth?.user.role),
+    duplicate: false,
+  });
 });
 
 router.route("/salaries/:id").get(requireTenantRole("admin", "employee"), async (request, response) => {
@@ -443,7 +480,7 @@ router.route("/salaries/:id").get(requireTenantRole("admin", "employee"), async 
       request.auth?.user.role,
       request.auth?.user.id,
     );
-    response.json({ salary });
+    response.json({ salary: salaryResponse(salary, request.auth?.user.role) });
   } catch (error) {
     if (handleServiceError(error, response)) {
       return;
@@ -488,7 +525,7 @@ router.route("/salaries/:id").get(requireTenantRole("admin", "employee"), async 
         request.auth?.user.role,
         request.auth?.user.id,
       );
-      response.json({ salary: replayed, duplicate: true });
+      response.json({ salary: salaryResponse(replayed, request.auth?.user.role), duplicate: true });
       return;
     }
     response.status(409).json({ message: "This salary update request is already being processed. Please retry shortly." });
@@ -556,7 +593,10 @@ router.route("/salaries/:id").get(requireTenantRole("admin", "employee"), async 
       .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
   }
 
-  response.json({ salary, duplicate: false });
+  response.json({
+    salary: salaryResponse(salary, request.auth?.user.role),
+    duplicate: false,
+  });
 }).delete(requireTenantRole("admin"), async (request, response) => {
   const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
   const idempotencyKey = idempotencyKeyFrom(request);
@@ -673,7 +713,10 @@ router.post("/salaries/:id/pay", requireTenantRole("admin"), salaryPaymentLimite
       ),
     );
   }
-  response.json({ salary, duplicate: wasAlreadyPaid });
+  response.json({
+    salary: salaryResponse(salary, request.auth?.user.role),
+    duplicate: wasAlreadyPaid,
+  });
 });
 
 export default router;

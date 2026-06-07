@@ -2,7 +2,7 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
-import { idempotencyKeysTable } from "@workspace/db/schema";
+import { auditTrailTable, idempotencyKeysTable } from "@workspace/db/schema";
 import {
   createAdminAccount,
   createClientAccount,
@@ -17,10 +17,11 @@ import {
   updateClientAccount,
   updateEmployeeAccount,
 } from "../lib/auth-service";
-import { createId } from "../lib/business-store";
+import { createId, invalidateBusinessStoreCache } from "../lib/business-store";
 import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../lib/notifications";
 import { hashSha256 } from "../lib/security";
 import { logger } from "../lib/logger";
+import { recordPlatformEventSafe } from "../lib/platform";
 import { requireAuth, requireTenantRole } from "../middlewares/auth";
 import { rateLimit } from "../middlewares/rate-limit";
 
@@ -141,6 +142,110 @@ function deliverNotification(work: Promise<unknown>) {
     logger.warn({ err: error }, "Failed to deliver notification");
   });
   return Promise.resolve();
+}
+
+type AuditableUser = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  role: string;
+  employeeId: string | null;
+  position: string | null;
+  department: string | null;
+  salary: number;
+  payType: "monthly" | "hourly";
+  hourlyRate: number;
+  status: "active" | "inactive";
+};
+
+function employeeAuditSnapshot(user: AuditableUser | null) {
+  if (!user) {
+    return null;
+  }
+  return {
+    name: user.name,
+    email: user.email,
+    phone: user.phone,
+    employeeId: user.employeeId,
+    position: user.position,
+    department: user.department,
+    salary: user.salary,
+    payType: user.payType,
+    hourlyRate: user.hourlyRate,
+    status: user.status,
+  };
+}
+
+async function recordEmployeeAudit(
+  request: Request,
+  action: "created" | "updated" | "deactivated",
+  target: AuditableUser,
+  before: AuditableUser | null,
+) {
+  const tenantId = request.auth?.user.tenantId;
+  if (!tenantId) {
+    return;
+  }
+  const beforeSnapshot = employeeAuditSnapshot(before);
+  const afterSnapshot = employeeAuditSnapshot(target);
+  const changedFields = afterSnapshot
+    ? Object.keys(afterSnapshot).filter(
+        (key) =>
+          JSON.stringify(beforeSnapshot?.[key as keyof typeof beforeSnapshot])
+          !== JSON.stringify(afterSnapshot[key as keyof typeof afterSnapshot]),
+      )
+    : [];
+
+  try {
+    await db.insert(auditTrailTable).values({
+      id: createId("audit"),
+      tenantId,
+      actorUserId: request.auth?.user.id ?? null,
+      actorName: request.auth?.user.name ?? "Administrator",
+      actorRole: request.auth?.user.role ?? "admin",
+      action,
+      entityType: "employee",
+      entityId: target.id,
+      summary: `${action === "created" ? "Created" : action === "updated" ? "Updated" : "Deactivated"} employee record.`,
+      requestId: String(request.id ?? ""),
+      details: {
+        entityLabel: target.name,
+        requestId: String(request.id ?? ""),
+        changedFields,
+        before: beforeSnapshot,
+        after: afterSnapshot,
+        context: { operation: `employee_${action}` },
+      },
+    });
+    invalidateBusinessStoreCache();
+  } catch (error) {
+    logger.error({ err: error, targetUserId: target.id }, "Failed to record employee audit event");
+  }
+}
+
+async function recordPrivilegedAccountEvent(
+  request: Request,
+  action: "created" | "updated" | "deactivated",
+  target: AuditableUser,
+) {
+  await recordPlatformEventSafe({
+    severity: "warning",
+    category: "auth",
+    title: `Administrator account ${action}`,
+    message: `A tenant administrator account was ${action}.`,
+    path: request.originalUrl?.split("?")[0] ?? request.url,
+    method: request.method,
+    statusCode: action === "created" ? 201 : 200,
+    tenantId: request.auth?.user.tenantId ?? null,
+    actorUserId: request.auth?.user.id ?? null,
+    requestId: String(request.id ?? ""),
+    metadata: {
+      targetUserId: target.id,
+      targetRole: target.role,
+      action,
+    },
+  });
 }
 
 function idempotencyKeyFrom(request: Request) {
@@ -424,6 +529,7 @@ router.post("/admins", async (request, response) => {
     if (idempotencyClaim?.created) {
       await completeAdminIdempotency(idempotencyClaim.row.id, result.user.id);
     }
+    await recordPrivilegedAccountEvent(request, "created", result.user);
     response.status(201).json({
       user: result.user,
       onboardingEmailSent: result.onboardingEmailSent,
@@ -542,6 +648,7 @@ router.post("/employees", async (request, response) => {
     if (idempotencyClaim?.created) {
       await completeAdminIdempotency(idempotencyClaim.row.id, result.user.id);
     }
+    await recordEmployeeAudit(request, "created", result.user, null);
     response.status(201).json({
       user: result.user,
       employeeId: result.user.employeeId,
@@ -693,6 +800,7 @@ router.patch("/admins/:id", async (request, response) => {
     if (idempotencyClaim?.created) {
       await completeAdminIdempotency(idempotencyClaim.row.id, result.user.id);
     }
+    await recordPrivilegedAccountEvent(request, "updated", result.user);
     response.json({ user: result.user, duplicate: false });
   } catch (error) {
     if (idempotencyClaim?.created) {
@@ -747,6 +855,7 @@ router.patch("/employees/:id", async (request, response) => {
   }
 
   try {
+    const before = await findEmployeeById(request.auth?.user.tenantId, parsed.data.id);
     const result = await updateEmployeeAccount({
       ...parsed.data,
       tenantId: request.auth?.user.tenantId,
@@ -788,6 +897,7 @@ router.patch("/employees/:id", async (request, response) => {
     if (idempotencyClaim?.created) {
       await completeAdminIdempotency(idempotencyClaim.row.id, result.user.id);
     }
+    await recordEmployeeAudit(request, "updated", result.user, before);
     response.json({
       user: result.user,
       duplicate: false,
@@ -902,6 +1012,7 @@ router.delete("/employees/:id", async (request, response) => {
   }
 
   try {
+    const before = await findEmployeeById(request.auth?.user.tenantId, parsed.data);
     const result = await deactivateEmployeeAccount(parsed.data, request.auth?.user.tenantId);
     const actor = notificationActor(request);
     await deliverNotification(
@@ -940,6 +1051,7 @@ router.delete("/employees/:id", async (request, response) => {
     if (idempotencyClaim?.created) {
       await completeAdminIdempotency(idempotencyClaim.row.id, result.user.id);
     }
+    await recordEmployeeAudit(request, "deactivated", result.user, before);
     response.json({
       user: result.user,
       message: "Employee deactivated",
@@ -998,6 +1110,7 @@ router.delete("/admins/:id", async (request, response) => {
     if (idempotencyClaim?.created) {
       await completeAdminIdempotency(idempotencyClaim.row.id, result.user.id);
     }
+    await recordPrivilegedAccountEvent(request, "deactivated", result.user);
     response.json({
       user: result.user,
       message: "Admin removed",

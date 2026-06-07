@@ -48,6 +48,19 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Reject tracked environment secret files
+        shell: bash
+        run: |
+          tracked_env_files="$(git ls-files | grep -E '(^|/)\.env($|\.(local|development|production|staging|test)(\.local)?)$' || true)"
+          if [ -n "$tracked_env_files" ]; then
+            echo "Tracked environment files are forbidden:"
+            echo "$tracked_env_files"
+            exit 1
+          fi
+
+      - name: Repository secret regression tests
+        run: corepack pnpm run test:security-release
+
       - name: Apply database migrations
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_assistant?sslmode=disable
@@ -60,8 +73,20 @@ jobs:
       - name: Build API artifact
         run: corepack pnpm --filter @workspace/api-server run build
 
+      - name: Frontend security header policy
+        run: corepack pnpm --filter @workspace/finance-dashboard run test:security-headers
+
+      - name: Authentication hardening unit tests
+        run: corepack pnpm --filter @workspace/api-server run test:security-unit
+
       - name: Workflow and RBAC integration tests
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_assistant?sslmode=disable
           NODE_ENV: test
         run: corepack pnpm --filter @workspace/api-server run test:workflow
+
+      - name: API security integration tests
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/finance_assistant?sslmode=disable
+          NODE_ENV: test
+        run: corepack pnpm --filter @workspace/api-server run test:security

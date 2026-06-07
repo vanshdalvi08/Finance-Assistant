@@ -24,6 +24,12 @@ services:
         sync: false
       - key: JWT_REFRESH_SECRET
         sync: false
+      - key: AUTH_JWT_ISSUER
+        sync: false
+      - key: AUTH_JWT_AUDIENCE
+        sync: false
+      - key: MFA_ENCRYPTION_KEY
+        sync: false
       - key: SMTP_HOST
         sync: false
       - key: SMTP_PORT

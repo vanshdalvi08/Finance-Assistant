@@ -9,9 +9,9 @@ import {
   type Tenant,
   type User,
 } from "@workspace/db/schema";
-import { hashPassword, generateTemporaryPassword } from "./security";
+import { assertStrongPassword, hashPassword, generateTemporaryPassword } from "./security";
 import { PLATFORM_TENANT_ID, ensurePlatformTenant } from "./tenants";
-import { getAppUrl, getSmtpConfig, isProduction, optionalEnv } from "./env";
+import { getAppUrl, getSmtpConfig, isProduction, isTest, optionalEnv } from "./env";
 import { sendMail } from "./mailer";
 import { tenantOwnerEmailTemplate } from "./email-templates";
 import { logger } from "./logger";
@@ -1097,8 +1097,8 @@ export async function recordPlatformEventSafe(input: PlatformEventInput) {
 export async function ensureInitialPlatformAdmin() {
   await ensurePlatformTenant();
 
-  const email = optionalEnv("PLATFORM_ADMIN_EMAIL")?.trim().toLowerCase() ?? (!isProduction() ? "platform@yojak.in" : undefined);
-  const password = optionalEnv("PLATFORM_ADMIN_PASSWORD") ?? (!isProduction() ? "platform123" : undefined);
+  const email = optionalEnv("PLATFORM_ADMIN_EMAIL")?.trim().toLowerCase() ?? (isTest() ? "platform@yojak.in" : undefined);
+  const password = optionalEnv("PLATFORM_ADMIN_PASSWORD") ?? (isTest() ? "platform123" : undefined);
 
   if (!email || !password) {
     return null;
@@ -1119,29 +1119,7 @@ export async function ensureInitialPlatformAdmin() {
     .limit(1);
 
   if (existing[0]) {
-    const rows = await db
-      .update(usersTable)
-      .set({
-        name: adminIdentity.name,
-        email: adminIdentity.email,
-        phone: adminIdentity.phone,
-        role: "platform_super_admin",
-        employeeId: null,
-        position: adminIdentity.position,
-        department: adminIdentity.department,
-        salary: 0,
-        payType: "monthly",
-        hourlyRate: 0,
-        profilePhotoUrl: null,
-        clientInfo: {},
-        hashedPassword: await hashPassword(password),
-        status: "active",
-        updatedAt: new Date(),
-      })
-      .where(eq(usersTable.id, existing[0].id))
-      .returning();
-
-    return rows[0] ?? existing[0];
+    return existing[0];
   }
 
   const hashedPassword = await hashPassword(password);
@@ -2333,6 +2311,7 @@ export async function createTenantWithOwner(input: {
   const ownerPassword = input.ownerPassword?.trim();
   const passwordWasGenerated = !ownerPassword;
   const temporaryPassword = ownerPassword || generateTemporaryPassword();
+  assertStrongPassword(temporaryPassword);
   const now = new Date();
   let tenantRows: Tenant[];
   let ownerRows: User[];

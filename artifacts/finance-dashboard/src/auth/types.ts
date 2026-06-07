@@ -52,7 +52,6 @@ export interface MfaChallenge {
   mfaSetupRequired: boolean;
   rememberDeviceAvailable: boolean;
   mfaToken: string;
-  user: AuthUser;
   mfaSecret?: string;
   otpauthUrl?: string;
 }

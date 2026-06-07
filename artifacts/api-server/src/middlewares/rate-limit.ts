@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 
 type RateLimitOptions = {
@@ -27,8 +28,7 @@ const cleanupInterval = setInterval(() => {
 cleanupInterval.unref?.();
 
 function defaultKey(request: Request) {
-  const forwardedFor = request.header("x-forwarded-for")?.split(",")[0]?.trim();
-  return request.auth?.user.id ?? forwardedFor ?? request.ip ?? request.socket.remoteAddress ?? "unknown";
+  return request.auth?.user.id ?? request.ip ?? request.socket.remoteAddress ?? "unknown";
 }
 
 export function rateLimitKeyByRemoteAddress(request: Request) {
@@ -44,7 +44,20 @@ export function rateLimitKeyByRemoteAddressAndField(field: string) {
         : typeof request.query?.[field] === "string"
           ? request.query[field]
           : "";
-    return `${base}:${rawValue.trim().toLowerCase() || "unknown"}`;
+    const normalizedValue = rawValue.trim().toLowerCase() || "unknown";
+    return `${base}:${crypto.createHash("sha256").update(normalizedValue).digest("hex")}`;
+  };
+}
+
+export function rateLimitKeyByField(field: string) {
+  return (request: Request) => {
+    const rawValue =
+      typeof request.body?.[field] === "string"
+        ? request.body[field]
+        : typeof request.query?.[field] === "string"
+          ? request.query[field]
+          : "";
+    return crypto.createHash("sha256").update(rawValue.trim().toLowerCase() || "unknown").digest("hex");
   };
 }
 

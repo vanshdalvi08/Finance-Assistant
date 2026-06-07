@@ -10,8 +10,18 @@ import {
   type User,
 } from "@workspace/db/schema";
 import { DEFAULT_TENANT_ID } from "./tenants";
-import { getAppUrl, getSmtpConfig, isProduction, optionalEnv } from "./env";
-import { generateRandomToken, generateTemporaryPassword, hashPassword, hashSha256, verifyPassword } from "./security";
+import { getAppUrl, getSmtpConfig, isProduction, isTest, optionalEnv } from "./env";
+import {
+  assertStrongPassword,
+  decryptMfaSecret,
+  encryptMfaSecret,
+  generateRandomToken,
+  generateTemporaryPassword,
+  hashPassword,
+  hashSha256,
+  isEncryptedMfaSecret,
+  verifyPassword,
+} from "./security";
 import { ACCESS_TOKEN_TTL, REFRESH_TOKEN_TTL, signAccessToken, signMfaToken, signRefreshToken, verifyMfaToken, verifyRefreshToken } from "./jwt";
 import { sendMail } from "./mailer";
 import { clientPortalEmailTemplate, onboardingEmailTemplate, passwordResetEmailTemplate, tenantOwnerEmailTemplate } from "./email-templates";
@@ -71,7 +81,6 @@ export interface MfaChallenge {
   mfaSetupRequired: boolean;
   rememberDeviceAvailable: boolean;
   mfaToken: string;
-  user: PublicUser;
   mfaSecret?: string;
   otpauthUrl?: string;
 }
@@ -352,14 +361,21 @@ function buildOtpAuthUrl(email: string, secret: string): string {
 
 async function ensureMfaSecret(user: User): Promise<string> {
   if (user.mfaSecret) {
-    return user.mfaSecret;
+    const secret = decryptMfaSecret(user.mfaSecret);
+    if (!isEncryptedMfaSecret(user.mfaSecret)) {
+      await db
+        .update(usersTable)
+        .set({ mfaSecret: encryptMfaSecret(secret), mfaUpdatedAt: new Date(), updatedAt: new Date() })
+        .where(eq(usersTable.id, user.id));
+    }
+    return secret;
   }
 
   const secret = authenticator.generateSecret();
   const now = new Date();
   await db
     .update(usersTable)
-    .set({ mfaSecret: secret, mfaUpdatedAt: now, updatedAt: now })
+    .set({ mfaSecret: encryptMfaSecret(secret), mfaUpdatedAt: now, updatedAt: now })
     .where(eq(usersTable.id, user.id));
   return secret;
 }
@@ -436,7 +452,7 @@ async function pruneExpiredTrustedDevices() {
 export async function loginWithPassword(
   email: string,
   password: string,
-  options?: { trustedDeviceToken?: string | null },
+  options?: { trustedDeviceToken?: string | null; userAgent?: string | null },
 ): Promise<LoginResponse> {
   const user = await findUserByEmail(email);
 
@@ -462,6 +478,10 @@ export async function loginWithPassword(
     await pruneExpiredTrustedDevices();
     const trusted = await findTrustedDevice(user.id, options?.trustedDeviceToken ?? null);
     if (trusted) {
+      if (trusted.userAgent && trusted.userAgent !== (options?.userAgent?.trim() || null)) {
+        await db.delete(mfaTrustedDevicesTable).where(eq(mfaTrustedDevicesTable.id, trusted.id));
+        throw new Error("Trusted device validation failed");
+      }
       await touchTrustedDevice(trusted.id);
       return issueSession(user);
     }
@@ -479,7 +499,6 @@ export async function loginWithPassword(
         mfaSetupRequired: true,
         rememberDeviceAvailable: true,
         mfaToken,
-        user: publicUser(user),
         mfaSecret: secret,
         otpauthUrl: buildOtpAuthUrl(user.email, secret),
       };
@@ -490,14 +509,16 @@ export async function loginWithPassword(
       mfaSetupRequired: false,
       rememberDeviceAvailable: true,
       mfaToken,
-      user: publicUser(user),
     };
   }
 
   return issueSession(user);
 }
 
-export async function loginWithOAuthAccount(email: string): Promise<LoginResult> {
+export async function loginWithOAuthAccount(
+  email: string,
+  options?: { trustedDeviceToken?: string | null; userAgent?: string | null },
+): Promise<LoginResult> {
   const user = await findUserByEmail(email);
 
   if (!user) {
@@ -511,6 +532,17 @@ export async function loginWithOAuthAccount(email: string): Promise<LoginResult>
   const tenant = await getTenantById(user.tenantId);
   if (!tenant || tenant.status !== "active") {
     throw new Error("This workspace is inactive");
+  }
+
+  if (shouldRequireMfa(user)) {
+    const trusted = await findTrustedDevice(user.id, options?.trustedDeviceToken ?? null);
+    if (
+      !trusted
+      || (trusted.userAgent && trusted.userAgent !== (options?.userAgent?.trim() || null))
+    ) {
+      throw new Error("Complete password and MFA sign-in before using OAuth on this device.");
+    }
+    await touchTrustedDevice(trusted.id);
   }
 
   return issueSession(user);
@@ -580,10 +612,10 @@ export async function verifyMfaChallenge(input: {
     return { session: await issueSession(user) };
   }
 
-  const secret = user.mfaSecret;
-  if (!secret) {
+  if (!user.mfaSecret) {
     throw new Error("MFA is not configured for this account");
   }
+  const secret = decryptMfaSecret(user.mfaSecret);
 
   const normalizedCode = input.code.trim().replace(/\s+/g, "");
   const valid = authenticator.check(normalizedCode, secret);
@@ -1233,7 +1265,11 @@ export async function requestPasswordReset(email: string): Promise<{ sent: boole
   }
 }
 
-export async function resetPassword(token: string, password: string): Promise<void> {
+export async function resetPassword(
+  token: string,
+  password: string,
+): Promise<{ userId: string; tenantId: string }> {
+  assertStrongPassword(password);
   const tokenHash = hashSha256(token.trim());
   const rows = await db.select().from(passwordResetTokensTable).where(eq(passwordResetTokensTable.tokenHash, tokenHash)).limit(1);
   const resetRow = rows[0];
@@ -1263,11 +1299,17 @@ export async function resetPassword(token: string, password: string): Promise<vo
 
     await trx.delete(mfaTrustedDevicesTable).where(eq(mfaTrustedDevicesTable.userId, resetRow.userId));
   });
+
+  const user = await findUserById(resetRow.userId);
+  if (!user) {
+    throw new Error("Password was reset, but the account could not be loaded");
+  }
+  return { userId: user.id, tenantId: user.tenantId };
 }
 
 export async function ensureInitialAdmin(): Promise<void> {
-  const email = optionalEnv("ADMIN_EMAIL")?.trim().toLowerCase() ?? (!isProduction() ? "admin@reforix.com" : undefined);
-  const password = optionalEnv("ADMIN_PASSWORD") ?? (!isProduction() ? "reforix123" : undefined);
+  const email = optionalEnv("ADMIN_EMAIL")?.trim().toLowerCase() ?? (isTest() ? "admin@reforix.com" : undefined);
+  const password = optionalEnv("ADMIN_PASSWORD") ?? (isTest() ? "reforix123" : undefined);
   const phone = optionalEnv("ADMIN_PHONE")?.trim() || "9999999999";
   const name = optionalEnv("ADMIN_NAME")?.trim() || "Reforix Admin";
   const position = optionalEnv("ADMIN_POSITION")?.trim() || "Administrator";
@@ -1297,7 +1339,6 @@ export async function ensureInitialAdmin(): Promise<void> {
 
   const existingByIdentity = (await findUserByEmail(email)) ?? (await findUserByPhone(phone, DEFAULT_TENANT_ID));
   if (existingByIdentity) {
-    await db.update(usersTable).set(adminFields).where(eq(usersTable.id, existingByIdentity.id));
     return;
   }
 
@@ -1313,7 +1354,6 @@ export async function ensureInitialAdmin(): Promise<void> {
 
     const fallbackExisting = (await findUserByEmail(email)) ?? (await findUserByPhone(phone, DEFAULT_TENANT_ID));
     if (fallbackExisting) {
-      await db.update(usersTable).set(adminFields).where(eq(usersTable.id, fallbackExisting.id));
       return;
     }
 

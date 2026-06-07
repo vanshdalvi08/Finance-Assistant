@@ -9,7 +9,8 @@
     "start": "node --enable-source-maps ./dist/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:workflow": "node --test ./tests/workflows.test.mjs && node --test ./tests/google-sheets.test.mjs && node --test ./tests/rbac.test.mjs",
-    "test:security": "node --test ./tests/security.test.mjs"
+    "test:security": "node --test ./tests/security.test.mjs",
+    "test:security-unit": "node --import tsx --test ./tests/auth-hardening.unit.test.mjs ./tests/security-controls.unit.test.mjs"
   },
   "dependencies": {
     "@workspace/api-zod": "workspace:*",
@@ -21,7 +22,7 @@
     "express": "^5",
     "googleapis": "^171.4.0",
     "jsonwebtoken": "^9.0.2",
-    "nodemailer": "^7.0.13",
+    "nodemailer": "^8.0.5",
     "otplib": "^12.0.1",
     "pino": "^9",
     "pino-http": "^10",

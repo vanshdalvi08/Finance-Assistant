@@ -19,6 +19,10 @@ function hasValue(name: string): boolean {
   return Boolean(optionalEnv(name)?.trim());
 }
 
+function secretLength(name: string): number {
+  return optionalEnv(name)?.trim().length ?? 0;
+}
+
 function issue(key: string, required: boolean, status: DeploymentConfigStatus, detail: string): DeploymentConfigIssue {
   return { key, required, status, detail };
 }
@@ -62,16 +66,65 @@ export function getDeploymentConfigReport(): DeploymentConfigReport {
     issues.push(issue("DATABASE_URL", true, "ok", "Database URL is configured."));
   }
 
-  if (!hasValue("JWT_ACCESS_SECRET")) {
-    issues.push(issue("JWT_ACCESS_SECRET", true, "error", "JWT access secret is required for production."));
+  if (secretLength("JWT_ACCESS_SECRET") < 32) {
+    issues.push(issue("JWT_ACCESS_SECRET", true, "error", "JWT access secret must contain at least 32 characters."));
   } else {
     issues.push(issue("JWT_ACCESS_SECRET", true, "ok", "JWT access secret is configured."));
   }
 
-  if (!hasValue("JWT_REFRESH_SECRET")) {
-    issues.push(issue("JWT_REFRESH_SECRET", true, "error", "JWT refresh secret is required for production."));
+  if (secretLength("JWT_REFRESH_SECRET") < 32) {
+    issues.push(issue("JWT_REFRESH_SECRET", true, "error", "JWT refresh secret must contain at least 32 characters."));
   } else {
     issues.push(issue("JWT_REFRESH_SECRET", true, "ok", "JWT refresh secret is configured."));
+  }
+
+  if (
+    hasValue("JWT_ACCESS_SECRET")
+    && optionalEnv("JWT_ACCESS_SECRET") === optionalEnv("JWT_REFRESH_SECRET")
+  ) {
+    issues.push(issue("JWT_SECRET_SEPARATION", true, "error", "JWT access and refresh secrets must be different."));
+  } else {
+    issues.push(issue("JWT_SECRET_SEPARATION", true, "ok", "JWT access and refresh secrets are distinct."));
+  }
+
+  const mfaEncryptionKey = optionalEnv("MFA_ENCRYPTION_KEY")?.trim() ?? "";
+  let validMfaEncryptionKey = false;
+  try {
+    validMfaEncryptionKey = Buffer.from(mfaEncryptionKey, "base64url").length === 32;
+  } catch {
+    validMfaEncryptionKey = false;
+  }
+  issues.push(
+    validMfaEncryptionKey
+      ? issue("MFA_ENCRYPTION_KEY", true, "ok", "MFA secrets are protected by an application encryption key.")
+      : issue("MFA_ENCRYPTION_KEY", true, "error", "MFA_ENCRYPTION_KEY must be a base64url-encoded 32-byte key."),
+  );
+
+  for (const passwordName of ["ADMIN_PASSWORD", "PLATFORM_ADMIN_PASSWORD"]) {
+    if (hasValue(passwordName) && secretLength(passwordName) < 12) {
+      issues.push(issue(passwordName, true, "error", `${passwordName} must contain at least 12 characters.`));
+    } else if (hasValue(passwordName)) {
+      issues.push(issue(passwordName, true, "ok", `${passwordName} meets the minimum length requirement.`));
+    }
+  }
+
+  const oauthConfigured = [
+    "GOOGLE_OAUTH_CLIENT_ID",
+    "GOOGLE_OAUTH_CLIENT_SECRET",
+    "MICROSOFT_OAUTH_CLIENT_ID",
+    "MICROSOFT_OAUTH_CLIENT_SECRET",
+  ].some(hasValue);
+  if (oauthConfigured && secretLength("AUTH_OAUTH_STATE_SECRET") < 32) {
+    issues.push(
+      issue(
+        "AUTH_OAUTH_STATE_SECRET",
+        true,
+        "error",
+        "OAuth is configured, so AUTH_OAUTH_STATE_SECRET must contain at least 32 characters.",
+      ),
+    );
+  } else if (oauthConfigured) {
+    issues.push(issue("AUTH_OAUTH_STATE_SECRET", true, "ok", "OAuth state signing is configured."));
   }
 
   const apiOrigins = getApiOriginCandidates();

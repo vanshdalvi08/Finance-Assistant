@@ -41,8 +41,24 @@ function loadEnvFile(filePath: string | null) {
   }
 }
 
+function findRepoRoot(startDir: string): string {
+  let currentDir = path.resolve(startDir);
+
+  while (true) {
+    if (existsSync(path.join(currentDir, "pnpm-workspace.yaml"))) {
+      return currentDir;
+    }
+
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) {
+      return path.resolve(startDir);
+    }
+    currentDir = parentDir;
+  }
+}
+
 function loadEnvCandidates(baseDir: string) {
-  const repoRoot = path.resolve(baseDir, "..", "..", "..");
+  const repoRoot = findRepoRoot(baseDir);
   const candidates = [
     path.join(repoRoot, ".env.local"),
     path.join(repoRoot, ".env"),

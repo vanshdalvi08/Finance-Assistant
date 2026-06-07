@@ -7,6 +7,7 @@ import { logger } from "./lib/logger";
 import { getApiOriginCandidates, isProduction, isTest, optionalEnv } from "./lib/env";
 import { recordPlatformEvent, recordPlatformEventSafe } from "./lib/platform";
 import { getStartupState } from "./lib/startup-state";
+import { applyApiSecurityHeaders } from "./lib/http-security";
 
 const app: Express = express();
 const REQUEST_BODY_LIMIT = "4mb";
@@ -83,17 +84,7 @@ app.use(
   }),
 );
 app.use((_request, response, next) => {
-  response.setHeader("X-Content-Type-Options", "nosniff");
-  response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
-  response.setHeader("X-Frame-Options", "DENY");
-  response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
-  response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
-  response.setHeader("Cross-Origin-Opener-Policy", "same-origin");
-  response.setHeader("X-Permitted-Cross-Domain-Policies", "none");
-  response.setHeader("Origin-Agent-Cluster", "?1");
-  if (isProduction()) {
-    response.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
-  }
+  applyApiSecurityHeaders(response, isProduction());
   next();
 });
 app.use((request, response, next) => {
@@ -136,6 +127,13 @@ app.use((request, response, next) => {
   next();
 });
 app.use(cookieParser());
+app.use(
+  "/api/security/csp-report",
+  express.json({
+    limit: "64kb",
+    type: ["application/csp-report", "application/reports+json", "application/json"],
+  }),
+);
 app.use(express.json({ limit: REQUEST_BODY_LIMIT }));
 app.use(express.urlencoded({ extended: true, limit: REQUEST_BODY_LIMIT }));
 
@@ -167,6 +165,13 @@ app.use("/api", (request, response, next) => {
 });
 
 app.use("/api", router);
+
+app.use((request, response) => {
+  response.status(404).json({
+    message: "Route not found",
+    requestId: String(request.id ?? ""),
+  });
+});
 
 app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
   if (

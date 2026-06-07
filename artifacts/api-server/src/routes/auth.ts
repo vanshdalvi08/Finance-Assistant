@@ -20,20 +20,33 @@ import {
   REFRESH_COOKIE_NAME,
   refreshCookieOptions,
 } from "../lib/cookies";
-import { rateLimit, rateLimitKeyByRemoteAddress, rateLimitKeyByRemoteAddressAndField } from "../middlewares/rate-limit";
+import {
+  rateLimit,
+  rateLimitKeyByField,
+  rateLimitKeyByRemoteAddress,
+  rateLimitKeyByRemoteAddressAndField,
+} from "../middlewares/rate-limit";
 import { recordPlatformEventSafe } from "../lib/platform";
-import { generateRandomToken } from "../lib/security";
+import { generateRandomToken, hashSha256 } from "../lib/security";
 import { requireCsrfToken, requireSameOriginAuthMutation } from "../middlewares/csrf";
 import { buildOAuthStartUrl, exchangeOAuthCode, getOAuthRedirectTarget, parseOAuthState, type OAuthProvider } from "../lib/oauth";
 
 const router: IRouter = Router();
 
-const loginLimiter = rateLimit({
-  name: "auth-login",
+const loginIpLimiter = rateLimit({
+  name: "auth-login-ip",
+  windowMs: 15 * 60 * 1000,
+  max: 50,
+  message: "Too many login attempts. Please try again later.",
+  keyFn: rateLimitKeyByRemoteAddress,
+});
+
+const loginAccountLimiter = rateLimit({
+  name: "auth-login-account",
   windowMs: 15 * 60 * 1000,
   max: 10,
-  message: "Too many login attempts. Please try again later.",
-  keyFn: rateLimitKeyByRemoteAddressAndField("email"),
+  message: "Too many login attempts for this account. Please try again later.",
+  keyFn: rateLimitKeyByField("email"),
 });
 
 const resetRequestLimiter = rateLimit({
@@ -91,9 +104,17 @@ const profileUpdateLimiter = rateLimit({
   message: "Too many profile updates. Please try again later.",
 });
 
+const oauthLimiter = rateLimit({
+  name: "auth-oauth",
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  message: "Too many OAuth attempts. Please try again later.",
+  keyFn: rateLimitKeyByRemoteAddress,
+});
+
 const loginSchema = z.object({
   email: z.string().trim().email(),
-  password: z.string().min(8),
+  password: z.string().min(8).max(72),
 });
 
 const resetRequestSchema = z.object({
@@ -102,7 +123,7 @@ const resetRequestSchema = z.object({
 
 const resetSchema = z.object({
   token: z.string().min(16),
-  password: z.string().min(8),
+  password: z.string().min(12).max(72),
 });
 
 const mfaVerifySchema = z.object({
@@ -138,21 +159,7 @@ router.get("/csrf", (_request, response) => {
   response.json({ csrfToken });
 });
 
-router.get("/oauth-debug", (_request, response) => {
-  response.json({
-    GOOGLE_OAUTH_CLIENT_ID: Boolean(process.env.GOOGLE_OAUTH_CLIENT_ID),
-    GOOGLE_OAUTH_CLIENT_SECRET: Boolean(process.env.GOOGLE_OAUTH_CLIENT_SECRET),
-    GOOGLE_OAUTH_REDIRECT_URI: Boolean(process.env.GOOGLE_OAUTH_REDIRECT_URI),
-    MICROSOFT_OAUTH_CLIENT_ID: Boolean(process.env.MICROSOFT_OAUTH_CLIENT_ID),
-    MICROSOFT_OAUTH_CLIENT_SECRET: Boolean(process.env.MICROSOFT_OAUTH_CLIENT_SECRET),
-    MICROSOFT_OAUTH_REDIRECT_URI: Boolean(process.env.MICROSOFT_OAUTH_REDIRECT_URI),
-    AUTH_OAUTH_STATE_SECRET: Boolean(process.env.AUTH_OAUTH_STATE_SECRET),
-    GOOGLE_OAUTH_REDIRECT_URI_VALUE: process.env.GOOGLE_OAUTH_REDIRECT_URI,
-    MICROSOFT_OAUTH_REDIRECT_URI_VALUE: process.env.MICROSOFT_OAUTH_REDIRECT_URI,
-  });
-});
-
-router.get("/oauth/:provider/start", async (request, response) => {
+router.get("/oauth/:provider/start", oauthLimiter, async (request, response) => {
   const providerResult = oauthProviderSchema.safeParse(request.params.provider);
   if (!providerResult.success) {
     response.status(400).json({ message: "Invalid OAuth provider" });
@@ -187,7 +194,7 @@ router.get("/oauth/:provider/start", async (request, response) => {
   }
 });
 
-router.get("/oauth/:provider/callback", async (request, response) => {
+router.get("/oauth/:provider/callback", oauthLimiter, async (request, response) => {
   const providerResult = oauthProviderSchema.safeParse(request.params.provider);
   if (!providerResult.success) {
     response.status(400).json({ message: "Invalid OAuth provider" });
@@ -204,7 +211,29 @@ router.get("/oauth/:provider/callback", async (request, response) => {
   try {
     const statePayload = parseOAuthState(state, providerResult.data);
     const profile = await exchangeOAuthCode(providerResult.data, code);
-    const session = await loginWithOAuthAccount(profile.email);
+    const session = await loginWithOAuthAccount(profile.email, {
+      trustedDeviceToken:
+        typeof request.cookies?.[MFA_TRUSTED_COOKIE_NAME] === "string"
+          ? request.cookies[MFA_TRUSTED_COOKIE_NAME]
+          : null,
+      userAgent: request.header("user-agent") ?? null,
+    });
+    await recordPlatformEventSafe({
+      severity: "info",
+      category: "auth",
+      title: "OAuth login succeeded",
+      message: "User completed OAuth authentication.",
+      path: `/api/auth/oauth/${providerResult.data}/callback`,
+      method: "GET",
+      statusCode: 302,
+      tenantId: session.user.tenantId,
+      actorUserId: session.user.id,
+      requestId: String(request.id ?? ""),
+      metadata: {
+        provider: providerResult.data,
+        role: session.user.role,
+      },
+    });
     response.cookie(REFRESH_COOKIE_NAME, session.refreshToken, refreshCookieOptions());
     issueCsrfToken(response);
     response.redirect(302, getOAuthRedirectTarget(statePayload.redirectPath ?? "/"));
@@ -225,7 +254,7 @@ router.get("/oauth/:provider/callback", async (request, response) => {
   }
 });
 
-router.post("/login", loginLimiter, async (request, response) => {
+router.post("/login", loginIpLimiter, loginAccountLimiter, async (request, response) => {
   const parsed = loginSchema.safeParse(request.body);
   if (!parsed.success) {
     response.status(400).json({ message: "Invalid login payload" });
@@ -236,13 +265,42 @@ router.post("/login", loginLimiter, async (request, response) => {
     const trustedDevice = request.cookies?.[MFA_TRUSTED_COOKIE_NAME];
     const result = await loginWithPassword(parsed.data.email, parsed.data.password, {
       trustedDeviceToken: typeof trustedDevice === "string" ? trustedDevice : null,
+      userAgent: request.header("user-agent") ?? null,
     });
 
     if ("mfaRequired" in result) {
+      await recordPlatformEventSafe({
+        severity: "info",
+        category: "auth",
+        title: "MFA challenge issued",
+        message: "Password verification succeeded and MFA verification is required.",
+        path: "/api/auth/login",
+        method: "POST",
+        statusCode: 202,
+        metadata: {
+          accountHash: hashSha256(parsed.data.email.trim().toLowerCase()),
+        },
+      });
       response.status(202).json(result);
       return;
     }
 
+    await recordPlatformEventSafe({
+      severity: "info",
+      category: "auth",
+      title: "Login succeeded",
+      message: "User completed password authentication.",
+      path: "/api/auth/login",
+      method: "POST",
+      statusCode: 200,
+      tenantId: result.user.tenantId,
+      actorUserId: result.user.id,
+      requestId: String(request.id ?? ""),
+      metadata: {
+        role: result.user.role,
+        method: "password",
+      },
+    });
     response.cookie(REFRESH_COOKIE_NAME, result.refreshToken, refreshCookieOptions());
     const csrfToken = issueCsrfToken(response);
     response.json({
@@ -255,12 +313,12 @@ router.post("/login", loginLimiter, async (request, response) => {
       severity: "warning",
       category: "auth",
       title: "Login rejected",
-      message: `Rejected login attempt for ${parsed.data.email.trim().toLowerCase()}.`,
+      message: "Rejected password login attempt.",
       path: "/api/auth/login",
       method: "POST",
       statusCode: 401,
       metadata: {
-        email: parsed.data.email.trim().toLowerCase(),
+        accountHash: hashSha256(parsed.data.email.trim().toLowerCase()),
       },
     });
     response.status(401).json({ message: "Invalid email or password" });
@@ -287,12 +345,38 @@ router.post("/mfa/verify", mfaVerifyLimiter, async (request, response) => {
       response.cookie(MFA_TRUSTED_COOKIE_NAME, result.trustedDeviceToken, mfaTrustedCookieOptions());
     }
     const csrfToken = issueCsrfToken(response);
+    await recordPlatformEventSafe({
+      severity: "info",
+      category: "auth",
+      title: "MFA login succeeded",
+      message: "User completed multi-factor authentication.",
+      path: "/api/auth/mfa/verify",
+      method: "POST",
+      statusCode: 200,
+      tenantId: result.session.user.tenantId,
+      actorUserId: result.session.user.id,
+      requestId: String(request.id ?? ""),
+      metadata: {
+        role: result.session.user.role,
+        trustedDeviceCreated: Boolean(result.trustedDeviceToken),
+      },
+    });
     response.json({
       accessToken: result.session.accessToken,
       user: result.session.user,
       csrfToken,
     });
   } catch (error) {
+    await recordPlatformEventSafe({
+      severity: "warning",
+      category: "auth",
+      title: "MFA verification rejected",
+      message: "A multi-factor authentication challenge was rejected.",
+      path: "/api/auth/mfa/verify",
+      method: "POST",
+      statusCode: 401,
+      requestId: String(request.id ?? ""),
+    });
     response.status(401).json({ message: error instanceof Error ? error.message : "Invalid MFA code" });
   }
 });
@@ -379,6 +463,19 @@ router.post("/request-reset", resetRequestLimiter, async (request, response) => 
   }
 
   await requestPasswordReset(parsed.data.email);
+  await recordPlatformEventSafe({
+    severity: "info",
+    category: "auth",
+    title: "Password reset requested",
+    message: "A password reset request was processed with an enumeration-safe response.",
+    path: "/api/auth/request-reset",
+    method: "POST",
+    statusCode: 200,
+    requestId: String(request.id ?? ""),
+    metadata: {
+      accountHash: hashSha256(parsed.data.email.trim().toLowerCase()),
+    },
+  });
   response.json({
     message: "If the account exists, reset instructions have been sent.",
   });
@@ -401,7 +498,19 @@ router.post("/reset", resetLimiter, async (request, response) => {
   }
 
   try {
-    await resetPassword(parsed.data.token, parsed.data.password);
+    const reset = await resetPassword(parsed.data.token, parsed.data.password);
+    await recordPlatformEventSafe({
+      severity: "info",
+      category: "auth",
+      title: "Password reset succeeded",
+      message: "Password reset completed and existing sessions were revoked.",
+      path: "/api/auth/reset",
+      method: "POST",
+      statusCode: 200,
+      tenantId: reset.tenantId,
+      actorUserId: reset.userId,
+      requestId: String(request.id ?? ""),
+    });
     response.json({ message: "Password reset successfully" });
   } catch (error) {
     await recordPlatformEventSafe({

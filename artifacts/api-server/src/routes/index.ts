@@ -6,6 +6,7 @@ import businessRouter from "./business";
 import platformRouter from "./platform";
 import notificationsRouter from "./notifications";
 import uploadsRouter from "./uploads";
+import securityRouter from "./security";
 
 const router: IRouter = Router();
 
@@ -16,5 +17,6 @@ router.use("/business", businessRouter);
 router.use("/platform", platformRouter);
 router.use("/notifications", notificationsRouter);
 router.use("/uploads", uploadsRouter);
+router.use("/security", securityRouter);
 
 export default router;

@@ -17,6 +17,31 @@ import {
 
 let serverProcess;
 let seed;
+let tenantAFinancialAccountId;
+
+async function getTenantAFinancialAccountId() {
+  if (tenantAFinancialAccountId) {
+    return tenantAFinancialAccountId;
+  }
+
+  const response = await api("/business/financial-accounts", {
+    method: "POST",
+    token: seed.tenantA.ownerSession.accessToken,
+    body: {
+      name: `Security account ${randomSuffix("account")}`,
+      accountType: "operational",
+      category: "bank",
+      openingBalance: 0,
+      description: "Isolated security-test account",
+      includeInOperationalReporting: true,
+      isActive: true,
+    },
+  });
+  assert.equal(response.status, 201, JSON.stringify(response.json));
+  tenantAFinancialAccountId = response.json.account.id;
+  assert.ok(tenantAFinancialAccountId, "Expected a financial account id");
+  return tenantAFinancialAccountId;
+}
 
 before(async () => {
   serverProcess = startApiServer();
@@ -45,6 +70,111 @@ after(async () => {
   await stopApiServer(serverProcess);
 });
 
+test("API responses include security headers", { concurrency: false }, async () => {
+  const response = await api("/auth/csrf");
+
+  assert.equal(response.status, 200, JSON.stringify(response.json));
+  assert.equal(
+    response.headers.get("content-security-policy"),
+    "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  );
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(response.headers.get("x-frame-options"), "DENY");
+  assert.equal(response.headers.get("x-xss-protection"), "0");
+  assert.equal(response.headers.get("referrer-policy"), "strict-origin-when-cross-origin");
+  assert.equal(response.headers.get("permissions-policy"), "camera=(), microphone=(), geolocation=()");
+  assert.equal(response.headers.get("cross-origin-resource-policy"), "same-origin");
+  assert.equal(response.headers.get("cross-origin-opener-policy"), "same-origin");
+});
+
+test("public OAuth diagnostics are not exposed", { concurrency: false }, async () => {
+  const response = await api("/auth/oauth-debug");
+  assert.equal(response.status, 404, JSON.stringify(response.json));
+});
+
+test("CSP report collector accepts sanitized browser reports without authentication", { concurrency: false }, async () => {
+  const response = await api("/security/csp-report", {
+    method: "POST",
+    body: {
+      "csp-report": {
+        "document-uri": "https://payroll.reforix.com/salary?employee=secret",
+        "blocked-uri": "https://unexpected.example/script.js?token=secret",
+        "effective-directive": "script-src-elem",
+        "violated-directive": "script-src 'self'",
+        disposition: "report",
+        "status-code": 200,
+      },
+    },
+  });
+
+  assert.equal(response.status, 204, JSON.stringify(response.json));
+});
+
+test("password reset rejects weak passwords before token processing", { concurrency: false }, async () => {
+  const response = await api("/auth/reset", {
+    method: "POST",
+    body: {
+      token: "invalid-reset-token",
+      password: "too-short",
+    },
+  });
+
+  assert.equal(response.status, 400, JSON.stringify(response.json));
+});
+
+test("employee salary access stays scoped to self", { concurrency: false }, async () => {
+  const coworker = await createEmployee(seed.tenantA.ownerSession.accessToken, randomSuffix("salary-scope-coworker"));
+  const selfSalary = await createSalary(
+    seed.tenantA.ownerSession.accessToken,
+    seed.tenantA.employee.user.id,
+    seed.tenantA.employee.user.name,
+    "salary-self-scope",
+  );
+  const coworkerSalary = await createSalary(
+    seed.tenantA.ownerSession.accessToken,
+    coworker.user.id,
+    coworker.user.name,
+    "salary-coworker-scope",
+  );
+
+  try {
+    const scopedList = await api(`/business/salaries?employeeId=${encodeURIComponent(coworker.user.id)}`, {
+      token: seed.tenantA.employeeSession.accessToken,
+    });
+    const crossScopeLookup = await api(`/business/salaries/${coworkerSalary.id}`, {
+      token: seed.tenantA.employeeSession.accessToken,
+    });
+    const selfLookup = await api(`/business/salaries/${selfSalary.id}`, {
+      token: seed.tenantA.employeeSession.accessToken,
+    });
+
+    assert.equal(scopedList.status, 200, JSON.stringify(scopedList.json));
+    assert.ok(
+      scopedList.json.salaries.every((salary) => salary.employeeId === seed.tenantA.employee.user.id),
+      JSON.stringify(scopedList.json),
+    );
+    assert.equal(crossScopeLookup.status, 403, JSON.stringify(crossScopeLookup.json));
+    assert.equal(selfLookup.status, 200, JSON.stringify(selfLookup.json));
+    assert.equal("tenantId" in selfLookup.json.salary, false, JSON.stringify(selfLookup.json));
+    assert.equal("accountId" in selfLookup.json.salary, false, JSON.stringify(selfLookup.json));
+    assert.equal("note" in selfLookup.json.salary, false, JSON.stringify(selfLookup.json));
+    assert.equal("timesheetId" in selfLookup.json.salary, false, JSON.stringify(selfLookup.json));
+  } finally {
+    await api(`/business/salaries/${coworkerSalary.id}`, {
+      method: "DELETE",
+      token: seed.tenantA.ownerSession.accessToken,
+    });
+    await api(`/business/salaries/${selfSalary.id}`, {
+      method: "DELETE",
+      token: seed.tenantA.ownerSession.accessToken,
+    });
+    await api(`/admin/employees/${coworker.user.id}`, {
+      method: "DELETE",
+      token: seed.tenantA.ownerSession.accessToken,
+    });
+  }
+});
+
 test("anonymous requests are rejected on sensitive routes", { concurrency: false }, async () => {
   const routes = [
     { pathname: "/admin/employees", method: "GET" },
@@ -61,6 +191,95 @@ test("anonymous requests are rejected on sensitive routes", { concurrency: false
       headers: route.headers,
     });
     assert.equal(response.status, 401, `${route.method} ${route.pathname} should require authentication`);
+  }
+});
+
+test("employee and client accounts cannot use admin-only employee endpoints", { concurrency: false }, async () => {
+  const employeeList = await api("/admin/employees", {
+    token: seed.tenantA.employeeSession.accessToken,
+  });
+  const clientList = await api("/admin/employees", {
+    token: seed.tenantA.clientSession.accessToken,
+  });
+  const employeeMutation = await api(`/admin/employees/${seed.tenantA.employee.user.id}`, {
+    method: "PATCH",
+    token: seed.tenantA.employeeSession.accessToken,
+    body: {
+      name: seed.tenantA.employee.user.name,
+      email: seed.tenantA.employee.user.email,
+      phone: seed.tenantA.employee.user.phone,
+      position: seed.tenantA.employee.user.position,
+      salary: 999999,
+      payType: seed.tenantA.employee.user.payType,
+      hourlyRate: seed.tenantA.employee.user.hourlyRate,
+      department: seed.tenantA.employee.user.department,
+      status: "active",
+    },
+  });
+
+  assert.equal(employeeList.status, 403, JSON.stringify(employeeList.json));
+  assert.equal(clientList.status, 403, JSON.stringify(clientList.json));
+  assert.equal(employeeMutation.status, 403, JSON.stringify(employeeMutation.json));
+});
+
+test("salary and employee mutations create tenant audit records", { concurrency: false }, async () => {
+  const coworker = await createEmployee(seed.tenantA.ownerSession.accessToken, randomSuffix("audit-employee"));
+  const salary = await createSalary(
+    seed.tenantA.ownerSession.accessToken,
+    coworker.user.id,
+    coworker.user.name,
+    "audit-salary",
+  );
+
+  try {
+    const update = await api(`/admin/employees/${coworker.user.id}`, {
+      method: "PATCH",
+      token: seed.tenantA.ownerSession.accessToken,
+      body: {
+        name: `${coworker.user.name} Updated`,
+        email: coworker.user.email,
+        phone: coworker.user.phone,
+        position: coworker.user.position,
+        salary: coworker.user.salary + 25,
+        payType: coworker.user.payType,
+        hourlyRate: coworker.user.hourlyRate,
+        department: coworker.user.department,
+        status: "active",
+      },
+    });
+    assert.equal(update.status, 200, JSON.stringify(update.json));
+
+    const audit = await api("/business/audit-trail", {
+      token: seed.tenantA.ownerSession.accessToken,
+    });
+    assert.equal(audit.status, 200, JSON.stringify(audit.json));
+    assert.ok(
+      audit.json.auditTrail.some(
+        (entry) =>
+          entry.entityType === "employee"
+          && entry.entityId === coworker.user.id
+          && entry.action === "updated",
+      ),
+      JSON.stringify(audit.json),
+    );
+    assert.ok(
+      audit.json.auditTrail.some(
+        (entry) =>
+          entry.entityType === "salary"
+          && entry.entityId === salary.id
+          && entry.action === "created",
+      ),
+      JSON.stringify(audit.json),
+    );
+  } finally {
+    await api(`/business/salaries/${salary.id}`, {
+      method: "DELETE",
+      token: seed.tenantA.ownerSession.accessToken,
+    });
+    await api(`/admin/employees/${coworker.user.id}`, {
+      method: "DELETE",
+      token: seed.tenantA.ownerSession.accessToken,
+    });
   }
 });
 
@@ -304,10 +523,12 @@ test("employee cannot approve own timesheet and cannot edit approved timesheet",
 });
 
 test("duplicate salary payment and expense approval stay blocked", { concurrency: false }, async () => {
+  const accountId = await getTenantAFinancialAccountId();
   const funding = await api("/business/funds", {
     method: "POST",
     token: seed.tenantA.ownerSession.accessToken,
     body: {
+      accountId,
       source: `Security reserve ${randomSuffix("fund")}`,
       amount: 100,
       date: "2026-04-11",
@@ -336,13 +557,13 @@ test("duplicate salary payment and expense approval stay blocked", { concurrency
       method: "POST",
       token: seed.tenantA.ownerSession.accessToken,
       headers: { "Idempotency-Key": salaryPayKey },
-      body: { note: "first payment" },
+      body: { accountId, note: "first payment" },
     });
     const salaryPay2 = await api(`/business/salaries/${salary.id}/pay`, {
       method: "POST",
       token: seed.tenantA.ownerSession.accessToken,
       headers: { "Idempotency-Key": salaryPayKey },
-      body: { note: "first payment" },
+      body: { accountId, note: "first payment" },
     });
 
     assert.equal(salaryPay1.status, 200, JSON.stringify(salaryPay1.json));

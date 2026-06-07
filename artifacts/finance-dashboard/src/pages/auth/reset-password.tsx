@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -13,8 +13,8 @@ import { useToast } from "@/hooks/use-toast";
 const resetSchema = z
   .object({
     token: z.string().min(8),
-    password: z.string().min(8, "Password must be at least 8 characters."),
-    confirmPassword: z.string().min(8),
+    password: z.string().min(12, "Password must be at least 12 characters.").max(72),
+    confirmPassword: z.string().min(12).max(72),
   })
   .refine((data) => data.password === data.confirmPassword, {
     path: ["confirmPassword"],
@@ -33,6 +33,13 @@ export default function ResetPasswordPage() {
 
     return new URLSearchParams(window.location.search).get("token") ?? "";
   }, []);
+
+  useEffect(() => {
+    if (!initialToken || typeof window === "undefined") {
+      return;
+    }
+    window.history.replaceState(null, "", window.location.pathname);
+  }, [initialToken]);
 
   const form = useForm<z.infer<typeof resetSchema>>({
     resolver: zodResolver(resetSchema),
@@ -96,7 +103,7 @@ export default function ResetPasswordPage() {
                     <FormItem>
                       <FormLabel>New password</FormLabel>
                       <FormControl>
-                        <Input {...field} type="password" />
+                        <Input {...field} type="password" autoComplete="new-password" />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -109,7 +116,7 @@ export default function ResetPasswordPage() {
                     <FormItem>
                       <FormLabel>Confirm new password</FormLabel>
                       <FormControl>
-                        <Input {...field} type="password" />
+                        <Input {...field} type="password" autoComplete="new-password" />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
