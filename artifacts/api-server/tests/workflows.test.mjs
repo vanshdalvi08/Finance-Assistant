@@ -417,6 +417,67 @@ test("approved split-month timesheets create exact calendar-month payroll record
   }
 });
 
+test("split-month week with hours only in the non-weekStart month creates no phantom earlier-month record", { concurrency: false }, async () => {
+  // Regression: week Apr 27–May 3 where all hours fall on Sunday May 3 only.
+  // weekStart is in April, but the work is entirely in May.
+  // The reconciler must produce exactly one May record and zero April records.
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-may-only");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+  const salaryIds = [];
+  let timesheetId = null;
+
+  try {
+    const createResponse = await api("/business/timesheets", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        employeeId: employee.id,
+        weekStart: "2026-04-27",
+        lines: [
+          {
+            project: "May Only",
+            task: "Sunday work",
+            hours: { mon: 0, tue: 0, wed: 0, thu: 0, fri: 0, sat: 0, sun: 3 },
+          },
+        ],
+      },
+    });
+    assert.ok([200, 201].includes(createResponse.status), JSON.stringify(createResponse.json));
+    timesheetId = createResponse.json.timesheet.id;
+
+    await api(`/business/timesheets/${timesheetId}/submit`, { method: "POST", token: adminToken, body: {} });
+    await api(`/business/timesheets/${timesheetId}/approve`, { method: "POST", token: adminToken, body: { note: "ok" } });
+
+    // GET salaries triggers reconcileTimesheetPayroll
+    const salariesResponse = await api(`/business/salaries?employeeId=${encodeURIComponent(employee.id)}`, {
+      token: adminToken,
+    });
+    assert.equal(salariesResponse.status, 200, JSON.stringify(salariesResponse.json));
+
+    const timesheetSalaries = salariesResponse.json.salaries.filter(
+      (s) => salaryBelongsToTimesheetMonth(s, timesheetId) && s.status === "pending",
+    );
+    salaryIds.push(...timesheetSalaries.map((s) => s.id));
+
+    assert.equal(timesheetSalaries.length, 1, `Expected 1 record, got ${timesheetSalaries.length}: ${JSON.stringify(timesheetSalaries.map((s) => payrollMonthKey(s)))}`);
+    const record = timesheetSalaries[0];
+    assert.equal(payrollMonthKey(record), "2026-05", `Expected May record, got ${payrollMonthKey(record)}`);
+    assert.equal(record.hours, 3);
+    assert.equal(record.amount, 300);
+    assert.ok(String(record.timesheetId ?? "").includes(":2026-05"), `Expected scoped timesheetId, got ${record.timesheetId}`);
+  } finally {
+    for (const id of salaryIds) {
+      await api(`/business/salaries/${id}`, { method: "DELETE", token: adminToken });
+    }
+    if (timesheetId) {
+      await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
+    }
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
 test("employee timesheet edits preserve reviewed days that were not changed", { concurrency: false }, async () => {
   const adminToken = await login("admin@yojak.in", "yojak123");
   const suffix = randomSuffix("phase2-timesheet-daily-review");

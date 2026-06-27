@@ -104,7 +104,10 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
       return false;
     }
     const rate = effectiveHourlyRate(employee);
-    return timesheetMonthBreakdowns(timesheet).some((breakdown) => {
+    const breakdowns = timesheetMonthBreakdowns(timesheet);
+    const breakdownMonths = new Set(breakdowns.map((b) => b.monthKey));
+
+    const hasMissingOrStaleRecords = breakdowns.some((breakdown) => {
       const existing = store.salaries.find(
         (salary) =>
           tenantSalaryFilter(salary, tenantId) &&
@@ -123,6 +126,21 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
         )
       );
     });
+
+    if (hasMissingOrStaleRecords) {
+      return true;
+    }
+
+    // Also trigger reconcile if there are orphaned pending records from before
+    // calendar-month splitting was introduced (plain timesheetId, wrong month)
+    return store.salaries.some(
+      (salary) =>
+        tenantSalaryFilter(salary, tenantId) &&
+        salary.source === "timesheet" &&
+        salary.timesheetId === timesheet.id &&
+        salary.status !== "paid" &&
+        !breakdownMonths.has(payrollMonthKey(salary.weekStart ?? salary.date)),
+    );
   });
 
   const needsMonthlyReconciliation = Array.from(approvedMonthlyGroups.entries()).some(
@@ -161,7 +179,10 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
       const employee = employeeById.get(timesheet.employeeId);
       if (employee?.payType === "hourly") {
         const rate = effectiveHourlyRate(employee);
-        for (const breakdown of timesheetMonthBreakdowns(timesheet)) {
+        const breakdowns = timesheetMonthBreakdowns(timesheet);
+        const breakdownMonths = new Set(breakdowns.map((b) => b.monthKey));
+
+        for (const breakdown of breakdowns) {
           const existingIndex = nextSalaries.findIndex(
             (salary) =>
               tenantSalaryFilter(salary, tenantId) &&
@@ -198,6 +219,22 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
             nextSalaries.unshift(salary);
           }
         }
+
+        // Remove stale pending records from before calendar-month splitting:
+        // plain timesheetId records whose weekStart month isn't in any current breakdown
+        for (let i = nextSalaries.length - 1; i >= 0; i--) {
+          const salary = nextSalaries[i];
+          if (
+            tenantSalaryFilter(salary, tenantId) &&
+            salary.source === "timesheet" &&
+            salary.timesheetId === timesheet.id &&
+            salary.status !== "paid" &&
+            !breakdownMonths.has(payrollMonthKey(salary.weekStart ?? salary.date))
+          ) {
+            nextSalaries.splice(i, 1);
+          }
+        }
+
         continue;
       }
 
