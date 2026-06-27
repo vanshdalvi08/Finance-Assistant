@@ -1,19 +1,15 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Download, Printer } from "lucide-react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { DashboardCard } from "@/components/dashboard-card";
-import { useAuthStore } from "@/store/auth";
 import { api } from "@/lib/api";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
 
 function formatCurrency(value: number) {
-  return value.toLocaleString("en-IN", { style: "currency", currency: "INR" });
-}
-
-function cycleLabel(date: string) {
-  return new Date(date).toLocaleDateString("en-IN", { month: "short", year: "numeric" });
+  return value.toLocaleString("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 });
 }
 
 function dateLabel(date: string) {
@@ -21,105 +17,125 @@ function dateLabel(date: string) {
 }
 
 export default function EmployeeSalarySlipsPage() {
-  const user = useAuthStore((state) => state.user);
-
-  const { data: employee } = useQuery({
-    queryKey: ["employee-profile", user?.id, user?.email],
-    queryFn: async () => {
-      if (!user) {
-        return null;
-      }
-
-      const existing = await api.getEmployeeProfile({ employeeId: user.id, email: user.email });
-      if (existing) {
-        return existing;
-      }
-
-        return api.ensureEmployeeProfile({
-          id: user.id,
-          email: user.email,
-          name: user.name ?? user.email.split("@")[0],
-          phone: user.phone,
-          employeeId: user.employeeId,
-          profilePhotoUrl: user.profilePhotoUrl ?? undefined,
-          role: user.position,
-        department: user.department,
-        salary: user.salary,
-        payType: user.payType,
-        hourlyRate: user.hourlyRate,
-        status: user.status,
-      });
-    },
-    enabled: Boolean(user),
-  });
-
-  const { data: salaries = [] } = useQuery({
-    queryKey: ["employee-salaries", employee?.id],
-    queryFn: () => api.getSalarySlips({ employeeId: employee?.id ?? "" }),
-    enabled: Boolean(employee?.id),
+  const [downloadingSlipId, setDownloadingSlipId] = useState<string | null>(null);
+  const { data: slips = [], isLoading } = useQuery({
+    queryKey: ["salary-slips", "self"],
+    queryFn: () => api.getSalarySlips(),
   });
 
   const ordered = useMemo(
-    () =>
-      [...salaries].sort(
-        (left, right) => new Date(right.paidAt ?? right.date).getTime() - new Date(left.paidAt ?? left.date).getTime(),
-      ),
-    [salaries],
+    () => [...slips].sort((left, right) => new Date(right.paymentDate).getTime() - new Date(left.paymentDate).getTime()),
+    [slips],
   );
+  const totalPaid = ordered.reduce((sum, slip) => sum + slip.netAmount, 0);
+  const latest = ordered[0];
 
-  const totalPaid = ordered
-    .filter((salary) => salary.status === "paid")
-    .reduce((sum, salary) => sum + salary.amount, 0);
-  const pendingCount = ordered.filter((salary) => salary.status === "pending").length;
+  async function openSalarySlip(slip: (typeof ordered)[number], mode: "view" | "print" = "view") {
+    if (!slip.downloadUrl) {
+      return;
+    }
+
+    if (!slip.downloadUrl.includes("/api/")) {
+      window.open(slip.downloadUrl, "_blank", "noopener,noreferrer");
+      return;
+    }
+
+    setDownloadingSlipId(slip.id);
+    try {
+      const blob = await api.downloadSalarySlipPdf(slip.downloadUrl);
+      const objectUrl = URL.createObjectURL(blob);
+      const popup = window.open(objectUrl, "_blank");
+      if (popup && mode === "print") {
+        popup.addEventListener("load", () => {
+          popup.focus();
+          popup.print();
+        });
+      }
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } finally {
+      setDownloadingSlipId(null);
+    }
+  }
 
   return (
     <DashboardLayout>
       <div className="space-y-6">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">My Salary Slips</h1>
-          <p className="mt-1 text-sm text-muted-foreground">A minimal record of payroll cycles and payout history.</p>
+          <p className="mt-1 text-sm text-muted-foreground">Your permanent payroll documents and payment history.</p>
         </div>
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <DashboardCard label="Total Paid" value={formatCurrency(totalPaid)} />
-          <DashboardCard label="Payroll Records" value={ordered.length.toString()} />
-          <DashboardCard label="Pending" value={pendingCount.toString()} />
+          <DashboardCard label="Salary Slips" value={ordered.length.toString()} />
+          <DashboardCard label="Latest Payment" value={latest ? formatCurrency(latest.netAmount) : formatCurrency(0)} />
         </div>
 
         <Card className="border-border/50">
           <CardHeader>
-            <CardTitle className="text-base">Payroll History</CardTitle>
+            <CardTitle className="text-base">Salary Slip Archive</CardTitle>
           </CardHeader>
           <CardContent className="p-0">
             <Table>
               <TableHeader>
                 <TableRow className="border-border/50">
-                  <TableHead>Cycle</TableHead>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Note</TableHead>
-                  <TableHead className="text-right">Amount</TableHead>
+                  <TableHead>Pay period</TableHead>
+                  <TableHead>Payment date</TableHead>
+                  <TableHead className="text-right">Gross</TableHead>
+                  <TableHead className="text-right">Deductions</TableHead>
+                  <TableHead className="text-right">Net salary</TableHead>
+                  <TableHead className="w-[70px] text-right">PDF</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {ordered.length === 0 ? (
+                {isLoading ? (
                   <TableRow className="border-border/50">
-                    <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
-                      No salary records yet.
+                    <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">Loading salary slips...</TableCell>
+                  </TableRow>
+                ) : ordered.length === 0 ? (
+                  <TableRow className="border-border/50">
+                    <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
+                      No generated salary slips yet.
                     </TableCell>
                   </TableRow>
                 ) : (
-                  ordered.map((salary) => (
-                    <TableRow key={salary.id} className="border-border/50">
-                      <TableCell className="font-medium">{cycleLabel(salary.weekStart ?? salary.date)}</TableCell>
-                      <TableCell>{dateLabel(salary.paidAt ?? salary.date)}</TableCell>
-                      <TableCell>
-                        <Badge variant={salary.status === "pending" ? "outline" : "secondary"} className="capitalize">
-                          {salary.status ?? "paid"}
-                        </Badge>
+                  ordered.map((slip) => (
+                    <TableRow key={slip.id} className="border-border/50">
+                      <TableCell className="font-medium">{slip.payPeriod}</TableCell>
+                      <TableCell>{dateLabel(slip.paymentDate)}</TableCell>
+                      <TableCell className="text-right">{formatCurrency(slip.grossAmount)}</TableCell>
+                      <TableCell className="text-right">{formatCurrency(slip.deductionAmount)}</TableCell>
+                      <TableCell className="text-right font-semibold">{formatCurrency(slip.netAmount)}</TableCell>
+                      <TableCell className="text-right">
+                        <div className="inline-flex items-center gap-1">
+                          {slip.downloadUrl ? (
+                            <>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                title="Download salary slip PDF"
+                                disabled={downloadingSlipId === slip.id}
+                                onClick={() => void openSalarySlip(slip)}
+                              >
+                                <Download className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                title="Print salary slip PDF"
+                                disabled={downloadingSlipId === slip.id}
+                                onClick={() => void openSalarySlip(slip, "print")}
+                              >
+                                <Printer className="h-4 w-4" />
+                              </Button>
+                            </>
+                          ) : (
+                            <Button variant="ghost" size="icon" disabled title="Salary slip PDF is unavailable">
+                              <Download className="h-4 w-4" />
+                            </Button>
+                          )}
+                        </div>
                       </TableCell>
-                      <TableCell>{salary.note || "-"}</TableCell>
-                      <TableCell className="text-right font-medium">{formatCurrency(salary.amount)}</TableCell>
                     </TableRow>
                   ))
                 )}

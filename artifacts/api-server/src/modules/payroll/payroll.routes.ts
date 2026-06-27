@@ -2,7 +2,7 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
-import { idempotencyKeysTable, type ActorRole } from "@workspace/db/schema";
+import { idempotencyKeysTable, salarySlipsTable, type ActorRole } from "@workspace/db/schema";
 import { requireTenantRole } from "../../middlewares/auth";
 import { createId, type SalaryRecord } from "../../lib/business-store";
 import { DEFAULT_TENANT_ID } from "../../lib/tenants";
@@ -10,6 +10,7 @@ import { notifyEmployee, notifyUsersByIds } from "../../lib/notifications";
 import { logger } from "../../lib/logger";
 import { hashSha256 } from "../../lib/security";
 import { rateLimit } from "../../middlewares/rate-limit";
+import { readLocalSalarySlipByToken } from "../../lib/storage";
 import {
   deleteSalary,
   getSalaryForActor,
@@ -18,6 +19,12 @@ import {
   SalaryServiceError,
   saveSalary,
 } from "./payroll.service";
+import {
+  buildSalarySlipDraft,
+  confirmSalarySlip,
+  listSalarySlipsForActor,
+} from "./salary-slip.service";
+import { generateSalarySlipPdf } from "./salary-slip.pdf";
 
 const router: IRouter = Router();
 const salaryPaymentLimiter = rateLimit({
@@ -67,6 +74,41 @@ const historicalSalarySchema = salarySchema.omit({
       message: "Provide either an employee or a former employee name.",
     });
   }
+});
+
+const salarySlipLineItemSchema = z.object({
+  label: z.string().trim().min(1).max(120),
+  amount: z.coerce.number().min(0).max(100_000_000),
+});
+
+const salarySlipDraftSchema = z.object({
+  salaryIds: z.array(businessIdSchema).min(1).max(52),
+  accountId: businessIdSchema,
+  companyName: z.string().trim().min(1).max(200),
+  companyAddress: z.string().trim().max(500),
+  payPeriod: z.string().trim().min(1).max(100),
+  paymentDate: z.string().date(),
+  employeeId: z.string().trim().min(1).max(100),
+  employeeName: z.string().trim().min(1).max(200),
+  designation: z.string().trim().max(150),
+  department: z.string().trim().max(150),
+  joiningDate: z.string().max(20),
+  uan: z.string().trim().max(100),
+  pfNumber: z.string().trim().max(100),
+  esiNumber: z.string().trim().max(100),
+  bankName: z.string().trim().max(150),
+  bankAccountNumber: z.string().trim().max(100),
+  grossWages: z.coerce.number().min(0).max(100_000_000),
+  totalWorkingDays: z.coerce.number().min(0).max(366),
+  leaveDays: z.coerce.number().min(0).max(366),
+  lopDays: z.coerce.number().min(0).max(366),
+  paidDays: z.coerce.number().min(0).max(366),
+  earnings: z.array(salarySlipLineItemSchema).min(1).max(8),
+  deductions: z.array(salarySlipLineItemSchema).max(8),
+  totalEarnings: z.coerce.number().min(0).max(100_000_000),
+  totalDeductions: z.coerce.number().min(0).max(100_000_000),
+  netSalary: z.coerce.number().min(0).max(100_000_000),
+  note: z.string().trim().max(1_000),
 });
 
 type SalaryCrudIdempotencyScope = "salary_create" | "salary_historical_create" | "salary_update" | "salary_delete";
@@ -717,6 +759,104 @@ router.post("/salaries/:id/pay", requireTenantRole("admin"), salaryPaymentLimite
     salary: salaryResponse(salary, request.auth?.user.role),
     duplicate: wasAlreadyPaid,
   });
+});
+
+router.post("/salary-slips/preview", requireTenantRole("admin"), salaryPaymentLimiter, async (request, response) => {
+  const parsed = z.object({
+    salaryIds: z.array(businessIdSchema).min(1).max(52),
+    accountId: businessIdSchema,
+  }).safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ message: "Select payroll records and a payout account." });
+    return;
+  }
+
+  try {
+    const draft = await buildSalarySlipDraft({
+      tenantId: request.auth?.user.tenantId ?? DEFAULT_TENANT_ID,
+      salaryIds: Array.from(new Set(parsed.data.salaryIds)),
+      accountId: parsed.data.accountId,
+    });
+    response.json({ draft });
+  } catch (error) {
+    response.status(400).json({ message: error instanceof Error ? error.message : "Could not prepare salary slip." });
+  }
+});
+
+router.post("/salary-slips/confirm", requireTenantRole("admin"), salaryPaymentLimiter, async (request, response) => {
+  const parsed = salarySlipDraftSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid salary slip details." });
+    return;
+  }
+
+  try {
+    const result = await confirmSalarySlip({
+      tenantId: request.auth?.user.tenantId ?? DEFAULT_TENANT_ID,
+      actor: recordActor(request),
+      draft: parsed.data,
+    });
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyEmployee(
+        result.slip.employeeId,
+        actor,
+        {
+          type: "salary_paid",
+          title: "Salary slip available",
+          body: `Your ${result.slip.payPeriod} salary slip is ready to download.`,
+          link: "/employee/salary-slips",
+          email: false,
+          metadata: { salarySlipId: result.slip.id, amount: result.slip.netAmount },
+        },
+      ),
+    );
+    response.status(201).json(result);
+  } catch (error) {
+    if (error instanceof SalaryServiceError && handleServiceError(error, response)) {
+      return;
+    }
+    response.status(400).json({ message: error instanceof Error ? error.message : "Could not complete salary payment." });
+  }
+});
+
+router.get("/salary-slips", requireTenantRole("admin", "employee"), async (request, response) => {
+  try {
+    const slips = await listSalarySlipsForActor({
+      tenantId: request.auth?.user.tenantId ?? DEFAULT_TENANT_ID,
+      role: request.auth?.user.role,
+      userId: request.auth?.user.id,
+      employeeId: typeof request.query.employeeId === "string" ? request.query.employeeId : undefined,
+    });
+    response.json({ slips });
+  } catch (error) {
+    response.status(500).json({ message: error instanceof Error ? error.message : "Could not load salary slips." });
+  }
+});
+
+router.get("/salary-slips/local/:token", requireTenantRole("admin", "employee"), async (request, response) => {
+  try {
+    const token = routeParam(request.params.token);
+    const objectPath = Buffer.from(token, "base64url").toString("utf8");
+    const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+    const rows = await db
+      .select()
+      .from(salarySlipsTable)
+      .where(and(eq(salarySlipsTable.tenantId, tenantId), eq(salarySlipsTable.filePath, objectPath)))
+      .limit(1);
+    const slip = rows[0];
+    if (slip && request.auth?.user.role === "employee" && slip.employeeId !== request.auth.user.id) {
+      response.status(403).json({ message: "Forbidden" });
+      return;
+    }
+    const file = slip ? await generateSalarySlipPdf(slip.snapshot) : await readLocalSalarySlipByToken(token);
+    response.setHeader("Cache-Control", "no-store");
+    response.setHeader("Content-Type", "application/pdf");
+    response.setHeader("Content-Disposition", "inline; filename=\"salary-slip.pdf\"");
+    response.send(Buffer.from(file));
+  } catch {
+    response.status(404).json({ message: "Salary slip PDF not found." });
+  }
 });
 
 export default router;

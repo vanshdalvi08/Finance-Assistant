@@ -700,3 +700,82 @@ export async function paySalary(
 
   return { salary: salary!, wasAlreadyPaid };
 }
+
+export async function paySalariesBatch(
+  ids: string[],
+  note: string | undefined,
+  actor: SalaryActor,
+  accountId: string,
+): Promise<SalaryRecord[]> {
+  const uniqueIds = Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean)));
+  if (uniqueIds.length === 0) {
+    throw new SalaryServiceError("invalid_input", "Select at least one salary record.");
+  }
+
+  let paidSalaries: SalaryRecord[] = [];
+  await updateStore((current) => {
+    const selected = uniqueIds.map((id) => current.salaries.find((salary) => salary.id === id));
+    if (selected.some((salary) => !salary)) {
+      throw new SalaryServiceError("not_found", "One or more salary records were not found.");
+    }
+
+    const salaries = selected as SalaryRecord[];
+    for (const salary of salaries) {
+      assertTenantAccess(salary.tenantId, actor.tenantId, () => new SalaryServiceError("forbidden", "Forbidden"));
+      if (salary.status !== "pending") {
+        throw new SalaryServiceError("conflict", "One or more salary records have already been paid.");
+      }
+    }
+
+    assertFinancialAccount(current, actor.tenantId, accountId, (message) => new SalaryServiceError("invalid_input", message));
+    ensureFunds(
+      current,
+      salaries.reduce((sum, salary) => sum + salary.amount, 0),
+      "this salary payment",
+      actor.tenantId,
+      accountId,
+    );
+
+    const paidAt = nowIso();
+    paidSalaries = salaries.map((salary) => ({
+      ...salary,
+      tenantId: actor.tenantId,
+      accountId,
+      status: "paid",
+      paidAt,
+      date: paidAt,
+      note: note?.trim() || salary.note,
+      updatedAt: paidAt,
+    }));
+    const paidById = new Map(paidSalaries.map((salary) => [salary.id, salary]));
+    let nextStore = {
+      ...current,
+      salaries: current.salaries.map((salary) => paidById.get(salary.id) ?? salary),
+    };
+
+    for (const salary of paidSalaries) {
+      const previous = salaries.find((item) => item.id === salary.id)!;
+      nextStore = pushAuditEvent(nextStore, {
+        ...actor,
+        action: "paid",
+        entityType: "salary",
+        entityId: salary.id,
+        summary: "Marked a salary record as paid through a generated salary slip.",
+        actorUserId: actor.userId,
+        requestId: actor.requestId,
+        details: {
+          entityLabel: salary.employeeNameSnapshot || undefined,
+          requestId: actor.requestId,
+          changedFields: changedSalaryFields(previous, salary),
+          before: summarizeSalary(previous),
+          after: summarizeSalary(salary),
+          context: { operation: "salary_slip_batch_pay" },
+        },
+      });
+    }
+
+    return nextStore;
+  });
+
+  return paidSalaries;
+}

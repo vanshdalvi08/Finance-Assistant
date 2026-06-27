@@ -160,8 +160,8 @@ export default function EmployeeProfilePage() {
       ...salaries.slice(0, 2).map((salary) => ({
         id: `s-${salary.id}`,
         type: "Salary",
-        label: dateLabel(salary.date),
-        detail: formatCurrency(salary.amount),
+        label: salary.payPeriod,
+        detail: formatCurrency(salary.netAmount),
       })),
     ].slice(0, 6);
   }, [expenses, salaries, timesheets]);

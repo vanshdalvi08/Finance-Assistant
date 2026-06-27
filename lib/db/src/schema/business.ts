@@ -150,6 +150,39 @@ export interface AuditTrailDetailsRecord {
   context?: Record<string, unknown> | null;
 }
 
+export type SalarySlipLineItem = {
+  label: string;
+  amount: number;
+};
+
+export type SalarySlipSnapshot = {
+  companyName: string;
+  companyAddress: string;
+  payPeriod: string;
+  paymentDate: string;
+  employeeId: string;
+  employeeName: string;
+  designation: string;
+  department: string;
+  joiningDate: string;
+  uan: string;
+  pfNumber: string;
+  esiNumber: string;
+  bankName: string;
+  bankAccountNumber: string;
+  grossWages: number;
+  totalWorkingDays: number;
+  leaveDays: number;
+  lopDays: number;
+  paidDays: number;
+  earnings: SalarySlipLineItem[];
+  deductions: SalarySlipLineItem[];
+  totalEarnings: number;
+  totalDeductions: number;
+  netSalary: number;
+  note: string;
+};
+
 export const approvalStatusEnum = pgEnum("approval_status", ["draft", "submitted", "approved", "rejected"]);
 export const salaryStatusEnum = pgEnum("salary_status", ["pending", "paid"]);
 export const salarySourceEnum = pgEnum("salary_source", ["manual", "timesheet"]);
@@ -386,6 +419,44 @@ export const insertSalarySchema = createInsertSchema(salariesTable).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+});
+
+export const salarySlipsTable = pgTable(
+  "salary_slips",
+  {
+    id: text("id").primaryKey(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenantsTable.id, { onDelete: "cascade" }),
+    employeeId: uuid("employee_id").notNull().references(() => usersTable.id, { onDelete: "restrict" }),
+    salaryIds: jsonb("salary_ids").$type<string[]>().notNull().default([]),
+    accountId: text("account_id").references(() => financialAccountsTable.id, { onDelete: "set null" }),
+    payPeriod: text("pay_period").notNull(),
+    paymentDate: timestamp("payment_date", { withTimezone: true }).notNull(),
+    grossAmount: integer("gross_amount").notNull(),
+    deductionAmount: integer("deduction_amount").notNull().default(0),
+    netAmount: integer("net_amount").notNull(),
+    snapshot: jsonb("snapshot").$type<SalarySlipSnapshot>().notNull(),
+    fileName: text("file_name").notNull(),
+    filePath: text("file_path").notNull(),
+    emailedAt: timestamp("emailed_at", { withTimezone: true }),
+    createdById: uuid("created_by_id").references(() => usersTable.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    tenantIndex: index("salary_slips_tenant_index").on(table.tenantId),
+    employeeIndex: index("salary_slips_employee_index").on(table.employeeId),
+    paymentDateIndex: index("salary_slips_payment_date_index").on(table.paymentDate),
+    nonNegativeGross: check("salary_slips_gross_nonnegative_check", sql`${table.grossAmount} >= 0`),
+    nonNegativeDeductions: check("salary_slips_deductions_nonnegative_check", sql`${table.deductionAmount} >= 0`),
+    positiveNet: check("salary_slips_net_positive_check", sql`${table.netAmount} > 0`),
+    reconciledNet: check(
+      "salary_slips_net_reconciled_check",
+      sql`${table.netAmount} = ${table.grossAmount} - ${table.deductionAmount}`,
+    ),
+  }),
+);
+
+export const insertSalarySlipSchema = createInsertSchema(salarySlipsTable).omit({
+  createdAt: true,
 });
 
 export const timesheetsTable = pgTable(

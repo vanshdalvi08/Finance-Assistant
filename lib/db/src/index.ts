@@ -18,6 +18,17 @@ if (!process.env.DATABASE_URL) {
   );
 }
 
+if (process.env.NODE_ENV !== "production" && process.env.ALLOW_REMOTE_DEV_DATABASE !== "true") {
+  const databaseHost = new URL(process.env.DATABASE_URL).hostname.toLowerCase();
+  const localHosts = new Set(["localhost", "127.0.0.1", "::1"]);
+  if (!localHosts.has(databaseHost)) {
+    throw new Error(
+      `Blocked non-production connection to remote database host "${databaseHost}". `
+      + "Use a local database or explicitly set ALLOW_REMOTE_DEV_DATABASE=true.",
+    );
+  }
+}
+
 export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 export const db = drizzle(pool, { schema });
 

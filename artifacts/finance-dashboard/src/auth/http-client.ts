@@ -316,6 +316,30 @@ export async function requestJson<T>(
   }
 }
 
+export async function requestBlob(
+  path: string,
+  config: AxiosRequestConfig = {},
+  options: { auth?: boolean } = {},
+): Promise<Blob> {
+  const client = options.auth === false ? authlessAxios : authAxios;
+
+  try {
+    const response = await client.request<Blob>({
+      url: path,
+      ...config,
+      responseType: "blob",
+    });
+    return response.data;
+  } catch (error) {
+    const wrapped = new Error(toErrorMessage(error, "Download failed.")) as Error & { status?: number };
+    if (axios.isAxiosError(error)) {
+      wrapped.status = error.response?.status;
+    }
+
+    throw wrapped;
+  }
+}
+
 export async function requestFormData<T>(
   path: string,
   data: FormData,

@@ -253,3 +253,41 @@ export function notificationEmailTemplate(input: {
     html,
   };
 }
+
+export function salaryPaymentEmailTemplate(input: {
+  employeeName: string;
+  payPeriod: string;
+  paymentDate: string;
+  grossAmount: number;
+  deductions: number;
+  netAmount: number;
+}): { subject: string; text: string; html: string } {
+  const money = (value: number) => `INR ${Math.round(value).toLocaleString("en-IN")}`;
+  const text = [
+    `Hello ${input.employeeName},`,
+    "",
+    `Your salary for ${input.payPeriod} has been paid.`,
+    `Payment date: ${input.paymentDate}`,
+    `Gross earnings: ${money(input.grossAmount)}`,
+    `Deductions: ${money(input.deductions)}`,
+    `Net salary: ${money(input.netAmount)}`,
+    "",
+    "Your salary slip is attached as a PDF.",
+  ].join("\n");
+
+  const html = baseLayout(
+    "Salary payment completed",
+    `
+      <p style="font-size:15px;line-height:1.7;color:#cbd5e1;margin:0 0 18px;">Hello ${escapeHtml(input.employeeName)}, your salary for <strong>${escapeHtml(input.payPeriod)}</strong> has been paid.</p>
+      <table style="width:100%;border-collapse:collapse;background:#0b1220;border:1px solid #243244;border-radius:12px;overflow:hidden;">
+        <tr><td style="padding:10px 14px;color:#94a3b8;border-bottom:1px solid #243244;">Payment date</td><td style="padding:10px 14px;color:#f8fafc;text-align:right;border-bottom:1px solid #243244;">${escapeHtml(input.paymentDate)}</td></tr>
+        <tr><td style="padding:10px 14px;color:#94a3b8;border-bottom:1px solid #243244;">Gross earnings</td><td style="padding:10px 14px;color:#f8fafc;text-align:right;border-bottom:1px solid #243244;">${money(input.grossAmount)}</td></tr>
+        <tr><td style="padding:10px 14px;color:#94a3b8;border-bottom:1px solid #243244;">Deductions</td><td style="padding:10px 14px;color:#f8fafc;text-align:right;border-bottom:1px solid #243244;">${money(input.deductions)}</td></tr>
+        <tr><td style="padding:12px 14px;color:#e2e8f0;font-weight:700;">Net salary</td><td style="padding:12px 14px;color:#f8fafc;text-align:right;font-weight:700;">${money(input.netAmount)}</td></tr>
+      </table>
+      <p style="font-size:13px;line-height:1.7;color:#94a3b8;margin:18px 0 0;">Your salary slip is attached as a PDF and is also available in your employee portal.</p>
+    `,
+  );
+
+  return { subject: `Salary paid - ${input.payPeriod}`, text, html };
+}

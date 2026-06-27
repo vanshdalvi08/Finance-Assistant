@@ -50,6 +50,8 @@ services:
         sync: false
       - key: SUPABASE_STORAGE_EXPENSE_ATTACHMENTS_BUCKET
         sync: false
+      - key: SUPABASE_STORAGE_SALARY_SLIPS_BUCKET
+        sync: false
       - key: ADMIN_EMAIL
         sync: false
       - key: ADMIN_PASSWORD

@@ -61,6 +61,12 @@ export interface PublicUser {
   salary: number;
   payType: "monthly" | "hourly";
   hourlyRate: number;
+  joiningDate: Date | null;
+  bankName: string | null;
+  bankAccountNumber: string | null;
+  uan: string | null;
+  pfNumber: string | null;
+  esiNumber: string | null;
   profilePhotoUrl: string | null;
   clientInfo: ClientBillingInfo;
   status: "active" | "inactive";
@@ -96,6 +102,12 @@ export interface CreateEmployeeInput {
   salary: number;
   payType?: "monthly" | "hourly";
   hourlyRate?: number;
+  joiningDate?: string | null;
+  bankName?: string | null;
+  bankAccountNumber?: string | null;
+  uan?: string | null;
+  pfNumber?: string | null;
+  esiNumber?: string | null;
   profilePhotoUrl?: string | null;
   department?: string | null;
   status?: "active" | "inactive";
@@ -111,6 +123,12 @@ export interface UpdateEmployeeInput {
   salary: number;
   payType?: "monthly" | "hourly";
   hourlyRate?: number;
+  joiningDate?: string | null;
+  bankName?: string | null;
+  bankAccountNumber?: string | null;
+  uan?: string | null;
+  pfNumber?: string | null;
+  esiNumber?: string | null;
   profilePhotoUrl?: string | null;
   department?: string | null;
   status?: "active" | "inactive";
@@ -201,6 +219,12 @@ function publicUser(user: User): PublicUser {
     salary: user.salary,
     payType: user.payType,
     hourlyRate: user.hourlyRate,
+    joiningDate: user.joiningDate ?? null,
+    bankName: user.bankName ?? null,
+    bankAccountNumber: user.bankAccountNumber ?? null,
+    uan: user.uan ?? null,
+    pfNumber: user.pfNumber ?? null,
+    esiNumber: user.esiNumber ?? null,
     profilePhotoUrl: user.profilePhotoUrl ?? null,
     clientInfo: user.clientInfo ?? {},
     status: user.status,
@@ -697,6 +721,12 @@ export async function createEmployeeAccount(input: CreateEmployeeInput): Promise
         salary: Math.max(0, Math.round(input.salary)),
         payType: input.payType ?? "monthly",
         hourlyRate: Math.max(0, Math.round(input.hourlyRate ?? 0)),
+        joiningDate: input.joiningDate ? new Date(input.joiningDate) : null,
+        bankName: input.bankName?.trim() || null,
+        bankAccountNumber: input.bankAccountNumber?.trim() || null,
+        uan: input.uan?.trim() || null,
+        pfNumber: input.pfNumber?.trim() || null,
+        esiNumber: input.esiNumber?.trim() || null,
         profilePhotoUrl,
         hashedPassword,
         status: input.status ?? "active",
@@ -1000,6 +1030,20 @@ export async function updateEmployeeAccount(input: UpdateEmployeeInput): Promise
         salary: Math.max(0, Math.round(input.salary)),
         payType: input.payType ?? existing.payType ?? "monthly",
         hourlyRate: Math.max(0, Math.round(input.hourlyRate ?? existing.hourlyRate ?? 0)),
+        joiningDate:
+          input.joiningDate === undefined
+            ? existing.joiningDate
+            : input.joiningDate
+              ? new Date(input.joiningDate)
+              : null,
+        bankName: input.bankName === undefined ? existing.bankName : input.bankName?.trim() || null,
+        bankAccountNumber:
+          input.bankAccountNumber === undefined
+            ? existing.bankAccountNumber
+            : input.bankAccountNumber?.trim() || null,
+        uan: input.uan === undefined ? existing.uan : input.uan?.trim() || null,
+        pfNumber: input.pfNumber === undefined ? existing.pfNumber : input.pfNumber?.trim() || null,
+        esiNumber: input.esiNumber === undefined ? existing.esiNumber : input.esiNumber?.trim() || null,
         profilePhotoUrl,
         status: input.status ?? "active",
         updatedAt: now,

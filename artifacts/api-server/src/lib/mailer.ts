@@ -6,6 +6,11 @@ export interface MailPayload {
   subject: string;
   text: string;
   html: string;
+  attachments?: Array<{
+    filename: string;
+    content: Uint8Array;
+    contentType: string;
+  }>;
 }
 
 type MailerModule = typeof import("nodemailer");
@@ -71,6 +76,11 @@ export async function sendMail(payload: MailPayload): Promise<boolean> {
     subject: payload.subject,
     text: payload.text,
     html: payload.html,
+    attachments: payload.attachments?.map((attachment) => ({
+      filename: attachment.filename,
+      content: Buffer.from(attachment.content),
+      contentType: attachment.contentType,
+    })),
   });
 
   return true;

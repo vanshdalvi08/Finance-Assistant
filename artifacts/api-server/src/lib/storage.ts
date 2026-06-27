@@ -1,6 +1,7 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { getSupabaseStorageConfig } from "./env";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { getAppUrl, getSupabaseStorageConfig } from "./env";
 import { Buffer } from "node:buffer";
 
 export interface UploadedFileRef {
@@ -44,6 +45,47 @@ function buildObjectPath(prefix: string, fileName: string) {
   const year = String(date.getUTCFullYear());
   const month = String(date.getUTCMonth() + 1).padStart(2, "0");
   return `${prefix}/${year}/${month}/${randomUUID()}-${sanitizeFileName(fileName)}`;
+}
+
+function localStorageRoot() {
+  return path.resolve(process.cwd(), "..", "..", ".tmp", "storage");
+}
+
+function localApiBaseUrl() {
+  const appUrl = getAppUrl();
+  try {
+    const parsed = new URL(appUrl);
+    if (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") {
+      parsed.port = "3001";
+      parsed.pathname = "/api";
+      parsed.search = "";
+      parsed.hash = "";
+      return parsed.toString().replace(/\/$/, "");
+    }
+  } catch {
+    // Fall back below.
+  }
+
+  return "http://127.0.0.1:3001/api";
+}
+
+function localSalarySlipDownloadUrl(objectPath: string) {
+  return `${localApiBaseUrl()}/business/salary-slips/local/${Buffer.from(objectPath).toString("base64url")}`;
+}
+
+async function writeLocalObject(objectPath: string, body: Uint8Array) {
+  const absolutePath = path.join(localStorageRoot(), objectPath);
+  await mkdir(path.dirname(absolutePath), { recursive: true });
+  await writeFile(absolutePath, body);
+}
+
+async function readLocalObject(objectPath: string) {
+  const root = localStorageRoot();
+  const absolutePath = path.resolve(root, objectPath);
+  if (!absolutePath.startsWith(root + path.sep)) {
+    throw new Error("Invalid local storage path.");
+  }
+  return readFile(absolutePath);
 }
 
 function encodeObjectPath(objectPath: string) {
@@ -208,6 +250,35 @@ export async function uploadFundReceipt(input: {
   };
 }
 
+export async function uploadSalarySlip(input: {
+  fileName: string;
+  body: Uint8Array;
+  tenantId: string;
+  employeeId: string;
+}) : Promise<UploadedFileRef> {
+  const objectPath = buildObjectPath(
+    `salary-slips/${input.tenantId}/${input.employeeId}`,
+    input.fileName,
+  );
+  const config = getSupabaseStorageConfig();
+  if (!config) {
+    await writeLocalObject(objectPath, input.body);
+    return {
+      fileName: sanitizeFileName(input.fileName),
+      path: objectPath,
+      url: localSalarySlipDownloadUrl(objectPath),
+    };
+  }
+
+  await uploadObject(config.salarySlipsBucket, objectPath, input.body, "application/pdf");
+
+  return {
+    fileName: sanitizeFileName(input.fileName),
+    path: objectPath,
+    url: await signedObjectUrl(config.salarySlipsBucket, objectPath),
+  };
+}
+
 export async function resolveExpenseAttachmentUrl(objectPath?: string | null) {
   if (!objectPath) {
     return undefined;
@@ -240,4 +311,29 @@ export async function resolveFundReceiptUrl(objectPath?: string | null) {
   } catch {
     return undefined;
   }
+}
+
+export async function resolveSalarySlipUrl(objectPath?: string | null) {
+  if (!objectPath) {
+    return undefined;
+  }
+
+  const config = getSupabaseStorageConfig();
+  if (!config) {
+    return localSalarySlipDownloadUrl(objectPath);
+  }
+
+  try {
+    return await signedObjectUrl(config.salarySlipsBucket, objectPath);
+  } catch {
+    return undefined;
+  }
+}
+
+export async function readLocalSalarySlipByToken(token: string) {
+  const objectPath = Buffer.from(token, "base64url").toString("utf8");
+  if (!objectPath.startsWith("salary-slips/")) {
+    throw new Error("Invalid salary slip path.");
+  }
+  return readLocalObject(objectPath);
 }

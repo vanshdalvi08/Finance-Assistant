@@ -50,6 +50,12 @@ const employeeSchema = z
     payType: z.enum(["monthly", "hourly"]),
     salary: z.coerce.number().min(0, "Salary must be greater than 0"),
     hourlyRate: z.coerce.number().min(0).optional(),
+    joiningDate: z.string().optional(),
+    bankName: z.string().max(120).optional(),
+    bankAccountNumber: z.string().max(100).optional(),
+    uan: z.string().max(100).optional(),
+    pfNumber: z.string().max(100).optional(),
+    esiNumber: z.string().max(100).optional(),
     status: z.enum(["Active", "Inactive"]),
   })
   .superRefine((data, ctx) => {
@@ -130,6 +136,12 @@ export default function Employees() {
       payType: "monthly",
       salary: 0,
       hourlyRate: 0,
+      joiningDate: "",
+      bankName: "",
+      bankAccountNumber: "",
+      uan: "",
+      pfNumber: "",
+      esiNumber: "",
       status: "Active",
     },
   });
@@ -159,6 +171,12 @@ export default function Employees() {
         salary: payload.salary,
         payType: payload.payType,
         hourlyRate: payload.hourlyRate,
+        joiningDate: payload.joiningDate || null,
+        bankName: payload.bankName || null,
+        bankAccountNumber: payload.bankAccountNumber || null,
+        uan: payload.uan || null,
+        pfNumber: payload.pfNumber || null,
+        esiNumber: payload.esiNumber || null,
         profilePhotoUrl: payload.profilePhotoUrl ?? undefined,
         department: payload.department,
         status: payload.status === "Active" ? "active" : "inactive",
@@ -243,6 +261,12 @@ export default function Employees() {
       payType: "monthly",
       salary: 0,
       hourlyRate: 0,
+      joiningDate: "",
+      bankName: "",
+      bankAccountNumber: "",
+      uan: "",
+      pfNumber: "",
+      esiNumber: "",
       status: "Active",
     });
   }
@@ -262,6 +286,12 @@ export default function Employees() {
       payType: "monthly",
       salary: 0,
       hourlyRate: 0,
+      joiningDate: "",
+      bankName: "",
+      bankAccountNumber: "",
+      uan: "",
+      pfNumber: "",
+      esiNumber: "",
       status: "Active",
     });
     setIsDialogOpen(true);
@@ -282,6 +312,12 @@ export default function Employees() {
       payType: employee.payType ?? (employee.hourlyRate ? "hourly" : "monthly"),
       salary: employee.salary,
       hourlyRate: employee.hourlyRate ?? 0,
+      joiningDate: employee.joiningDate?.slice(0, 10) ?? "",
+      bankName: employee.bankName ?? "",
+      bankAccountNumber: employee.bankAccountNumber ?? "",
+      uan: employee.uan ?? "",
+      pfNumber: employee.pfNumber ?? "",
+      esiNumber: employee.esiNumber ?? "",
       status: employee.status,
     });
     setIsDialogOpen(true);
@@ -590,6 +626,88 @@ export default function Employees() {
                               <SelectItem value="HR">HR</SelectItem>
                             </SelectContent>
                           </Select>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <FormField
+                      control={form.control}
+                      name="joiningDate"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Date of Joining</FormLabel>
+                          <FormControl>
+                            <Input type="date" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="bankName"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Bank Name</FormLabel>
+                          <FormControl>
+                            <Input placeholder="Bank name" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+                  <FormField
+                    control={form.control}
+                    name="bankAccountNumber"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Bank Account Number</FormLabel>
+                        <FormControl>
+                          <Input inputMode="numeric" autoComplete="off" placeholder="Account number" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                    <FormField
+                      control={form.control}
+                      name="uan"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>UAN</FormLabel>
+                          <FormControl>
+                            <Input placeholder="UAN" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="pfNumber"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>PF Number</FormLabel>
+                          <FormControl>
+                            <Input placeholder="PF number" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="esiNumber"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>ESI Number</FormLabel>
+                          <FormControl>
+                            <Input placeholder="ESI number" {...field} />
+                          </FormControl>
                           <FormMessage />
                         </FormItem>
                       )}

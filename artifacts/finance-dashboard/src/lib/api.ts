@@ -12,7 +12,7 @@ import {
   updateClientAccount,
   updateEmployeeAccount,
 } from "@/auth/auth-service";
-import { requestJson } from "@/auth/http-client";
+import { requestBlob, requestJson } from "@/auth/http-client";
 import type { AuthUser } from "@/auth/types";
 
 export type ApprovalStatus = "draft" | "submitted" | "approved" | "rejected";
@@ -38,6 +38,12 @@ export interface Employee {
   salary: number;
   payType: "monthly" | "hourly";
   hourlyRate?: number;
+  joiningDate?: string | null;
+  bankName?: string | null;
+  bankAccountNumber?: string | null;
+  uan?: string | null;
+  pfNumber?: string | null;
+  esiNumber?: string | null;
   status: "Active" | "Inactive";
 }
 
@@ -80,6 +86,58 @@ export interface Salary {
   hours?: number;
   rate?: number;
   timesheetId?: string;
+}
+
+export interface SalarySlipLineItem {
+  label: string;
+  amount: number;
+}
+
+export interface SalarySlipDraft {
+  salaryIds: string[];
+  accountId: string;
+  companyName: string;
+  companyAddress: string;
+  payPeriod: string;
+  paymentDate: string;
+  employeeId: string;
+  employeeName: string;
+  designation: string;
+  department: string;
+  joiningDate: string;
+  uan: string;
+  pfNumber: string;
+  esiNumber: string;
+  bankName: string;
+  bankAccountNumber: string;
+  grossWages: number;
+  totalWorkingDays: number;
+  leaveDays: number;
+  lopDays: number;
+  paidDays: number;
+  earnings: SalarySlipLineItem[];
+  deductions: SalarySlipLineItem[];
+  totalEarnings: number;
+  totalDeductions: number;
+  netSalary: number;
+  note: string;
+}
+
+export interface GeneratedSalarySlip {
+  id: string;
+  employeeId: string;
+  salaryIds: string[];
+  accountId: string;
+  payPeriod: string;
+  paymentDate: string;
+  grossAmount: number;
+  deductionAmount: number;
+  netAmount: number;
+  snapshot: SalarySlipDraft;
+  fileName: string;
+  downloadUrl?: string;
+  emailedAt?: string | null;
+  createdAt: string;
 }
 
 export interface FinancialAccount {
@@ -428,6 +486,12 @@ interface AddEmployeeInput {
   salary: number;
   payType: "monthly" | "hourly";
   hourlyRate?: number;
+  joiningDate?: string | null;
+  bankName?: string | null;
+  bankAccountNumber?: string | null;
+  uan?: string | null;
+  pfNumber?: string | null;
+  esiNumber?: string | null;
   status: "Active" | "Inactive";
 }
 
@@ -905,6 +969,12 @@ function mapAuthUserToEmployee(user: AuthUser): Employee {
     salary: Number(user.salary ?? 0),
     payType: user.payType ?? ((user.hourlyRate ?? 0) > 0 ? "hourly" : "monthly"),
     hourlyRate: user.hourlyRate ?? undefined,
+    joiningDate: user.joiningDate ?? null,
+    bankName: user.bankName ?? null,
+    bankAccountNumber: user.bankAccountNumber ?? null,
+    uan: user.uan ?? null,
+    pfNumber: user.pfNumber ?? null,
+    esiNumber: user.esiNumber ?? null,
     status: user.status === "inactive" ? "Inactive" : "Active",
   };
 }
@@ -1497,6 +1567,12 @@ export const api = {
     salary?: number;
     payType?: "monthly" | "hourly";
     hourlyRate?: number;
+    joiningDate?: string | null;
+    bankName?: string | null;
+    bankAccountNumber?: string | null;
+    uan?: string | null;
+    pfNumber?: string | null;
+    esiNumber?: string | null;
     status?: "Active" | "Inactive" | "active" | "inactive";
   }) => {
     const existing = await api.getEmployeeProfile({ employeeId: input.id, email: input.email });
@@ -1516,6 +1592,12 @@ export const api = {
       salary: input.salary ?? 0,
       payType: input.payType ?? "monthly",
       hourlyRate: input.hourlyRate,
+      joiningDate: input.joiningDate,
+      bankName: input.bankName,
+      bankAccountNumber: input.bankAccountNumber,
+      uan: input.uan,
+      pfNumber: input.pfNumber,
+      esiNumber: input.esiNumber,
       status: input.status === "inactive" || input.status === "Inactive" ? "Inactive" : "Active",
     };
   },
@@ -1639,6 +1721,12 @@ export const api = {
       salary: input.salary,
       payType: input.payType,
       hourlyRate: input.hourlyRate,
+      joiningDate: input.joiningDate,
+      bankName: input.bankName,
+      bankAccountNumber: input.bankAccountNumber,
+      uan: input.uan,
+      pfNumber: input.pfNumber,
+      esiNumber: input.esiNumber,
       profilePhotoUrl: input.profilePhotoUrl,
       department: input.department,
       status: input.status === "Inactive" ? "inactive" : "active",
@@ -1674,6 +1762,12 @@ export const api = {
       salary: input.salary,
       payType: input.payType,
       hourlyRate: input.hourlyRate,
+      joiningDate: input.joiningDate,
+      bankName: input.bankName,
+      bankAccountNumber: input.bankAccountNumber,
+      uan: input.uan,
+      pfNumber: input.pfNumber,
+      esiNumber: input.esiNumber,
       profilePhotoUrl: input.profilePhotoUrl,
       department: input.department,
       status: input.status === "Inactive" ? "inactive" : "active",
@@ -1768,8 +1862,20 @@ export const api = {
     (scope: { employeeId?: string }): Promise<Salary[]>;
   },
 
-  getSalarySlips: async (scope: { employeeId: string } | string) =>
-    api.getSalaries({ employeeId: typeof scope === "string" ? scope : scope.employeeId }),
+  getSalarySlips: async (scope?: { employeeId?: string } | string) => {
+    const employeeId = typeof scope === "string" ? scope : scope?.employeeId;
+    const path = withQuery("/salary-slips", { employeeId });
+    return (await businessGet<{ slips: GeneratedSalarySlip[] }>(path)).slips;
+  },
+
+  downloadSalarySlipPdf: async (downloadUrl: string) =>
+    requestBlob(downloadUrl),
+
+  previewSalarySlip: async (input: { salaryIds: string[]; accountId: string }) =>
+    (await businessPost<{ draft: SalarySlipDraft }>("/salary-slips/preview", input)).draft,
+
+  confirmSalarySlip: async (draft: SalarySlipDraft) =>
+    businessPost<{ slip: GeneratedSalarySlip; salaries: Salary[] }>("/salary-slips/confirm", draft),
 
   addSalary: async (input: AddSalaryInput) =>
     (await businessPost<{ salary: Salary }>("/salaries", {

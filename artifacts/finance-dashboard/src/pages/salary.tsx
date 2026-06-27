@@ -17,6 +17,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { SalarySlipDialog } from "@/components/salary-slip-dialog";
+import type { SalarySlipDraft } from "@/lib/api";
 
 type PayrollStatus = "pending" | "paid";
 type SalaryEntryMode = "pending_record" | "historical_paid";
@@ -213,6 +215,9 @@ export default function Salary() {
   const [salaryAmount, setSalaryAmount] = useState("");
   const [salaryAccountId, setSalaryAccountId] = useState("");
   const [salaryNote, setSalaryNote] = useState("");
+  const [salarySlipOpen, setSalarySlipOpen] = useState(false);
+  const [salarySlipDraft, setSalarySlipDraft] = useState<SalarySlipDraft | null>(null);
+  const [salarySlipExpectedNet, setSalarySlipExpectedNet] = useState(0);
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
   const { data: salaryData = [] } = useQuery({ queryKey: ["salaries"], queryFn: api.getSalaries });
@@ -358,39 +363,41 @@ export default function Salary() {
     .filter((record) => getPayrollDate(record).slice(0, 7) === new Date().toISOString().slice(0, 7))
     .reduce((sum, record) => sum + getPayrollAmount(record), 0);
 
-  const payMutation = useMutation({
-    mutationFn: async ({
-      group,
-      accountId,
-    }: {
-      group: PendingPayrollGroup;
-      accountId: string;
-    }): Promise<{ records: SalaryRecord[] }> => {
-      const paidRecords: SalaryRecord[] = [];
-      for (const record of group.records) {
-        const updatedRecord = await api.paySalaryRecord(record.id, { accountId });
-        paidRecords.push(updatedRecord ?? record);
-      }
-      return { records: paidRecords };
+  const previewSalarySlipMutation = useMutation({
+    mutationFn: ({ group, accountId }: { group: PendingPayrollGroup; accountId: string }) =>
+      api.previewSalarySlip({ salaryIds: group.records.map((record) => record.id), accountId }),
+    onSuccess: (draft) => {
+      setSalarySlipDraft(draft);
+      setSalarySlipExpectedNet(draft.netSalary);
+      setSalarySlipOpen(true);
     },
-    onSuccess: ({ records }) => {
+    onError: (error) => {
+      toast({
+        title: "Could not prepare salary slip",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const payMutation = useMutation({
+    mutationFn: (draft: SalarySlipDraft) => api.confirmSalarySlip(draft),
+    onSuccess: ({ salaries: records }) => {
       for (const record of records) {
         queryClient.setQueryData<SalaryRecord[]>(["salaries"], (current) => upsertSalaryRecord(current, record));
-        if (record.employeeId) {
-          queryClient.setQueryData<SalaryRecord[]>(["employee-salaries", record.employeeId], (current) =>
-            upsertSalaryRecord(current, record),
-          );
-        }
       }
+      setSalarySlipOpen(false);
+      setSalarySlipDraft(null);
       void Promise.all([
         queryClient.invalidateQueries({ queryKey: ["adminOverview"] }),
         queryClient.invalidateQueries({ queryKey: ["chartData"] }),
         queryClient.invalidateQueries({ queryKey: ["transactions"] }),
+        queryClient.invalidateQueries({ queryKey: ["salary-slips"] }),
       ]);
 
       toast({
         title: "Salary paid",
-        description: "The combined payroll payout has been moved to paid history.",
+        description: "The salary slip was stored and queued for email delivery.",
       });
     },
     onError: (error) => {
@@ -931,12 +938,13 @@ export default function Salary() {
                                               size="sm"
                                               className="w-full rounded-xl"
                                               onClick={() =>
-                                                payMutation.mutate({
+                                                previewSalarySlipMutation.mutate({
                                                   group,
                                                   accountId: payoutAccountSelections[group.key] ?? "",
                                                 })
                                               }
                                               disabled={
+                                                previewSalarySlipMutation.isPending ||
                                                 payMutation.isPending ||
                                                 !payoutAccountSelections[group.key] ||
                                                 group.totalAmount > (accountBalances.get(payoutAccountSelections[group.key] ?? "") ?? 0)
@@ -953,7 +961,9 @@ export default function Salary() {
                                                 ? "Select Account"
                                                 : group.totalAmount > (accountBalances.get(payoutAccountSelections[group.key] ?? "") ?? 0)
                                                   ? "Insufficient Funds"
-                                                  : "Pay Final Salary"}
+                                                  : previewSalarySlipMutation.isPending
+                                                    ? "Preparing Salary Slip..."
+                                                    : "Pay Final Salary"}
                                             </Button>
                                           </div>
                                         </div>
@@ -1111,6 +1121,23 @@ export default function Salary() {
           ) : null}
         </div>
       </div>
+      <SalarySlipDialog
+        open={salarySlipOpen}
+        draft={salarySlipDraft}
+        expectedNet={salarySlipExpectedNet}
+        isConfirming={payMutation.isPending}
+        onOpenChange={(open) => {
+          if (!payMutation.isPending) {
+            setSalarySlipOpen(open);
+          }
+        }}
+        onChange={setSalarySlipDraft}
+        onConfirm={() => {
+          if (salarySlipDraft) {
+            payMutation.mutate(salarySlipDraft);
+          }
+        }}
+      />
     </DashboardLayout>
   );
 }

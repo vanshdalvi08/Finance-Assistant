@@ -13,6 +13,12 @@ export interface AuthUser {
   salary?: number;
   payType?: "monthly" | "hourly";
   hourlyRate?: number;
+  joiningDate?: string | null;
+  bankName?: string | null;
+  bankAccountNumber?: string | null;
+  uan?: string | null;
+  pfNumber?: string | null;
+  esiNumber?: string | null;
   profilePhotoUrl?: string | null;
   clientInfo?: {
     companyName?: string;
@@ -75,6 +81,12 @@ export interface CreateEmployeeAccountPayload {
   salary: number;
   payType?: "monthly" | "hourly";
   hourlyRate?: number;
+  joiningDate?: string | null;
+  bankName?: string | null;
+  bankAccountNumber?: string | null;
+  uan?: string | null;
+  pfNumber?: string | null;
+  esiNumber?: string | null;
   profilePhotoUrl?: string | null;
   department?: string;
   status?: "active" | "inactive";
@@ -102,6 +114,12 @@ export interface UpdateEmployeeAccountPayload {
   salary: number;
   payType?: "monthly" | "hourly";
   hourlyRate?: number;
+  joiningDate?: string | null;
+  bankName?: string | null;
+  bankAccountNumber?: string | null;
+  uan?: string | null;
+  pfNumber?: string | null;
+  esiNumber?: string | null;
   profilePhotoUrl?: string | null;
   department?: string;
   status?: "active" | "inactive";
