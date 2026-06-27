@@ -746,6 +746,49 @@ export function sumTimesheetHours(entry: TimesheetEntry): number {
   return entry.lines.reduce((total, line) => total + DAY_KEYS.reduce((sum, day) => sum + Number(line.hours[day] ?? 0), 0), 0);
 }
 
+export type TimesheetMonthBreakdown = {
+  monthKey: string;
+  firstWorkDate: string;
+  hours: number;
+};
+
+export function timesheetMonthBreakdowns(entry: TimesheetEntry): TimesheetMonthBreakdown[] {
+  const months = new Map<string, TimesheetMonthBreakdown>();
+
+  for (const day of DAY_KEYS) {
+    const hours = entry.lines.reduce((sum, line) => sum + Number(line.hours[day] ?? 0), 0);
+    if (hours <= 0) {
+      continue;
+    }
+
+    const workDate = weekDateIso(entry.weekStart, day);
+    const monthKey = workDate.slice(0, 7);
+    const existing = months.get(monthKey);
+    months.set(monthKey, {
+      monthKey,
+      firstWorkDate: existing && existing.firstWorkDate < workDate ? existing.firstWorkDate : workDate,
+      hours: Number(((existing?.hours ?? 0) + hours).toFixed(2)),
+    });
+  }
+
+  return [...months.values()].sort((left, right) => left.monthKey.localeCompare(right.monthKey));
+}
+
+export function monthScopedTimesheetId(timesheetId: string, monthKey: string): string {
+  return `${timesheetId}:${monthKey}`;
+}
+
+export function salaryMatchesTimesheetMonth(
+  salary: Pick<SalaryRecord, "timesheetId" | "weekStart" | "date">,
+  timesheetId: string,
+  monthKey: string,
+): boolean {
+  return (
+    salary.timesheetId === monthScopedTimesheetId(timesheetId, monthKey) ||
+    (salary.timesheetId === timesheetId && payrollMonthKey(salary.weekStart ?? salary.date) === monthKey)
+  );
+}
+
 export function effectiveHourlyRate(employee?: UserProfile | null): number {
   if (!employee) {
     return 0;
@@ -767,7 +810,7 @@ export function effectiveMonthlySalary(employee?: UserProfile | null): number {
 }
 
 function payrollMonthKey(value: string): string {
-  return normalizeWeekStart(value).slice(0, 7);
+  return monthKey(value);
 }
 
 export function cloneStore(store: BusinessStore): BusinessStore {
@@ -3183,8 +3226,10 @@ export async function reviewTimesheetFast(input: {
     let salary: SalaryRecord | undefined;
     if (input.status === "approved" && input.employee) {
       if (input.employee.payType === "hourly" && effectiveHourlyRate(input.employee) > 0) {
-        const existingPayroll = current.salaries.find((item) => item.timesheetId === existing.id);
-        const hours = sumTimesheetHours(existing);
+        const approvedMonth = timesheetMonthBreakdowns(reviewedEntry).find((breakdown) => breakdown.hours > 0);
+        const salaryMonthKey = approvedMonth?.monthKey ?? payrollMonthKey(existing.weekStart);
+        const existingPayroll = current.salaries.find((item) => salaryMatchesTimesheetMonth(item, existing.id, salaryMonthKey));
+        const hours = approvedMonth?.hours ?? 0;
         const rate = effectiveHourlyRate(input.employee);
         salary = {
           id: existingPayroll?.id ?? createId("sal"),
@@ -3197,10 +3242,10 @@ export async function reviewTimesheetFast(input: {
           status: existingPayroll?.status === "paid" ? "paid" : "pending",
           source: "timesheet",
           paidAt: existingPayroll?.status === "paid" ? existingPayroll.paidAt ?? existingPayroll.date : undefined,
-          weekStart: existing.weekStart,
+          weekStart: approvedMonth?.firstWorkDate ?? existing.weekStart,
           hours,
           rate,
-          timesheetId: existing.id,
+          timesheetId: existingPayroll?.timesheetId ?? monthScopedTimesheetId(existing.id, salaryMonthKey),
           createdAt: existingPayroll?.createdAt ?? now,
           updatedAt: now,
         };

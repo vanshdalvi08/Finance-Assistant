@@ -142,6 +142,19 @@ async function createEmployee(adminToken, suffix) {
   return response.json;
 }
 
+function payrollMonthKey(record) {
+  const scopedMonth = String(record.timesheetId ?? "").match(/:(\d{4}-\d{2})$/)?.[1];
+  if (scopedMonth) {
+    return scopedMonth;
+  }
+
+  return String(record.weekStart ?? record.date).slice(0, 7);
+}
+
+function salaryBelongsToTimesheetMonth(record, timesheetId) {
+  return record.timesheetId === timesheetId || String(record.timesheetId ?? "").startsWith(`${timesheetId}:`);
+}
+
 async function createClient(adminToken, suffix) {
   const response = await api("/admin/clients", {
     method: "POST",
@@ -309,6 +322,97 @@ test("timesheet approve retries stay idempotent with key reuse protection", { co
     assert.equal(approveConflict.status, 409, JSON.stringify(approveConflict.json));
   } finally {
     await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("approved split-month timesheets create exact calendar-month payroll records", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-payroll-split-month");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+  const createdSalaryIds = [];
+  let timesheetId = null;
+
+  try {
+    const createResponse = await api("/business/timesheets", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        employeeId: employee.id,
+        weekStart: "2026-04-27",
+        lines: [
+          {
+            project: "Phase 2",
+            task: "Split month payroll",
+            hours: { mon: 8, tue: 8, wed: 8, thu: 8, fri: 8, sat: 4, sun: 4 },
+            workNotes: {
+              mon: "April work",
+              tue: "April work",
+              wed: "April work",
+              thu: "April work",
+              fri: "May work",
+              sat: "May work",
+              sun: "May work",
+            },
+          },
+        ],
+      },
+    });
+    assert.ok([200, 201].includes(createResponse.status), `Timesheet create failed: ${JSON.stringify(createResponse.json)}`);
+    timesheetId = createResponse.json.timesheet.id;
+
+    const submitResponse = await api(`/business/timesheets/${timesheetId}/submit`, {
+      method: "POST",
+      token: adminToken,
+      body: {},
+    });
+    assert.equal(submitResponse.status, 200, JSON.stringify(submitResponse.json));
+
+    const approveResponse = await api(`/business/timesheets/${timesheetId}/approve`, {
+      method: "POST",
+      token: adminToken,
+      body: { note: "approved split month payroll" },
+    });
+    assert.equal(approveResponse.status, 200, JSON.stringify(approveResponse.json));
+
+    const salariesResponse = await api(`/business/salaries?employeeId=${encodeURIComponent(employee.id)}`, {
+      token: adminToken,
+    });
+    assert.equal(salariesResponse.status, 200, JSON.stringify(salariesResponse.json));
+
+    const splitPayroll = salariesResponse.json.salaries.filter(
+      (salary) =>
+        salary.source === "timesheet" &&
+        salaryBelongsToTimesheetMonth(salary, timesheetId) &&
+        salary.status === "pending",
+    );
+    createdSalaryIds.push(...splitPayroll.map((salary) => salary.id));
+
+    assert.equal(splitPayroll.length, 2, JSON.stringify(splitPayroll));
+
+    const byMonth = new Map(splitPayroll.map((salary) => [payrollMonthKey(salary), salary]));
+    const april = byMonth.get("2026-04");
+    const may = byMonth.get("2026-05");
+    assert.ok(april, JSON.stringify(splitPayroll));
+    assert.ok(may, JSON.stringify(splitPayroll));
+
+    assert.equal(april.hours, 32);
+    assert.equal(april.rate, 100);
+    assert.equal(april.amount, 3200);
+    assert.equal(april.weekStart.slice(0, 10), "2026-04-27");
+
+    assert.equal(may.hours, 16);
+    assert.equal(may.rate, 100);
+    assert.equal(may.amount, 1600);
+    assert.equal(may.timesheetId, `${timesheetId}:2026-05`);
+  } finally {
+    for (const salaryId of createdSalaryIds) {
+      await api(`/business/salaries/${salaryId}`, { method: "DELETE", token: adminToken });
+    }
+    if (timesheetId) {
+      await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
+    }
     await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
   }
 });

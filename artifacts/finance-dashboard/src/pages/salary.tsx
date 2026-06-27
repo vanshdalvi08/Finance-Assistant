@@ -54,6 +54,7 @@ type PendingPayrollGroup = {
 
 type WorklogDay = {
   key: string;
+  dateKey: string;
   dayLabel: string;
   dateLabel: string;
   monthLabel: string;
@@ -134,13 +135,18 @@ function upsertSalaryRecord(current: SalaryRecord[] | undefined, nextRecord: Sal
   return current.map((record) => (record.id === nextRecord.id ? nextRecord : record));
 }
 
+function scopedMonthKeyFromTimesheetId(value?: string) {
+  const match = value?.match(/:(\d{4}-\d{2})$/);
+  return match?.[1];
+}
+
 function monthLabelFromRecord(record: SalaryRecord) {
-  const sourceDate = record.weekStart ?? record.date;
+  const sourceDate = scopedMonthKeyFromTimesheetId(record.timesheetId) ?? record.weekStart ?? record.date;
   return sourceDate ? format(new Date(sourceDate), "MMMM yyyy") : "Unknown month";
 }
 
 function monthKeyFromRecord(record: SalaryRecord) {
-  const sourceDate = record.weekStart ?? record.date;
+  const sourceDate = scopedMonthKeyFromTimesheetId(record.timesheetId) ?? record.weekStart ?? record.date;
   return sourceDate ? format(new Date(sourceDate), "yyyy-MM") : "unknown";
 }
 
@@ -154,6 +160,14 @@ function timesheetTotalHours(timesheet: TimesheetEntry) {
       total + DAY_KEYS.reduce((lineTotal, dayKey) => lineTotal + Number(line.hours?.[dayKey] ?? 0), 0),
     0,
   );
+}
+
+function baseTimesheetId(value?: string) {
+  if (!value) {
+    return undefined;
+  }
+
+  return value.replace(/:\d{4}-\d{2}$/, "");
 }
 
 function weekRangeLabel(sourceDate: string) {
@@ -173,6 +187,7 @@ function buildWorklogDays(timesheet: TimesheetEntry): WorklogDay[] {
 
     return {
       key: `${timesheet.id}-${dayKey}`,
+      dateKey: format(date, "yyyy-MM-dd"),
       dayLabel: format(date, "EEE"),
       dateLabel: format(date, "dd MMM yyyy"),
       monthLabel: format(date, "MMMM yyyy"),
@@ -276,6 +291,7 @@ export default function Salary() {
         const pendingTimesheetIds = new Set(
           group.records
             .map((record) => record.timesheetId)
+            .map((timesheetId) => baseTimesheetId(timesheetId))
             .filter((timesheetId): timesheetId is string => Boolean(timesheetId)),
         );
 
@@ -764,7 +780,9 @@ export default function Salary() {
                                 weekStart: record.weekStart,
                                 date: record.date,
                                 hours: record.hours,
-                                timesheet: record.timesheetId ? timesheetById.get(record.timesheetId) : undefined,
+                                timesheet: baseTimesheetId(record.timesheetId)
+                                  ? timesheetById.get(baseTimesheetId(record.timesheetId)!)
+                                  : undefined,
                               }));
 
                         return (
@@ -949,7 +967,9 @@ export default function Salary() {
                                       <CardContent className="space-y-4">
                                         {worklogEntries.map((entry) => {
                                           const timesheet = entry.timesheet;
-                                          const worklogDays = timesheet ? buildWorklogDays(timesheet) : [];
+                                          const worklogDays = timesheet
+                                            ? buildWorklogDays(timesheet).filter((day) => day.dateKey.slice(0, 7) === group.monthKey)
+                                            : [];
                                           const groupedByMonth = worklogDays.reduce<Record<string, WorklogDay[]>>((accumulator, day) => {
                                             accumulator[day.monthLabel] = [...(accumulator[day.monthLabel] ?? []), day];
                                             return accumulator;

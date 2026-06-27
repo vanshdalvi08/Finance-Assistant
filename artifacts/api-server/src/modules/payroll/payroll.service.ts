@@ -9,18 +9,21 @@ import {
   effectiveMonthlySalary,
   loadEmployeeProfile,
   loadEmployees,
+  monthScopedTimesheetId,
   normalizeDate,
   normalizeWeekStart,
   nowIso,
   pushAuditEvent,
   readStore,
+  salaryMatchesTimesheetMonth,
   sumTimesheetHours,
+  timesheetMonthBreakdowns,
   updateStore,
 } from "../../lib/business-store";
 import { assertEmployeeSelfAccess, assertTenantAccess } from "../../lib/policies";
 import { hashSha256 } from "../../lib/security";
 import { DEFAULT_TENANT_ID } from "../../lib/tenants";
-import { assertFinancialAccount, availableFundsByAccount } from "../../lib/financial-accounts";
+import { assertFinancialAccount, availableFundsByAccount, preferredFinancialAccount } from "../../lib/financial-accounts";
 
 export type SalaryActor = {
   userId?: string;
@@ -100,28 +103,26 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
     if (employee?.payType !== "hourly") {
       return false;
     }
-    const hours = sumTimesheetHours(timesheet);
-    if (hours <= 0) {
-      return false;
-    }
-    const existing = store.salaries.find(
-      (salary) =>
-        tenantSalaryFilter(salary, tenantId) &&
-        salary.source === "timesheet" &&
-        salary.timesheetId === timesheet.id,
-    );
     const rate = effectiveHourlyRate(employee);
-    return (
-      !existing ||
-      (
-        existing.status === "pending" &&
+    return timesheetMonthBreakdowns(timesheet).some((breakdown) => {
+      const existing = store.salaries.find(
+        (salary) =>
+          tenantSalaryFilter(salary, tenantId) &&
+          salary.source === "timesheet" &&
+          salaryMatchesTimesheetMonth(salary, timesheet.id, breakdown.monthKey),
+      );
+      return (
+        !existing ||
         (
-          Number(existing.hours ?? 0) !== hours ||
-          Number(existing.rate ?? 0) !== rate ||
-          existing.amount !== Math.round(hours * rate)
+          existing.status === "pending" &&
+          (
+            Number(existing.hours ?? 0) !== breakdown.hours ||
+            Number(existing.rate ?? 0) !== rate ||
+            existing.amount !== Math.round(breakdown.hours * rate)
+          )
         )
-      )
-    );
+      );
+    });
   });
 
   const needsMonthlyReconciliation = Array.from(approvedMonthlyGroups.entries()).some(
@@ -159,44 +160,43 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
       }
       const employee = employeeById.get(timesheet.employeeId);
       if (employee?.payType === "hourly") {
-        const existingIndex = nextSalaries.findIndex(
-          (salary) =>
-            tenantSalaryFilter(salary, tenantId) &&
-            salary.source === "timesheet" &&
-            salary.timesheetId === timesheet.id,
-        );
-        const existing = existingIndex >= 0 ? nextSalaries[existingIndex] : undefined;
-        if (existing?.status === "paid") {
-          continue;
-        }
-
-        const hours = sumTimesheetHours(timesheet);
-        if (hours <= 0) {
-          continue;
-        }
         const rate = effectiveHourlyRate(employee);
-        const salary: SalaryRecord = {
-          id: existing?.id ?? createId("sal"),
-          tenantId,
-          employeeId: employee.id,
-          employeeNameSnapshot: employee.name,
-          amount: Math.round(hours * rate),
-          date: existing?.date ?? updatedAt,
-          note: existing?.note || `Timesheet payout for week of ${timesheet.weekStart}`,
-          status: "pending",
-          source: "timesheet",
-          weekStart: timesheet.weekStart,
-          hours,
-          rate,
-          timesheetId: timesheet.id,
-          createdAt: existing?.createdAt ?? updatedAt,
-          updatedAt,
-        };
+        for (const breakdown of timesheetMonthBreakdowns(timesheet)) {
+          const existingIndex = nextSalaries.findIndex(
+            (salary) =>
+              tenantSalaryFilter(salary, tenantId) &&
+              salary.source === "timesheet" &&
+              salaryMatchesTimesheetMonth(salary, timesheet.id, breakdown.monthKey),
+          );
+          const existing = existingIndex >= 0 ? nextSalaries[existingIndex] : undefined;
+          if (existing?.status === "paid") {
+            continue;
+          }
 
-        if (existingIndex >= 0) {
-          nextSalaries[existingIndex] = salary;
-        } else {
-          nextSalaries.unshift(salary);
+          const salary: SalaryRecord = {
+            id: existing?.id ?? createId("sal"),
+            tenantId,
+            accountId: existing?.accountId,
+            employeeId: employee.id,
+            employeeNameSnapshot: employee.name,
+            amount: Math.round(breakdown.hours * rate),
+            date: existing?.date ?? updatedAt,
+            note: existing?.note || `Timesheet payout for ${breakdown.monthKey}`,
+            status: "pending",
+            source: "timesheet",
+            weekStart: breakdown.firstWorkDate,
+            hours: breakdown.hours,
+            rate,
+            timesheetId: existing?.timesheetId ?? monthScopedTimesheetId(timesheet.id, breakdown.monthKey),
+            createdAt: existing?.createdAt ?? updatedAt,
+            updatedAt,
+          };
+
+          if (existingIndex >= 0) {
+            nextSalaries[existingIndex] = salary;
+          } else {
+            nextSalaries.unshift(salary);
+          }
         }
         continue;
       }
@@ -597,7 +597,10 @@ export async function paySalary(
         return current;
       }
 
-      const selectedAccountId = options?.accountId?.trim() || existing.accountId;
+      const selectedAccountId =
+        options?.accountId?.trim() ||
+        existing.accountId ||
+        preferredFinancialAccount(current, actor.tenantId)?.id;
       if (!selectedAccountId) {
         throw new SalaryServiceError("invalid_input", "Select a financial account before paying salary.");
       }

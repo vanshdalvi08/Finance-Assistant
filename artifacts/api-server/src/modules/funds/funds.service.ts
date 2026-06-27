@@ -3,6 +3,7 @@ import { db } from "@workspace/db";
 import { idempotencyKeysTable, type ActorRole } from "@workspace/db/schema";
 import {
   type FundRecord,
+  createDefaultFinancialAccount,
   createId,
   normalizeDate,
   nowIso,
@@ -10,6 +11,7 @@ import {
   readStore,
   updateStore,
 } from "../../lib/business-store";
+import { assertFinancialAccount, preferredFinancialAccount } from "../../lib/financial-accounts";
 import { hashSha256 } from "../../lib/security";
 import { assertTenantAccess } from "../../lib/policies";
 import { DEFAULT_TENANT_ID } from "../../lib/tenants";
@@ -94,6 +96,51 @@ function changedFundFields(previous: FundRecord | null | undefined, next: FundRe
   if ((previous.receiptName || "") !== (next.receiptName || "")) fields.push("receiptName");
   if ((previous.receiptPath || "") !== (next.receiptPath || "")) fields.push("receiptPath");
   return fields;
+}
+
+function resolveFundAccount(
+  current: Awaited<ReturnType<typeof readStore>>,
+  tenantId: string,
+  requestedAccountId?: string,
+  existingAccountId?: string,
+) {
+  const selectedAccountId = requestedAccountId?.trim() || existingAccountId?.trim() || "";
+  if (selectedAccountId) {
+    return {
+      accountId: assertFinancialAccount(
+        current,
+        tenantId,
+        selectedAccountId,
+        (message) => new FundsServiceError("invalid_input", message),
+      ).id,
+      financialAccounts: current.financialAccounts,
+    };
+  }
+
+  const preferredAccount = preferredFinancialAccount(current, tenantId);
+  if (preferredAccount?.isActive) {
+    return {
+      accountId: preferredAccount.id,
+      financialAccounts: current.financialAccounts,
+    };
+  }
+
+  const defaultAccount = createDefaultFinancialAccount(tenantId);
+  const existingDefault = current.financialAccounts.find((account) => account.id === defaultAccount.id);
+  if (existingDefault) {
+    if (!existingDefault.isActive) {
+      throw new FundsServiceError("invalid_input", "Selected financial account is inactive.");
+    }
+    return {
+      accountId: existingDefault.id,
+      financialAccounts: current.financialAccounts,
+    };
+  }
+
+  return {
+    accountId: defaultAccount.id,
+    financialAccounts: [defaultAccount, ...current.financialAccounts],
+  };
 }
 
 async function attachFundReceiptUrl(fund: FundRecord) {
@@ -211,18 +258,16 @@ export async function saveFund(
       if (payload.amount <= 0) {
         throw new FundsServiceError("invalid_input", "Fund amount must be greater than zero.");
       }
-      const selectedAccountId = payload.accountId || existing?.accountId || undefined;
-      if (selectedAccountId) {
-        const matchedAccount = current.financialAccounts.find((account) => account.id === selectedAccountId) ?? null;
-        if (!matchedAccount) {
-          throw new FundsServiceError("invalid_input", "Selected financial account was not found.");
-        }
-        assertTenantAccess(matchedAccount.tenantId, actor.tenantId, () => new FundsServiceError("forbidden", "Forbidden"));
-      }
+      const { accountId, financialAccounts } = resolveFundAccount(
+        current,
+        actor.tenantId,
+        payload.accountId,
+        existing?.accountId,
+      );
       fund = {
         id: input.id ?? existing?.id ?? createId("fund"),
         tenantId: actor.tenantId,
-        accountId: selectedAccountId,
+        accountId,
         source: payload.source,
         amount: payload.amount,
         date: payload.date,
@@ -237,6 +282,7 @@ export async function saveFund(
       return pushAuditEvent(
         {
           ...current,
+          financialAccounts,
           funds: existing ? current.funds.map((item) => (item.id === fund!.id ? fund! : item)) : [fund, ...current.funds],
         },
         {
