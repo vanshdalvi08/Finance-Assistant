@@ -283,7 +283,7 @@ async function getNextEmployeeId(tenantId: string): Promise<string> {
   const rows = await db
     .select({ employeeId: usersTable.employeeId })
     .from(usersTable)
-    .where(and(eq(usersTable.role, "employee"), eq(usersTable.tenantId, tenantId.trim())))
+    .where(eq(usersTable.tenantId, tenantId.trim()))
     .orderBy(desc(usersTable.createdAt));
 
   const highest = rows.reduce((max, row) => {
