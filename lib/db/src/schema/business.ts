@@ -397,6 +397,7 @@ export const salariesTable = pgTable(
     weekStart: timestamp("week_start", { withTimezone: true }),
     hours: real("hours"),
     rate: integer("rate"),
+    days: integer("days"),
     timesheetId: text("timesheet_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -412,6 +413,7 @@ export const salariesTable = pgTable(
     positiveAmount: check("salaries_amount_positive_check", sql`${table.amount} > 0`),
     nonNegativeHours: check("salaries_hours_nonnegative_check", sql`${table.hours} IS NULL OR ${table.hours} >= 0`),
     nonNegativeRate: check("salaries_rate_nonnegative_check", sql`${table.rate} IS NULL OR ${table.rate} >= 0`),
+    nonNegativeDays: check("salaries_days_nonnegative_check", sql`${table.days} IS NULL OR ${table.days} >= 0`),
   }),
 );
 

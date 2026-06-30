@@ -201,6 +201,7 @@ export interface SalaryRecord {
   weekStart?: string;
   hours?: number;
   rate?: number;
+  days?: number;
   timesheetId?: string;
   createdAt: string;
   updatedAt: string;
@@ -750,7 +751,13 @@ export type TimesheetMonthBreakdown = {
   monthKey: string;
   firstWorkDate: string;
   hours: number;
+  days: number;
 };
+
+export function daysInCalendarMonth(monthKey: string): number {
+  const [year, month] = monthKey.split("-").map(Number);
+  return new Date(year!, month!, 0).getDate();
+}
 
 export function timesheetMonthBreakdowns(entry: TimesheetEntry): TimesheetMonthBreakdown[] {
   const months = new Map<string, TimesheetMonthBreakdown>();
@@ -768,6 +775,7 @@ export function timesheetMonthBreakdowns(entry: TimesheetEntry): TimesheetMonthB
       monthKey,
       firstWorkDate: existing && existing.firstWorkDate < workDate ? existing.firstWorkDate : workDate,
       hours: Number(((existing?.hours ?? 0) + hours).toFixed(2)),
+      days: (existing?.days ?? 0) + 1,
     });
   }
 
@@ -1035,6 +1043,7 @@ function salaryFromRow(row: DbSalary): SalaryRecord {
     weekStart: row.weekStart ? normalizeWeekStart(toIso(row.weekStart)) : undefined,
     hours: row.hours ?? undefined,
     rate: row.rate ?? undefined,
+    days: (row as { days?: number | null }).days ?? undefined,
     timesheetId: row.timesheetId ?? undefined,
     createdAt: toIso(row.createdAt),
     updatedAt: toIso(row.updatedAt),
@@ -1057,6 +1066,7 @@ function salaryToRow(salary: SalaryRecord) {
     weekStart: salary.weekStart ? toDate(salary.weekStart) : null,
     hours: salary.hours ?? null,
     rate: salary.rate ?? null,
+    days: salary.days ?? null,
     timesheetId: salary.timesheetId?.trim() || null,
     createdAt: toDate(salary.createdAt),
     updatedAt: toDate(salary.updatedAt),
@@ -1850,6 +1860,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
       weekStart: salary.weekStart ? normalizeWeekStart(String(salary.weekStart)) : undefined,
       hours: salary.hours ?? undefined,
       rate: salary.rate ?? undefined,
+      days: salary.days ?? undefined,
       timesheetId: salary.timesheetId?.trim() || undefined,
       createdAt: normalizeDate(String(salary.createdAt ?? nowIso())),
       updatedAt: normalizeDate(String(salary.updatedAt ?? salary.createdAt ?? nowIso())),
@@ -3252,43 +3263,51 @@ export async function reviewTimesheetFast(input: {
       } else {
         const monthlyAmount = effectiveMonthlySalary(input.employee);
         if (monthlyAmount > 0) {
-          const monthKey = payrollMonthKey(existing.weekStart);
+          const reviewedBreakdown = timesheetMonthBreakdowns(reviewedEntry).find((b) => b.days > 0);
+          const monthKey = reviewedBreakdown?.monthKey ?? payrollMonthKey(existing.weekStart);
           const existingPayroll = current.salaries.find(
             (item) =>
               (item.tenantId ?? DEFAULT_TENANT_ID) === input.tenantId &&
               item.source === "timesheet" &&
               item.employeeId === input.employee!.id &&
               item.rate == null &&
-              payrollMonthKey(item.weekStart ?? item.date) === monthKey,
+              salaryMatchesTimesheetMonth(item, existing.id, monthKey),
           );
-          const approvedMonthTimesheets = current.timesheets
+          const allApprovedTimesheets = current.timesheets
             .map((timesheet) => (timesheet.id === reviewedEntry.id ? reviewedEntry : timesheet))
             .filter(
               (timesheet) =>
                 timesheet.employeeId === input.employee!.id &&
-                timesheet.status === "approved" &&
-                payrollMonthKey(timesheet.weekStart) === monthKey,
+                timesheet.status === "approved",
             );
-          const monthHours = approvedMonthTimesheets.reduce(
-            (total, timesheet) => total + sumTimesheetHours(timesheet),
-            0,
-          );
+          let monthDays = 0;
+          let monthHours = 0;
+          for (const timesheet of allApprovedTimesheets) {
+            for (const breakdown of timesheetMonthBreakdowns(timesheet)) {
+              if (breakdown.monthKey === monthKey) {
+                monthDays += breakdown.days;
+                monthHours += breakdown.hours;
+              }
+            }
+          }
+          const proratedAmount = Math.round(monthlyAmount / daysInCalendarMonth(monthKey) * monthDays);
 
           salary = {
             id: existingPayroll?.id ?? createId("sal"),
             tenantId: input.employee.tenantId ?? input.tenantId ?? DEFAULT_TENANT_ID,
             employeeId: input.employee.id,
             employeeNameSnapshot: input.employee.name,
-            amount: monthlyAmount,
+            amount: proratedAmount > 0 ? proratedAmount : monthlyAmount,
             date: existingPayroll?.date ?? now,
             note: input.note?.trim() || `Monthly salary for ${monthKey}`,
             status: existingPayroll?.status === "paid" ? "paid" : "pending",
             source: "timesheet",
             paidAt: existingPayroll?.status === "paid" ? existingPayroll.paidAt ?? existingPayroll.date : undefined,
-            weekStart: existingPayroll?.weekStart ?? existing.weekStart,
+            weekStart: reviewedBreakdown?.firstWorkDate ?? existingPayroll?.weekStart ?? existing.weekStart,
             hours: monthHours,
             rate: undefined,
-            timesheetId: existingPayroll?.timesheetId ?? existing.id,
+            days: monthDays,
+            timesheetId: existingPayroll?.timesheetId ?? monthScopedTimesheetId(existing.id, monthKey),
             createdAt: existingPayroll?.createdAt ?? now,
             updatedAt: now,
           };

@@ -51,6 +51,7 @@ const salarySchema = z.object({
   weekStart: dateSchema.optional(),
   hours: z.coerce.number().optional(),
   rate: z.coerce.number().optional(),
+  days: z.coerce.number().int().min(0).optional(),
   timesheetId: businessIdSchema.optional(),
 });
 
@@ -271,6 +272,7 @@ function salaryResponse(salary: SalaryRecord, role?: string) {
     weekStart: salary.weekStart,
     hours: salary.hours,
     rate: salary.rate,
+    days: salary.days ?? null,
   };
 
   if (role === "employee") {

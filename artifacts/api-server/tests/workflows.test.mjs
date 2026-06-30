@@ -142,6 +142,24 @@ async function createEmployee(adminToken, suffix) {
   return response.json;
 }
 
+async function createMonthlyEmployee(adminToken, suffix, salary) {
+  const response = await api("/admin/employees", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      name: `Phase Two ${suffix}`,
+      email: `${suffix}@example.com`,
+      phone: `${Math.floor(9000000000 + Math.random() * 99999999)}`,
+      position: "QA Analyst",
+      salary,
+      payType: "monthly",
+      department: "QA",
+    },
+  });
+  assert.equal(response.status, 201, `Employee creation failed: ${JSON.stringify(response.json)}`);
+  return response.json;
+}
+
 function payrollMonthKey(record) {
   const scopedMonth = String(record.timesheetId ?? "").match(/:(\d{4}-\d{2})$/)?.[1];
   if (scopedMonth) {
@@ -542,6 +560,131 @@ test("split-month week with hours only in the non-weekStart month creates no pha
     assert.equal(record.hours, 3);
     assert.equal(record.amount, 300);
     assert.ok(String(record.timesheetId ?? "").includes(":2026-05"), `Expected scoped timesheetId, got ${record.timesheetId}`);
+  } finally {
+    for (const id of salaryIds) {
+      await api(`/business/salaries/${id}`, { method: "DELETE", token: adminToken });
+    }
+    if (timesheetId) {
+      await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
+    }
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("approved monthly-employee timesheet creates prorated payroll based on days worked", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-monthly-prorate");
+  // Annual salary 360000 -> monthly = 30000. April has 30 days -> daily rate = 1000.
+  const createdEmployee = await createMonthlyEmployee(adminToken, suffix, 360000);
+  const employee = createdEmployee.user;
+  const salaryIds = [];
+  let timesheetId = null;
+
+  try {
+    const createResponse = await api("/business/timesheets", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        employeeId: employee.id,
+        weekStart: "2026-04-06",
+        lines: [
+          {
+            project: "Monthly Prorate",
+            task: "Five day week",
+            hours: { mon: 8, tue: 8, wed: 8, thu: 8, fri: 8, sat: 0, sun: 0 },
+          },
+        ],
+      },
+    });
+    assert.ok([200, 201].includes(createResponse.status), JSON.stringify(createResponse.json));
+    timesheetId = createResponse.json.timesheet.id;
+
+    await api(`/business/timesheets/${timesheetId}/submit`, { method: "POST", token: adminToken, body: {} });
+    await api(`/business/timesheets/${timesheetId}/approve`, { method: "POST", token: adminToken, body: { note: "ok" } });
+
+    const salariesResponse = await api(`/business/salaries?employeeId=${encodeURIComponent(employee.id)}`, {
+      token: adminToken,
+    });
+    assert.equal(salariesResponse.status, 200, JSON.stringify(salariesResponse.json));
+
+    const timesheetSalaries = salariesResponse.json.salaries.filter(
+      (s) => salaryBelongsToTimesheetMonth(s, timesheetId) && s.status === "pending",
+    );
+    salaryIds.push(...timesheetSalaries.map((s) => s.id));
+
+    assert.equal(timesheetSalaries.length, 1, JSON.stringify(timesheetSalaries));
+    const record = timesheetSalaries[0];
+    assert.equal(payrollMonthKey(record), "2026-04");
+    assert.equal(record.days, 5, JSON.stringify(record));
+    assert.equal(record.amount, 5000, JSON.stringify(record));
+  } finally {
+    for (const id of salaryIds) {
+      await api(`/business/salaries/${id}`, { method: "DELETE", token: adminToken });
+    }
+    if (timesheetId) {
+      await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
+    }
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("split-month timesheet for monthly employee creates separate prorated records per calendar month", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-monthly-split");
+  // Annual salary 360000 -> monthly = 30000. April daily rate = 1000, May daily rate ~= 967.74.
+  const createdEmployee = await createMonthlyEmployee(adminToken, suffix, 360000);
+  const employee = createdEmployee.user;
+  const salaryIds = [];
+  let timesheetId = null;
+
+  try {
+    const createResponse = await api("/business/timesheets", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        employeeId: employee.id,
+        weekStart: "2026-04-27",
+        lines: [
+          {
+            project: "Monthly Split",
+            task: "Split month work",
+            hours: { mon: 8, tue: 8, wed: 8, thu: 8, fri: 8, sat: 0, sun: 0 },
+          },
+        ],
+      },
+    });
+    assert.ok([200, 201].includes(createResponse.status), JSON.stringify(createResponse.json));
+    timesheetId = createResponse.json.timesheet.id;
+
+    await api(`/business/timesheets/${timesheetId}/submit`, { method: "POST", token: adminToken, body: {} });
+    await api(`/business/timesheets/${timesheetId}/approve`, { method: "POST", token: adminToken, body: { note: "ok" } });
+
+    const salariesResponse = await api(`/business/salaries?employeeId=${encodeURIComponent(employee.id)}`, {
+      token: adminToken,
+    });
+    assert.equal(salariesResponse.status, 200, JSON.stringify(salariesResponse.json));
+
+    const splitPayroll = salariesResponse.json.salaries.filter(
+      (salary) => salaryBelongsToTimesheetMonth(salary, timesheetId) && salary.status === "pending",
+    );
+    salaryIds.push(...splitPayroll.map((salary) => salary.id));
+
+    assert.equal(splitPayroll.length, 2, JSON.stringify(splitPayroll));
+
+    const byMonth = new Map(splitPayroll.map((salary) => [payrollMonthKey(salary), salary]));
+    const april = byMonth.get("2026-04");
+    const may = byMonth.get("2026-05");
+    assert.ok(april, JSON.stringify(splitPayroll));
+    assert.ok(may, JSON.stringify(splitPayroll));
+
+    // Apr 27 (Mon) - Apr 30 (Thu) = 4 days worked in April out of 30 days.
+    assert.equal(april.days, 4, JSON.stringify(april));
+    assert.equal(april.amount, Math.round((30000 / 30) * 4), JSON.stringify(april));
+
+    // May 1 (Fri) = 1 day worked in May out of 31 days.
+    assert.equal(may.days, 1, JSON.stringify(may));
+    assert.equal(may.amount, Math.round((30000 / 31) * 1), JSON.stringify(may));
+    assert.ok(String(may.timesheetId ?? "").includes(":2026-05"), `Expected scoped timesheetId, got ${may.timesheetId}`);
   } finally {
     for (const id of salaryIds) {
       await api(`/business/salaries/${id}`, { method: "DELETE", token: adminToken });

@@ -37,6 +37,7 @@ type SalaryRecord = {
   weekStart?: string;
   hours?: number;
   rate?: number;
+  days?: number;
   paidAt?: string;
   timesheetId?: string;
 };
@@ -49,6 +50,7 @@ type PendingPayrollGroup = {
   records: SalaryRecord[];
   approvedTimesheets: TimesheetEntry[];
   totalHours: number;
+  totalDays: number;
   totalAmount: number;
   hourlyRate?: number;
   monthLabels: string[];
@@ -152,10 +154,6 @@ function monthKeyFromRecord(record: SalaryRecord) {
   return sourceDate ? format(new Date(sourceDate), "yyyy-MM") : "unknown";
 }
 
-function monthKeyFromTimesheet(timesheet: TimesheetEntry) {
-  return format(new Date(timesheet.weekStart), "yyyy-MM");
-}
-
 function timesheetTotalHours(timesheet: TimesheetEntry) {
   return timesheet.lines.reduce(
     (total, line) =>
@@ -218,6 +216,8 @@ export default function Salary() {
   const [salarySlipOpen, setSalarySlipOpen] = useState(false);
   const [salarySlipDraft, setSalarySlipDraft] = useState<SalarySlipDraft | null>(null);
   const [salarySlipExpectedNet, setSalarySlipExpectedNet] = useState(0);
+  const [addDayGroupKey, setAddDayGroupKey] = useState<string | null>(null);
+  const [addDayDate, setAddDayDate] = useState("");
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
   const { data: salaryData = [] } = useQuery({ queryKey: ["salaries"], queryFn: api.getSalaries });
@@ -270,6 +270,7 @@ export default function Salary() {
           records: [],
           approvedTimesheets: [],
           totalHours: 0,
+          totalDays: 0,
           totalAmount: 0,
           hourlyRate: undefined,
           monthLabels: [],
@@ -277,6 +278,7 @@ export default function Salary() {
 
       existing.records.push(record);
       existing.totalHours += Number(record.hours ?? 0);
+      existing.totalDays += Number(record.days ?? 0);
       existing.totalAmount += getPayrollAmount(record);
       if (!existing.hourlyRate && typeof record.rate === "number" && record.rate > 0) {
         existing.hourlyRate = record.rate;
@@ -290,9 +292,6 @@ export default function Salary() {
 
     return Array.from(groups.values())
       .map((group) => {
-        const isMonthlyTimesheetPayroll = group.records.some(
-          (record) => record.source === "timesheet" && record.rate == null,
-        );
         const pendingTimesheetIds = new Set(
           group.records
             .map((record) => record.timesheetId)
@@ -308,11 +307,7 @@ export default function Salary() {
                   (timesheet) =>
                     timesheet.employeeId === group.employeeId &&
                     timesheet.status === "approved" &&
-                    (
-                      isMonthlyTimesheetPayroll
-                        ? monthKeyFromTimesheet(timesheet) === group.monthKey
-                        : pendingTimesheetIds.has(timesheet.id)
-                    ),
+                    pendingTimesheetIds.has(timesheet.id),
                 )
                 .sort(
                   (left, right) =>
@@ -494,6 +489,52 @@ export default function Salary() {
     onError: (error) => {
       toast({
         title: "Could not save salary record",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const addExtraDayMutation = useMutation({
+    mutationFn: async ({ group, date }: { group: PendingPayrollGroup; date: string }) => {
+      const monthlyRecord = group.records.find((r) => r.source === "timesheet" && r.rate == null);
+      if (!monthlyRecord) {
+        throw new Error("Cannot find the monthly salary record to update.");
+      }
+      const employee = employees.find((e) => e.id === group.employeeId);
+      const monthlySalary = employee ? Math.max(0, Math.round(Number(employee.salary ?? 0) / 12)) : 0;
+      const [year, month] = group.monthKey.split("-").map(Number);
+      const daysInMonth = new Date(year!, month!, 0).getDate();
+      if (monthlySalary <= 0) {
+        throw new Error("Cannot calculate daily rate for this employee.");
+      }
+      if (!date) {
+        throw new Error("Select a date for the extra day.");
+      }
+      if (!date.startsWith(group.monthKey)) {
+        throw new Error(`Date must be within ${group.monthKey}.`);
+      }
+      const newDays = (Number(monthlyRecord.days ?? 0)) + 1;
+      const newAmount = Math.round(monthlySalary / daysInMonth * newDays);
+      return api.patchSalary(monthlyRecord.id, {
+        days: newDays,
+        amount: newAmount,
+        note: `${monthlyRecord.note || `Monthly salary for ${group.monthKey}`} (+1 day on ${date})`,
+      });
+    },
+    onSuccess: (updatedRecord) => {
+      queryClient.setQueryData<SalaryRecord[]>(["salaries"], (current) => upsertSalaryRecord(current, updatedRecord as SalaryRecord));
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["salaries"] }),
+        queryClient.invalidateQueries({ queryKey: ["adminOverview"] }),
+      ]);
+      toast({ title: "Extra day added", description: "The salary record was updated with one additional day." });
+      setAddDayGroupKey(null);
+      setAddDayDate("");
+    },
+    onError: (error) => {
+      toast({
+        title: "Could not add extra day",
         description: error instanceof Error ? error.message : "Please try again.",
         variant: "destructive",
       });
@@ -768,6 +809,7 @@ export default function Salary() {
                     ) : (
                       pendingPayrollGroups.map((group) => {
                         const isTimesheetGroup = group.records.some((record) => record.source === "timesheet");
+                        const isMonthlyPayroll = isTimesheetGroup && group.records.some((r) => r.source === "timesheet" && r.rate == null);
                         const displayedEntryCount = isTimesheetGroup
                           ? group.approvedTimesheets.length
                           : group.records.length;
@@ -862,8 +904,20 @@ export default function Salary() {
                                     </Card>
                                     <Card className="border-border/60">
                                       <CardContent className="pt-5">
-                                        <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Total Hours</div>
-                                        <div className="mt-2 text-2xl font-semibold">{group.totalHours}</div>
+                                        {isMonthlyPayroll && group.totalDays > 0 ? (
+                                          <>
+                                            <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Days Worked</div>
+                                            <div className="mt-2 text-2xl font-semibold">{group.totalDays}</div>
+                                            <div className="mt-1 text-xs text-muted-foreground">
+                                              {group.totalHours > 0 ? `${group.totalHours}h logged` : "This calendar month"}
+                                            </div>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Total Hours</div>
+                                            <div className="mt-2 text-2xl font-semibold">{group.totalHours}</div>
+                                          </>
+                                        )}
                                       </CardContent>
                                     </Card>
                                     <Card className="border-border/60">
@@ -896,6 +950,11 @@ export default function Salary() {
                                             </div>
                                             <div className="text-right">
                                               <div className="font-semibold tabular-nums">{formatCurrency(group.totalAmount)}</div>
+                                              {isMonthlyPayroll && group.totalDays > 0 ? (
+                                                <div className="mt-1 text-[11px] text-muted-foreground tabular-nums">
+                                                  {group.totalDays} days worked
+                                                </div>
+                                              ) : null}
                                               <Badge variant="outline" className="mt-2 text-[11px] font-normal">
                                                 Monthly total
                                               </Badge>
@@ -1037,6 +1096,57 @@ export default function Salary() {
                                             </div>
                                           );
                                         })}
+
+                                        {isMonthlyPayroll ? (
+                                          <div className="rounded-2xl border border-dashed border-border/60 bg-background/40 p-4">
+                                            {addDayGroupKey === group.key ? (
+                                              <div className="space-y-3">
+                                                <div className="text-sm font-medium">Add Extra Day</div>
+                                                <div className="flex gap-2">
+                                                  <input
+                                                    type="date"
+                                                    className="h-9 flex-1 rounded-xl border border-border/60 bg-background px-3 text-sm"
+                                                    value={addDayDate}
+                                                    min={`${group.monthKey}-01`}
+                                                    max={`${group.monthKey}-${new Date(Number(group.monthKey.split("-")[0]), Number(group.monthKey.split("-")[1]), 0).getDate().toString().padStart(2, "0")}`}
+                                                    onChange={(e) => setAddDayDate(e.target.value)}
+                                                  />
+                                                  <Button
+                                                    size="sm"
+                                                    className="rounded-xl"
+                                                    disabled={!addDayDate || addExtraDayMutation.isPending}
+                                                    onClick={() => addExtraDayMutation.mutate({ group, date: addDayDate })}
+                                                  >
+                                                    Add
+                                                  </Button>
+                                                  <Button
+                                                    size="sm"
+                                                    variant="ghost"
+                                                    className="rounded-xl"
+                                                    onClick={() => { setAddDayGroupKey(null); setAddDayDate(""); }}
+                                                  >
+                                                    Cancel
+                                                  </Button>
+                                                </div>
+                                                <div className="text-xs text-muted-foreground">
+                                                  Adds one day at the daily rate for {group.monthKey}.
+                                                </div>
+                                              </div>
+                                            ) : (
+                                              <Button
+                                                size="sm"
+                                                variant="outline"
+                                                className="w-full rounded-xl"
+                                                onClick={() => {
+                                                  setAddDayGroupKey(group.key);
+                                                  setAddDayDate(`${group.monthKey}-01`);
+                                                }}
+                                              >
+                                                + Add Extra Day
+                                              </Button>
+                                            )}
+                                          </div>
+                                        ) : null}
                                       </CardContent>
                                     </Card>
                                       </div>

@@ -288,6 +288,13 @@
       "when": 1780836000000,
       "tag": "0039_salary_slips",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1782848026918,
+      "tag": "0040_nice_frog_thor",
+      "breakpoints": true
     }
   ]
 }

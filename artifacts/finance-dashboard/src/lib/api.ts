@@ -85,6 +85,7 @@ export interface Salary {
   weekStart?: string;
   hours?: number;
   rate?: number;
+  days?: number;
   timesheetId?: string;
 }
 
@@ -471,6 +472,7 @@ interface AddSalaryInput {
   weekStart?: string;
   hours?: number;
   rate?: number;
+  days?: number;
   timesheetId?: string;
 }
 
@@ -1890,6 +1892,9 @@ export const api = {
       date: input.date ?? new Date().toISOString(),
       note: input.note ?? "",
     })).salary,
+
+  patchSalary: async (id: string, input: Partial<AddSalaryInput>) =>
+    (await businessPost<{ salary: Salary }>(`/salaries/${id}`, input, "PATCH")).salary,
 
   paySalaryRecord: async (id: string, input?: { note?: string; accountId?: string }) =>
     (await businessPost<{ salary: Salary }>(`/salaries/${id}/pay`, input ?? {})).salary,

@@ -5,10 +5,12 @@ import {
   type BusinessStore,
   type SalaryRecord,
   createId,
+  daysInCalendarMonth,
   effectiveHourlyRate,
   effectiveMonthlySalary,
   loadEmployeeProfile,
   loadEmployees,
+  monthKey as calendarMonthKey,
   monthScopedTimesheetId,
   normalizeDate,
   normalizeWeekStart,
@@ -47,6 +49,7 @@ export type SalaryInput = {
   weekStart?: string;
   hours?: number;
   rate?: number;
+  days?: number;
   timesheetId?: string;
 };
 
@@ -64,7 +67,7 @@ function tenantSalaryFilter(salary: SalaryRecord, tenantId: string) {
 }
 
 function payrollMonthKey(value: string) {
-  return normalizeWeekStart(value).slice(0, 7);
+  return calendarMonthKey(value);
 }
 
 async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string | null) {
@@ -87,6 +90,7 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
       timesheet.status === "approved" &&
       employeeById.has(timesheet.employeeId),
   );
+  // For monthly employees, group by employeeId:actualCalendarMonth using breakdown dates
   const approvedMonthlyGroups = new Map<string, typeof store.timesheets>();
 
   for (const timesheet of approvedTimesheets) {
@@ -94,8 +98,19 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
     if (employee?.payType !== "monthly") {
       continue;
     }
-    const key = `${timesheet.employeeId}:${payrollMonthKey(timesheet.weekStart)}`;
-    approvedMonthlyGroups.set(key, [...(approvedMonthlyGroups.get(key) ?? []), timesheet]);
+    const breakdowns = timesheetMonthBreakdowns(timesheet);
+    if (breakdowns.length === 0) {
+      continue;
+    }
+    for (const breakdown of breakdowns) {
+      const key = `${timesheet.employeeId}:${breakdown.monthKey}`;
+      if (!approvedMonthlyGroups.has(key)) {
+        approvedMonthlyGroups.set(key, []);
+      }
+      if (!approvedMonthlyGroups.get(key)!.includes(timesheet)) {
+        approvedMonthlyGroups.get(key)!.push(timesheet);
+      }
+    }
   }
 
   const needsHourlyReconciliation = approvedTimesheets.some((timesheet) => {
@@ -145,7 +160,11 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
 
   const needsMonthlyReconciliation = Array.from(approvedMonthlyGroups.entries()).some(
     ([key, timesheets]) => {
-      const [groupEmployeeId = "", monthKey = ""] = key.split(":");
+      const colonIdx = key.indexOf(":");
+      const groupEmployeeId = key.slice(0, colonIdx);
+      const monthKey = key.slice(colonIdx + 1);
+      const employee = employeeById.get(groupEmployeeId);
+      const monthlyAmount = employee ? effectiveMonthlySalary(employee) : 0;
       const existing = store.salaries.find(
         (salary) =>
           tenantSalaryFilter(salary, tenantId) &&
@@ -154,8 +173,30 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
           salary.rate == null &&
           payrollMonthKey(salary.weekStart ?? salary.date) === monthKey,
       );
-      const hours = timesheets.reduce((total, timesheet) => total + sumTimesheetHours(timesheet), 0);
-      return !existing || (existing.status === "pending" && Number(existing.hours ?? 0) !== hours);
+      let totalDays = 0;
+      let totalHours = 0;
+      for (const timesheet of timesheets) {
+        for (const breakdown of timesheetMonthBreakdowns(timesheet)) {
+          if (breakdown.monthKey === monthKey) {
+            totalDays += breakdown.days;
+            totalHours += breakdown.hours;
+          }
+        }
+      }
+      // Only reconcile if timesheets compute MORE days than stored (admin may have added extras).
+      const storedDays = Number(existing?.days ?? 0);
+      const reconciledDays = Math.max(totalDays, storedDays);
+      const reconciledAmount = monthlyAmount > 0
+        ? Math.round(monthlyAmount / daysInCalendarMonth(monthKey) * reconciledDays)
+        : 0;
+      return (
+        !existing ||
+        (existing.status === "pending" && (
+          Number(existing.hours ?? 0) !== totalHours ||
+          storedDays < totalDays ||
+          existing.amount !== reconciledAmount
+        ))
+      );
     },
   );
 
@@ -238,12 +279,25 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
         continue;
       }
 
-      const key = `${timesheet.employeeId}:${payrollMonthKey(timesheet.weekStart)}`;
-      currentApprovedGroups.set(key, [...(currentApprovedGroups.get(key) ?? []), timesheet]);
+      const breakdowns = timesheetMonthBreakdowns(timesheet);
+      if (breakdowns.length === 0) {
+        continue;
+      }
+      for (const breakdown of breakdowns) {
+        const key = `${timesheet.employeeId}:${breakdown.monthKey}`;
+        if (!currentApprovedGroups.has(key)) {
+          currentApprovedGroups.set(key, []);
+        }
+        if (!currentApprovedGroups.get(key)!.includes(timesheet)) {
+          currentApprovedGroups.get(key)!.push(timesheet);
+        }
+      }
     }
 
     for (const [key, timesheets] of currentApprovedGroups) {
-      const [groupEmployeeId = "", monthKey = ""] = key.split(":");
+      const colonIdx = key.indexOf(":");
+      const groupEmployeeId = key.slice(0, colonIdx);
+      const monthKey = key.slice(colonIdx + 1);
       const employee = employeeById.get(groupEmployeeId);
       if (!employee) {
         continue;
@@ -251,10 +305,24 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
       const sortedTimesheets = [...timesheets].sort((left, right) =>
         left.weekStart.localeCompare(right.weekStart),
       );
-      const hours = sortedTimesheets.reduce(
-        (total, timesheet) => total + sumTimesheetHours(timesheet),
-        0,
-      );
+
+      let totalDays = 0;
+      let totalHours = 0;
+      let firstWorkDate: string | undefined;
+      for (const timesheet of sortedTimesheets) {
+        for (const breakdown of timesheetMonthBreakdowns(timesheet)) {
+          if (breakdown.monthKey === monthKey) {
+            totalDays += breakdown.days;
+            totalHours += breakdown.hours;
+            if (!firstWorkDate || breakdown.firstWorkDate < firstWorkDate) {
+              firstWorkDate = breakdown.firstWorkDate;
+            }
+          }
+        }
+      }
+
+      const monthlyAmount = effectiveMonthlySalary(employee);
+
       const existingIndex = nextSalaries.findIndex(
         (salary) =>
           tenantSalaryFilter(salary, tenantId) &&
@@ -272,20 +340,28 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
       if (!firstTimesheet) {
         continue;
       }
+
+      // Preserve admin-added extra days: use whichever is larger — computed timesheet days or stored days.
+      const reconciledDays = Math.max(totalDays, Number(existing?.days ?? 0));
+      const proratedAmount = monthlyAmount > 0
+        ? Math.round(monthlyAmount / daysInCalendarMonth(monthKey) * reconciledDays)
+        : 0;
+
       const salary: SalaryRecord = {
         id: existing?.id ?? createId("sal"),
         tenantId,
         employeeId: employee.id,
         employeeNameSnapshot: employee.name,
-        amount: effectiveMonthlySalary(employee),
+        amount: proratedAmount > 0 ? proratedAmount : monthlyAmount,
         date: existing?.date ?? updatedAt,
         note: existing?.note || `Monthly salary for ${monthKey}`,
         status: "pending",
         source: "timesheet",
-        weekStart: existing?.weekStart ?? firstTimesheet.weekStart,
-        hours,
+        weekStart: existing?.weekStart ?? firstWorkDate ?? firstTimesheet.weekStart,
+        hours: totalHours,
         rate: undefined,
-        timesheetId: existing?.timesheetId ?? firstTimesheet.id,
+        days: reconciledDays,
+        timesheetId: existing?.timesheetId ?? monthScopedTimesheetId(firstTimesheet.id, monthKey),
         createdAt: existing?.createdAt ?? updatedAt,
         updatedAt,
       };
@@ -312,7 +388,7 @@ function ensureFunds(store: BusinessStore, amount: number, label: string, tenant
   }
 }
 
-function summarizeSalary(salary: Pick<SalaryRecord, "accountId" | "employeeId" | "employeeNameSnapshot" | "amount" | "date" | "note" | "status" | "source" | "paidAt" | "weekStart" | "hours" | "rate" | "timesheetId">) {
+function summarizeSalary(salary: Pick<SalaryRecord, "accountId" | "employeeId" | "employeeNameSnapshot" | "amount" | "date" | "note" | "status" | "source" | "paidAt" | "weekStart" | "hours" | "rate" | "days" | "timesheetId">) {
   return {
     accountId: salary.accountId ?? null,
     employeeId: salary.employeeId,
@@ -326,6 +402,7 @@ function summarizeSalary(salary: Pick<SalaryRecord, "accountId" | "employeeId" |
     weekStart: salary.weekStart ?? null,
     hours: salary.hours ?? null,
     rate: salary.rate ?? null,
+    days: salary.days ?? null,
     timesheetId: salary.timesheetId ?? null,
   };
 }
@@ -344,6 +421,7 @@ function changedSalaryFields(previous: SalaryRecord | null, next: SalaryRecord) 
     "weekStart",
     "hours",
     "rate",
+    "days",
     "timesheetId",
   ];
   if (!previous) {
@@ -520,6 +598,7 @@ export async function saveSalary(
       weekStart: input.weekStart ? normalizeWeekStart(input.weekStart) : existing?.weekStart,
       hours: input.hours ?? existing?.hours,
       rate: input.rate ?? existing?.rate,
+      days: input.days ?? existing?.days,
       timesheetId: input.timesheetId?.trim() || existing?.timesheetId,
       createdAt: existing?.createdAt ?? nowIso(),
       updatedAt: nowIso(),
