@@ -4,6 +4,8 @@ import {
   companySettingsTable,
   salariesTable,
   salarySlipsTable,
+  timesheetLinesTable,
+  timesheetsTable,
   usersTable,
   type SalarySlipSnapshot,
 } from "@workspace/db/schema";
@@ -14,6 +16,7 @@ import { paySalariesBatch, type SalaryActor } from "./payroll.service";
 import { sendMail } from "../../lib/mailer";
 import { salaryPaymentEmailTemplate } from "../../lib/email-templates";
 import { logger } from "../../lib/logger";
+import { DAY_KEYS } from "../../lib/business-store";
 
 export type SalarySlipDraft = SalarySlipSnapshot & {
   salaryIds: string[];
@@ -27,6 +30,77 @@ function formatDate(value?: Date | string | null) {
 
 function amount(value: number) {
   return Math.max(0, Math.round(Number(value) || 0));
+}
+
+function isoDateForTimesheetDay(weekStart: string, dayIndex: number) {
+  const date = new Date(weekStart);
+  date.setDate(date.getDate() + dayIndex);
+  return date.toISOString().slice(0, 10);
+}
+
+function timesheetScope(value: string) {
+  const match = value.match(/^(.+?)(?::(\d{4}-\d{2}))?$/);
+  return {
+    timesheetId: match?.[1] ?? value,
+    monthKey: match?.[2],
+  };
+}
+
+async function countWorkedDaysForSalaries(salaries: Array<{ timesheetId: string | null }>) {
+  const selectedTimesheetScopes = new Map<string, Set<string | undefined>>();
+  for (const salary of salaries) {
+    if (!salary.timesheetId) {
+      continue;
+    }
+    const scope = timesheetScope(salary.timesheetId);
+    selectedTimesheetScopes.set(scope.timesheetId, selectedTimesheetScopes.get(scope.timesheetId) ?? new Set());
+    selectedTimesheetScopes.get(scope.timesheetId)!.add(scope.monthKey);
+  }
+  if (selectedTimesheetScopes.size === 0) {
+    return 0;
+  }
+
+  const timesheetIds = Array.from(selectedTimesheetScopes.keys());
+  const [timesheetRows, lineRows] = await Promise.all([
+    db.select().from(timesheetsTable).where(inArray(timesheetsTable.id, timesheetIds)),
+    db.select().from(timesheetLinesTable).where(inArray(timesheetLinesTable.timesheetId, timesheetIds)),
+  ]);
+  const linesByTimesheet = new Map<string, Array<Record<string, number>>>();
+  for (const row of lineRows) {
+    linesByTimesheet.set(row.timesheetId, linesByTimesheet.get(row.timesheetId) ?? []);
+    linesByTimesheet.get(row.timesheetId)!.push({
+      mon: Number(row.mon ?? 0),
+      tue: Number(row.tue ?? 0),
+      wed: Number(row.wed ?? 0),
+      thu: Number(row.thu ?? 0),
+      fri: Number(row.fri ?? 0),
+      sat: Number(row.sat ?? 0),
+      sun: Number(row.sun ?? 0),
+    });
+  }
+
+  const workedDates = new Set<string>();
+  for (const timesheet of timesheetRows) {
+    const monthKeys = selectedTimesheetScopes.get(timesheet.id);
+    if (!monthKeys) {
+      continue;
+    }
+    const lines =
+      linesByTimesheet.get(timesheet.id) ??
+      (Array.isArray(timesheet.lines)
+        ? timesheet.lines.map((line) => ({ ...(line.hours ?? {}) }) as Record<string, number>)
+        : []);
+    DAY_KEYS.forEach((day, dayIndex) => {
+      const dayHours = lines.reduce((sum, line) => sum + Number(line[day] ?? 0), 0);
+      const workDate = isoDateForTimesheetDay(timesheet.weekStart.toISOString(), dayIndex);
+      const isSelectedMonth = monthKeys.has(undefined) || Array.from(monthKeys).some((monthKey) => monthKey && workDate.startsWith(monthKey));
+      if (dayHours > 0 && isSelectedMonth) {
+        workedDates.add(workDate);
+      }
+    });
+  }
+
+  return workedDates.size;
 }
 
 async function loadPendingSalaries(tenantId: string, salaryIds: string[]) {
@@ -62,21 +136,18 @@ export async function buildSalarySlipDraft(input: {
 
   const company = settingsRows[0]?.data ?? {};
   const total = salaries.reduce((sum, salary) => sum + salary.amount, 0);
-  const basic = Math.round(total * 0.5);
-  const hra = Math.round(total * 0.2);
-  const conveyance = Math.round(total * 0.1);
-  const medical = Math.round(total * 0.0833);
-  const other = Math.max(0, total - basic - hra - conveyance - medical);
   const dates = salaries.map((salary) => new Date(salary.weekStart ?? salary.date)).sort((a, b) => a.getTime() - b.getTime());
   const firstDate = dates[0] ?? new Date();
   const payPeriod = firstDate.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
   const daysInMonth = new Date(firstDate.getFullYear(), firstDate.getMonth() + 1, 0).getDate();
+  const workedDays = await countWorkedDaysForSalaries(salaries);
+  const paidDays = workedDays > 0 ? workedDays : daysInMonth;
 
   return {
     salaryIds: input.salaryIds,
     accountId: input.accountId,
     companyName: company.companyName?.trim() || "Reforix Engineering",
-    companyAddress: company.address?.trim() || "",
+    companyAddress: "Vastu Anand, Building No. 16, Parsik Nagar, Thane, Maharashtra, India",
     payPeriod,
     paymentDate: new Date().toISOString().slice(0, 10),
     employeeId: employee.employeeId ?? employee.id,
@@ -90,16 +161,16 @@ export async function buildSalarySlipDraft(input: {
     bankName: employee.bankName ?? "",
     bankAccountNumber: employee.bankAccountNumber ?? "",
     grossWages: total,
-    totalWorkingDays: daysInMonth,
+    totalWorkingDays: paidDays,
     leaveDays: 0,
     lopDays: 0,
-    paidDays: daysInMonth,
+    paidDays,
     earnings: [
-      { label: "Basic", amount: basic },
-      { label: "HRA", amount: hra },
-      { label: "Conveyance Allowance", amount: conveyance },
-      { label: "Medical Allowance", amount: medical },
-      { label: "Other Allowances", amount: other },
+      { label: "Basic", amount: total },
+      { label: "HRA", amount: 0 },
+      { label: "Conveyance Allowance", amount: 0 },
+      { label: "Medical Allowance", amount: 0 },
+      { label: "Other Allowances", amount: 0 },
     ],
     deductions: [
       { label: "EPF", amount: 0 },

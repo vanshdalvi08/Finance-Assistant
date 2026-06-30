@@ -88,11 +88,7 @@ type EmployeeMutationInput = EmployeeFormValues & { profilePhotoUrl?: string | n
 
 const HOURS_PER_YEAR = 2080;
 const EMPLOYEES_SECTION_UNLOCK_KEY = "reforix:employees-section-unlocked";
-const CONFIGURED_EMPLOYEES_SECTION_PASSCODE = import.meta.env.VITE_EMPLOYEES_SECTION_PASSCODE;
-const EMPLOYEES_SECTION_PASSCODE =
-  typeof CONFIGURED_EMPLOYEES_SECTION_PASSCODE === "string" && /^\d{4}$/.test(CONFIGURED_EMPLOYEES_SECTION_PASSCODE)
-    ? CONFIGURED_EMPLOYEES_SECTION_PASSCODE
-    : "1234";
+const EMPLOYEES_SECTION_PASSCODE = "1234";
 const EMPLOYEES_SECTION_PASSCODE_LENGTH = 4;
 
 export default function Employees() {

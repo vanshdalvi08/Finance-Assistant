@@ -233,6 +233,81 @@ test("healthz reports runtime dependency checks", { concurrency: false }, async 
   assert.ok(["ok", "degraded", "error"].includes(response.json.checks.externalMonitoring.status));
 });
 
+test("salary slip preview uses worked days, fixed address, and basic-only earnings", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("salary-slip-preview");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+  const weekStart = "2026-07-06";
+  const accountId = await getTestFinancialAccountId(adminToken);
+
+  const createResponse = await api("/business/timesheets", {
+    method: "POST",
+    token: adminToken,
+    body: {
+      employeeId: employee.id,
+      weekStart,
+      lines: [
+        {
+          project: "Payroll QA",
+          task: "Slip preview",
+          hours: { mon: 4, tue: 0, wed: 3, thu: 0, fri: 2, sat: 0, sun: 0 },
+        },
+      ],
+    },
+  });
+  assert.ok([200, 201].includes(createResponse.status), `Timesheet create failed: ${JSON.stringify(createResponse.json)}`);
+  const timesheetId = createResponse.json.timesheet.id;
+
+  try {
+    const submitResponse = await api(`/business/timesheets/${timesheetId}/submit`, {
+      method: "POST",
+      token: adminToken,
+      body: {},
+    });
+    assert.equal(submitResponse.status, 200, JSON.stringify(submitResponse.json));
+
+    const approveResponse = await api(`/business/timesheets/${timesheetId}/approve`, {
+      method: "POST",
+      token: adminToken,
+      body: { note: "salary slip preview regression" },
+    });
+    assert.equal(approveResponse.status, 200, JSON.stringify(approveResponse.json));
+
+    const salariesResponse = await api(`/business/salaries?employeeId=${employee.id}`, {
+      method: "GET",
+      token: adminToken,
+    });
+    assert.equal(salariesResponse.status, 200, JSON.stringify(salariesResponse.json));
+    const salary = salariesResponse.json.salaries.find((item) => salaryBelongsToTimesheetMonth(item, timesheetId) && item.status === "pending");
+    assert.ok(salary, `Expected pending salary for approved timesheet: ${JSON.stringify(salariesResponse.json.salaries)}`);
+    assert.equal(salary.amount, 900);
+
+    const previewResponse = await api("/business/salary-slips/preview", {
+      method: "POST",
+      token: adminToken,
+      body: { salaryIds: [salary.id], accountId },
+    });
+    assert.equal(previewResponse.status, 200, JSON.stringify(previewResponse.json));
+    const draft = previewResponse.json.draft;
+    assert.equal(draft.companyAddress, "Vastu Anand, Building No. 16, Parsik Nagar, Thane, Maharashtra, India");
+    assert.equal(draft.totalWorkingDays, 3);
+    assert.equal(draft.paidDays, 3);
+    assert.deepEqual(draft.earnings, [
+      { label: "Basic", amount: 900 },
+      { label: "HRA", amount: 0 },
+      { label: "Conveyance Allowance", amount: 0 },
+      { label: "Medical Allowance", amount: 0 },
+      { label: "Other Allowances", amount: 0 },
+    ]);
+    assert.equal(draft.totalEarnings, 900);
+    assert.equal(draft.netSalary, 900);
+  } finally {
+    await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
 test("timesheet draft cannot be approved before submission", { concurrency: false }, async () => {
   const adminToken = await login("admin@yojak.in", "yojak123");
   const suffix = randomSuffix("phase2-timesheet-employee");

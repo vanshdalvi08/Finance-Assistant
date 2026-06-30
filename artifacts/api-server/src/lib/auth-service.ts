@@ -10,7 +10,7 @@ import {
   type User,
 } from "@workspace/db/schema";
 import { DEFAULT_TENANT_ID } from "./tenants";
-import { getAppUrl, getSmtpConfig, isProduction, isTest, optionalEnv } from "./env";
+import { getAppUrl, isProduction, isTest, optionalEnv } from "./env";
 import {
   assertStrongPassword,
   decryptMfaSecret,
@@ -23,7 +23,7 @@ import {
   verifyPassword,
 } from "./security";
 import { ACCESS_TOKEN_TTL, REFRESH_TOKEN_TTL, signAccessToken, signMfaToken, signRefreshToken, verifyMfaToken, verifyRefreshToken } from "./jwt";
-import { sendMail } from "./mailer";
+import { sendMail, type MailPayload } from "./mailer";
 import { clientPortalEmailTemplate, onboardingEmailTemplate, passwordResetEmailTemplate, tenantOwnerEmailTemplate } from "./email-templates";
 import { createWelcomeNotification } from "./notifications";
 import { logger } from "./logger";
@@ -177,6 +177,15 @@ function runAuthSideEffect(work: Promise<unknown>, label: string) {
   void work.catch((error) => {
     logger.warn({ err: error, label }, "Failed auth side effect");
   });
+}
+
+async function sendAccountProvisioningEmail(payload: MailPayload, label: string): Promise<boolean> {
+  try {
+    return await sendMail(payload);
+  } catch (error) {
+    logger.warn({ err: error, label }, "Failed to send account provisioning email");
+    return false;
+  }
 }
 
 function normalizeEmail(email: string): string {
@@ -752,19 +761,15 @@ export async function createEmployeeAccount(input: CreateEmployeeInput): Promise
     loginEmail: user.email,
   });
 
-  const onboardingEmailSent = Boolean(getSmtpConfig());
-
-  if (onboardingEmailSent) {
-    runAuthSideEffect(
-      sendMail({
-        to: user.email,
-        subject: onboarding.subject,
-        text: onboarding.text,
-        html: onboarding.html,
-      }),
-      `send onboarding email to ${user.email}`,
-    );
-  }
+  const onboardingEmailSent = await sendAccountProvisioningEmail(
+    {
+      to: user.email,
+      subject: onboarding.subject,
+      text: onboarding.text,
+      html: onboarding.html,
+    },
+    `send onboarding email to ${user.email}`,
+  );
 
   runAuthSideEffect(createWelcomeNotification(user.id), `create welcome notification for ${user.id}`);
 
@@ -835,18 +840,15 @@ export async function createAdminAccount(
     portalUrl,
   });
 
-  const onboardingEmailSent = Boolean(getSmtpConfig());
-  if (onboardingEmailSent) {
-    runAuthSideEffect(
-      sendMail({
-        to: user.email,
-        subject: onboarding.subject,
-        text: onboarding.text,
-        html: onboarding.html,
-      }),
-      `send tenant admin onboarding email to ${user.email}`,
-    );
-  }
+  const onboardingEmailSent = await sendAccountProvisioningEmail(
+    {
+      to: user.email,
+      subject: onboarding.subject,
+      text: onboarding.text,
+      html: onboarding.html,
+    },
+    `send tenant admin onboarding email to ${user.email}`,
+  );
 
   return {
     user: publicUser(user),
@@ -919,18 +921,15 @@ export async function createClientAccount(input: CreateClientInput): Promise<{ u
     portalUrl,
   });
 
-  const onboardingEmailSent = Boolean(getSmtpConfig());
-  if (onboardingEmailSent) {
-    runAuthSideEffect(
-      sendMail({
-        to: user.email,
-        subject: clientPortal.subject,
-        text: clientPortal.text,
-        html: clientPortal.html,
-      }),
-      `send client onboarding email to ${user.email}`,
-    );
-  }
+  const onboardingEmailSent = await sendAccountProvisioningEmail(
+    {
+      to: user.email,
+      subject: clientPortal.subject,
+      text: clientPortal.text,
+      html: clientPortal.html,
+    },
+    `send client onboarding email to ${user.email}`,
+  );
 
   return {
     user: publicUser(user),

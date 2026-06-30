@@ -65,6 +65,45 @@ function drawFittedText(
   drawText(page, font, text, tx, ty, size, options?.color ?? black);
 }
 
+function wrapText(font: PDFFont, value: string, maxWidth: number, size: number) {
+  const words = value.trim().split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let current = "";
+
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+    if (font.widthOfTextAtSize(next, size) <= maxWidth || !current) {
+      current = next;
+      continue;
+    }
+    lines.push(current);
+    current = word;
+  }
+
+  if (current) {
+    lines.push(current);
+  }
+  return lines;
+}
+
+function drawWrappedText(
+  page: PDFPage,
+  font: PDFFont,
+  value: string,
+  x: number,
+  y: number,
+  width: number,
+  size: number,
+  lineHeight: number,
+  maxLines = 2,
+) {
+  const lines = wrapText(font, value, width, size).slice(0, maxLines);
+  lines.forEach((line, index) => {
+    drawText(page, font, line, x, y - index * lineHeight, size);
+  });
+  return lines.length;
+}
+
 function drawCell(
   page: PDFPage,
   x: number,
@@ -206,20 +245,28 @@ export async function generateSalarySlipPdf(snapshot: SalarySlipSnapshot): Promi
     drawLogoFallback(page, x + 28, headerBottom + 18);
   }
 
-  const headerTextX = x + 156;
+  const headerTextX = x + 168;
   const headerTextWidth = width - 190;
   const payPeriod = snapshot.payPeriod || "June 2026";
   const title = "REFORIX ENGINEERING SERVICES";
   const titleSize = fitFontSize(bold, title, headerTextWidth, 15.4, 13.2);
-  drawFittedText(page, bold, title, headerTextX, top - 28, headerTextWidth, { align: "left", size: titleSize });
-  drawFittedText(page, regular, snapshot.companyAddress || "Company Address", headerTextX, top - 48, headerTextWidth, {
-    align: "left",
-    size: 11.2,
-  });
+  drawText(page, bold, title, headerTextX, top - 24, titleSize);
+  const addressLines = drawWrappedText(
+    page,
+    regular,
+    snapshot.companyAddress || "Company Address",
+    headerTextX,
+    top - 43,
+    headerTextWidth - 8,
+    8.6,
+    10,
+    2,
+  );
   const paySlipSize = 8.9;
-  drawText(page, regular, "Pay Slip for", headerTextX, top - 68, paySlipSize);
+  const paySlipY = top - (addressLines > 1 ? 70 : 62);
+  drawText(page, regular, "Pay Slip for", headerTextX, paySlipY, paySlipSize);
   const paySlipLabelWidth = regular.widthOfTextAtSize("Pay Slip for", paySlipSize);
-  drawText(page, bold, payPeriod, headerTextX + paySlipLabelWidth + 4, top - 68, paySlipSize);
+  drawText(page, bold, payPeriod, headerTextX + paySlipLabelWidth + 4, paySlipY, paySlipSize);
 
   const detailBottom = headerBottom - detailHeight;
   page.drawLine({ start: { x, y: detailBottom }, end: { x: x + width, y: detailBottom }, thickness: 1.05, color: black });
