@@ -23,6 +23,7 @@ import {
   buildSalarySlipDraft,
   confirmSalarySlip,
   listSalarySlipsForActor,
+  replaySalarySlipConfirmation,
 } from "./salary-slip.service";
 import { generateSalarySlipPdf } from "./salary-slip.pdf";
 
@@ -117,7 +118,7 @@ const salarySlipDraftSchema = z.object({
   note: z.string().trim().max(1_000),
 });
 
-type SalaryCrudIdempotencyScope = "salary_create" | "salary_historical_create" | "salary_update" | "salary_delete";
+type SalaryCrudIdempotencyScope = "salary_create" | "salary_historical_create" | "salary_update" | "salary_delete" | "salary_slip_confirm";
 
 class SalaryCrudIdempotencyError extends Error {
   code: "conflict";
@@ -177,6 +178,18 @@ function requestHashForSalaryHistoricalMutation(input: z.infer<typeof historical
 
 function requestHashForSalaryDelete(input: { salaryId: string }) {
   return hashSha256(JSON.stringify({ salaryId: input.salaryId.trim() }));
+}
+
+function requestHashForSalarySlipConfirm(input: z.infer<typeof salarySlipDraftSchema>) {
+  return hashSha256(
+    JSON.stringify({
+      ...input,
+      salaryIds: [...input.salaryIds].map((id) => id.trim()).sort(),
+      accountId: input.accountId.trim(),
+      earnings: input.earnings.map((item) => ({ label: item.label.trim(), amount: Number(item.amount) })),
+      deductions: input.deductions.map((item) => ({ label: item.label.trim(), amount: Number(item.amount) })),
+    }),
+  );
 }
 
 async function claimSalaryCrudIdempotency(
@@ -797,12 +810,52 @@ router.post("/salary-slips/confirm", requireTenantRole("admin"), salaryPaymentLi
     return;
   }
 
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey ? requestHashForSalarySlipConfirm(parsed.data) : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimSalaryCrudIdempotency>>
+    | null = null;
+
   try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimSalaryCrudIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "salary_slip_confirm",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+
+    if (idempotencyClaim && !idempotencyClaim.created) {
+      if (idempotencyClaim.row.status === "completed" && idempotencyClaim.row.responseEntityId) {
+        const replayed = await replaySalarySlipConfirmation({
+          tenantId,
+          slipId: idempotencyClaim.row.responseEntityId,
+        });
+        response.json({ ...replayed, duplicate: true });
+        return;
+      }
+      response.status(409).json({ message: "This salary slip confirmation is already being processed. Please retry shortly." });
+      return;
+    }
+
     const result = await confirmSalarySlip({
-      tenantId: request.auth?.user.tenantId ?? DEFAULT_TENANT_ID,
+      tenantId,
       actor: recordActor(request),
       draft: parsed.data,
     });
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({
+          status: "completed",
+          responseEntityId: result.slip.id,
+          updatedAt: new Date(),
+        })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
     const actor = notificationActor(request);
     await deliverNotification(
       notifyEmployee(
@@ -818,9 +871,15 @@ router.post("/salary-slips/confirm", requireTenantRole("admin"), salaryPaymentLi
         },
       ),
     );
-    response.status(201).json(result);
+    response.status(201).json({ ...result, duplicate: false });
   } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
     if (error instanceof SalaryServiceError && handleServiceError(error, response)) {
+      return;
+    }
+    if (error instanceof SalaryCrudIdempotencyError && handleSalaryCrudIdempotencyError(error, response)) {
       return;
     }
     response.status(400).json({ message: error instanceof Error ? error.message : "Could not complete salary payment." });

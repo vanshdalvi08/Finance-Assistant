@@ -81,6 +81,14 @@ function isLegacyDefaultAccount(account: FinancialAccount) {
   return account.id.startsWith("acct_operational_");
 }
 
+function createIdempotencyKey(prefix: string) {
+  const randomPart =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${randomPart}`;
+}
+
 function formatCurrency(value: number) {
   return value.toLocaleString("en-IN", {
     style: "currency",
@@ -216,6 +224,7 @@ export default function Salary() {
   const [salarySlipOpen, setSalarySlipOpen] = useState(false);
   const [salarySlipDraft, setSalarySlipDraft] = useState<SalarySlipDraft | null>(null);
   const [salarySlipExpectedNet, setSalarySlipExpectedNet] = useState(0);
+  const [salarySlipIdempotencyKey, setSalarySlipIdempotencyKey] = useState("");
   const [addDayGroupKey, setAddDayGroupKey] = useState<string | null>(null);
   const [addDayDate, setAddDayDate] = useState("");
 
@@ -374,6 +383,7 @@ export default function Salary() {
     onSuccess: (draft) => {
       setSalarySlipDraft(draft);
       setSalarySlipExpectedNet(draft.netSalary);
+      setSalarySlipIdempotencyKey(createIdempotencyKey("salary-slip"));
       setSalarySlipOpen(true);
     },
     onError: (error) => {
@@ -386,13 +396,14 @@ export default function Salary() {
   });
 
   const payMutation = useMutation({
-    mutationFn: (draft: SalarySlipDraft) => api.confirmSalarySlip(draft),
+    mutationFn: (draft: SalarySlipDraft) => api.confirmSalarySlip(draft, salarySlipIdempotencyKey || undefined),
     onSuccess: ({ salaries: records }) => {
       for (const record of records) {
         queryClient.setQueryData<SalaryRecord[]>(["salaries"], (current) => upsertSalaryRecord(current, record));
       }
       setSalarySlipOpen(false);
       setSalarySlipDraft(null);
+      setSalarySlipIdempotencyKey("");
       void Promise.all([
         queryClient.invalidateQueries({ queryKey: ["adminOverview"] }),
         queryClient.invalidateQueries({ queryKey: ["chartData"] }),
@@ -1249,6 +1260,9 @@ export default function Salary() {
         onOpenChange={(open) => {
           if (!payMutation.isPending) {
             setSalarySlipOpen(open);
+            if (!open) {
+              setSalarySlipIdempotencyKey("");
+            }
           }
         }}
         onChange={setSalarySlipDraft}

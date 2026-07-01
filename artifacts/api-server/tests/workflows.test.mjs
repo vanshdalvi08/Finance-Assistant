@@ -258,6 +258,9 @@ test("salary slip preview uses worked days, fixed address, and basic-only earnin
   const employee = createdEmployee.user;
   const weekStart = "2026-07-06";
   const accountId = await getTestFinancialAccountId(adminToken);
+  let generatedSlipId = null;
+  let generatedSalaryId = null;
+  let fundId = null;
 
   const createResponse = await api("/business/timesheets", {
     method: "POST",
@@ -300,6 +303,7 @@ test("salary slip preview uses worked days, fixed address, and basic-only earnin
     const salary = salariesResponse.json.salaries.find((item) => salaryBelongsToTimesheetMonth(item, timesheetId) && item.status === "pending");
     assert.ok(salary, `Expected pending salary for approved timesheet: ${JSON.stringify(salariesResponse.json.salaries)}`);
     assert.equal(salary.amount, 900);
+    generatedSalaryId = salary.id;
 
     const previewResponse = await api("/business/salary-slips/preview", {
       method: "POST",
@@ -320,9 +324,55 @@ test("salary slip preview uses worked days, fixed address, and basic-only earnin
     ]);
     assert.equal(draft.totalEarnings, 900);
     assert.equal(draft.netSalary, 900);
+
+    const fundResponse = await api("/business/funds", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        accountId,
+        source: `Salary slip fund ${suffix}`,
+        amount: 1000,
+        date: "2026-07-06",
+        note: "salary-slip-confirm-idempotency",
+      },
+    });
+    assert.equal(fundResponse.status, 201, JSON.stringify(fundResponse.json));
+    fundId = fundResponse.json.fund.id;
+
+    const idempotencyKey = randomSuffix("salary-slip-confirm");
+    const confirmResponse = await api("/business/salary-slips/confirm", {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: draft,
+    });
+    assert.equal(confirmResponse.status, 201, JSON.stringify(confirmResponse.json));
+    assert.equal(confirmResponse.json.duplicate, false);
+    assert.equal(confirmResponse.json.salaries[0].status, "paid");
+    assert.ok(confirmResponse.json.slip.id);
+    assert.equal(confirmResponse.json.slip.emailStatus, "queued");
+    generatedSlipId = confirmResponse.json.slip.id;
+
+    const retryResponse = await api("/business/salary-slips/confirm", {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: draft,
+    });
+    assert.equal(retryResponse.status, 200, JSON.stringify(retryResponse.json));
+    assert.equal(retryResponse.json.duplicate, true);
+    assert.equal(retryResponse.json.slip.id, generatedSlipId);
   } finally {
+    if (generatedSalaryId) {
+      await api(`/business/salaries/${generatedSalaryId}`, { method: "DELETE", token: adminToken });
+    }
+    if (fundId) {
+      await api(`/business/funds/${fundId}`, { method: "DELETE", token: adminToken });
+    }
     await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
-    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+    if (!generatedSlipId) {
+      await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+    }
   }
 });
 

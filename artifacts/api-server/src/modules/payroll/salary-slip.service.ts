@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   companySettingsTable,
@@ -23,6 +23,8 @@ export type SalarySlipDraft = SalarySlipSnapshot & {
   accountId: string;
 };
 
+type ConfirmedSalarySlip = typeof salarySlipsTable.$inferSelect & { downloadUrl?: string };
+
 function formatDate(value?: Date | string | null) {
   if (!value) return "";
   return new Date(value).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
@@ -30,6 +32,17 @@ function formatDate(value?: Date | string | null) {
 
 function amount(value: number) {
   return Math.max(0, Math.round(Number(value) || 0));
+}
+
+function normalizeSnapshot(snapshot: SalarySlipSnapshot): SalarySlipSnapshot {
+  return {
+    ...snapshot,
+    ifscCode: snapshot.ifscCode ?? "",
+    bankBranch: snapshot.bankBranch ?? "",
+    totalHours: Number(snapshot.totalHours ?? 0),
+    payType: snapshot.payType ?? "monthly",
+    payRate: Number(snapshot.payRate ?? 0),
+  };
 }
 
 function isoDateForTimesheetDay(weekStart: string, dayIndex: number) {
@@ -195,7 +208,7 @@ export async function confirmSalarySlip(input: {
   tenantId: string;
   actor: SalaryActor;
   draft: SalarySlipDraft;
-}) {
+}): Promise<{ slip: ConfirmedSalarySlip; salaries: Awaited<ReturnType<typeof paySalariesBatch>> }> {
   const salaries = await loadPendingSalaries(input.tenantId, input.draft.salaryIds);
   const employeeId = salaries[0]!.employeeId!;
   const employeeRows = await db
@@ -206,7 +219,7 @@ export async function confirmSalarySlip(input: {
   const employee = employeeRows[0];
   if (!employee) throw new Error("Employee not found.");
 
-  const snapshot: SalarySlipSnapshot = {
+  const snapshot: SalarySlipSnapshot = normalizeSnapshot({
     ...input.draft,
     earnings: input.draft.earnings.map((item) => ({ label: item.label.trim(), amount: amount(item.amount) })).filter((item) => item.label),
     deductions: input.draft.deductions.map((item) => ({ label: item.label.trim(), amount: amount(item.amount) })).filter((item) => item.label),
@@ -214,7 +227,7 @@ export async function confirmSalarySlip(input: {
     totalDeductions: amount(input.draft.deductions.reduce((sum, item) => sum + amount(item.amount), 0)),
     grossWages: amount(input.draft.grossWages),
     netSalary: 0,
-  };
+  });
   snapshot.netSalary = snapshot.totalEarnings - snapshot.totalDeductions;
   const payrollTotal = salaries.reduce((sum, salary) => sum + salary.amount, 0);
   if (snapshot.netSalary !== payrollTotal) {
@@ -233,13 +246,6 @@ export async function confirmSalarySlip(input: {
     employeeId,
   });
 
-  const paidSalaries = await paySalariesBatch(
-    salaries.map((salary) => salary.id),
-    snapshot.note,
-    input.actor,
-    input.draft.accountId,
-  );
-
   const rows = await db
     .insert(salarySlipsTable)
     .values({
@@ -256,10 +262,25 @@ export async function confirmSalarySlip(input: {
       snapshot,
       fileName: uploaded.fileName,
       filePath: uploaded.path,
+      emailStatus: "queued",
+      emailAttempts: 0,
       createdById: input.actor.userId ?? null,
     })
     .returning();
   const slip = rows[0]!;
+
+  let paidSalaries: Awaited<ReturnType<typeof paySalariesBatch>>;
+  try {
+    paidSalaries = await paySalariesBatch(
+      salaries.map((salary) => salary.id),
+      snapshot.note,
+      input.actor,
+      input.draft.accountId,
+    );
+  } catch (error) {
+    await db.delete(salarySlipsTable).where(eq(salarySlipsTable.id, slipId));
+    throw error;
+  }
 
   const email = salaryPaymentEmailTemplate({
     employeeName: employee.name,
@@ -269,23 +290,85 @@ export async function confirmSalarySlip(input: {
     deductions: snapshot.totalDeductions,
     netAmount: snapshot.netSalary,
   });
-  void sendMail({
+  void sendSalarySlipEmail({
+    slipId,
     to: employee.email,
     subject: email.subject,
     text: email.text,
     html: email.html,
-    attachments: [{ filename: uploaded.fileName, content: pdfBytes, contentType: "application/pdf" }],
-  })
-    .then(async (sent) => {
-      if (sent) {
-        await db.update(salarySlipsTable).set({ emailedAt: new Date() }).where(eq(salarySlipsTable.id, slipId));
-      }
-    })
-    .catch((error) => logger.warn({ err: error, slipId }, "Failed to email salary slip"));
+    fileName: uploaded.fileName,
+    pdfBytes,
+  });
 
   return {
     slip: { ...slip, downloadUrl: uploaded.url },
     salaries: paidSalaries,
+  };
+}
+
+async function sendSalarySlipEmail(input: {
+  slipId: string;
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+  fileName: string;
+  pdfBytes: Uint8Array;
+}) {
+  try {
+    await db
+      .update(salarySlipsTable)
+      .set({
+        emailStatus: "sending",
+        emailError: null,
+        emailAttempts: sql`${salarySlipsTable.emailAttempts} + 1`,
+      })
+      .where(eq(salarySlipsTable.id, input.slipId));
+    const sent = await sendMail({
+      to: input.to,
+      subject: input.subject,
+      text: input.text,
+      html: input.html,
+      attachments: [{ filename: input.fileName, content: input.pdfBytes, contentType: "application/pdf" }],
+    });
+
+    await db
+      .update(salarySlipsTable)
+      .set({
+        emailStatus: sent ? "sent" : "skipped",
+        emailError: sent ? null : "SMTP is not configured.",
+        emailedAt: sent ? new Date() : null,
+      })
+      .where(eq(salarySlipsTable.id, input.slipId));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to send salary slip email.";
+    await db
+      .update(salarySlipsTable)
+      .set({ emailStatus: "failed", emailError: message.slice(0, 1000) })
+      .where(eq(salarySlipsTable.id, input.slipId));
+    logger.warn({ err: error, slipId: input.slipId }, "Failed to email salary slip");
+  }
+}
+
+export async function replaySalarySlipConfirmation(input: {
+  tenantId: string;
+  slipId: string;
+}) {
+  const rows = await db
+    .select()
+    .from(salarySlipsTable)
+    .where(and(eq(salarySlipsTable.tenantId, input.tenantId), eq(salarySlipsTable.id, input.slipId)))
+    .limit(1);
+  const slip = rows[0];
+  if (!slip) {
+    throw new Error("Salary slip not found for this completed request.");
+  }
+  const salaries = slip.salaryIds.length > 0
+    ? await db.select().from(salariesTable).where(and(eq(salariesTable.tenantId, input.tenantId), inArray(salariesTable.id, slip.salaryIds)))
+    : [];
+  return {
+    slip: { ...slip, downloadUrl: await resolveSalarySlipUrl(slip.filePath) },
+    salaries,
   };
 }
 

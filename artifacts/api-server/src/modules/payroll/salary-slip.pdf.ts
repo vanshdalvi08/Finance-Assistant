@@ -207,6 +207,9 @@ export async function generateSalarySlipPdf(snapshot: SalarySlipSnapshot): Promi
   const bold = await document.embedFont(StandardFonts.HelveticaBold);
   const italic = await document.embedFont(StandardFonts.HelveticaOblique);
   const logo = await loadLogo(document);
+  const payType = snapshot.payType === "hourly" ? "hourly" : "monthly";
+  const payRate = Number(snapshot.payRate ?? 0);
+  const totalHours = Number(snapshot.totalHours ?? 0);
 
   const x = 36;
   const top = 806;
@@ -326,10 +329,10 @@ export async function generateSalarySlipPdf(snapshot: SalarySlipSnapshot): Promi
     regular,
     x + 6,
     detailY - 110,
-    snapshot.payType === "hourly" ? "Hourly Rate" : "Monthly Salary",
-    snapshot.payType === "hourly"
-      ? `INR ${snapshot.payRate.toLocaleString("en-IN")}/hr`
-      : `INR ${snapshot.payRate.toLocaleString("en-IN")}`,
+    payType === "hourly" ? "Hourly Rate" : "Monthly Salary",
+    payType === "hourly"
+      ? `INR ${payRate.toLocaleString("en-IN")}/hr`
+      : `INR ${payRate.toLocaleString("en-IN")}`,
     "IFSC Code",
     valueText(snapshot.ifscCode) || "NA",
   );
@@ -339,7 +342,7 @@ export async function generateSalarySlipPdf(snapshot: SalarySlipSnapshot): Promi
     x + 6,
     detailY - 132,
     "Total Work Hours",
-    valueText(snapshot.totalHours > 0 ? `${snapshot.totalHours} hrs` : ""),
+    valueText(totalHours > 0 ? `${totalHours} hrs` : ""),
     "Bank Branch",
     valueText(snapshot.bankBranch) || "NA",
   );

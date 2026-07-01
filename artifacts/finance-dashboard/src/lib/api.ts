@@ -144,6 +144,9 @@ export interface GeneratedSalarySlip {
   snapshot: SalarySlipDraft;
   fileName: string;
   downloadUrl?: string;
+  emailStatus?: "pending" | "queued" | "sending" | "sent" | "failed" | "skipped";
+  emailError?: string | null;
+  emailAttempts?: number;
   emailedAt?: string | null;
   createdAt: string;
 }
@@ -1514,10 +1517,16 @@ async function businessGet<T>(path: string) {
   return requestJson<T>(`/business${path}`);
 }
 
-async function businessPost<T>(path: string, data?: unknown, method: "POST" | "PATCH" | "DELETE" = "POST") {
+async function businessPost<T>(
+  path: string,
+  data?: unknown,
+  method: "POST" | "PATCH" | "DELETE" = "POST",
+  headers?: Record<string, string>,
+) {
   return requestJson<T>(`/business${path}`, {
     method,
     data,
+    headers,
   });
 }
 
@@ -1891,8 +1900,13 @@ export const api = {
   previewSalarySlip: async (input: { salaryIds: string[]; accountId: string }) =>
     (await businessPost<{ draft: SalarySlipDraft }>("/salary-slips/preview", input)).draft,
 
-  confirmSalarySlip: async (draft: SalarySlipDraft) =>
-    businessPost<{ slip: GeneratedSalarySlip; salaries: Salary[] }>("/salary-slips/confirm", draft),
+  confirmSalarySlip: async (draft: SalarySlipDraft, idempotencyKey?: string) =>
+    businessPost<{ slip: GeneratedSalarySlip; salaries: Salary[]; duplicate?: boolean }>(
+      "/salary-slips/confirm",
+      draft,
+      "POST",
+      idempotencyKey ? { "Idempotency-Key": idempotencyKey } : undefined,
+    ),
 
   addSalary: async (input: AddSalaryInput) =>
     (await businessPost<{ salary: Salary }>("/salaries", {
