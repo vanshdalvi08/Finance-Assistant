@@ -266,28 +266,45 @@ export function salaryPaymentEmailTemplate(input: {
   const text = [
     `Hello ${input.employeeName},`,
     "",
-    `Your salary for ${input.payPeriod} has been paid.`,
+    `Your salary for ${input.payPeriod} has been processed successfully.`,
     `Payment date: ${input.paymentDate}`,
     `Gross earnings: ${money(input.grossAmount)}`,
     `Deductions: ${money(input.deductions)}`,
     `Net salary: ${money(input.netAmount)}`,
     "",
-    "Your salary slip is attached as a PDF.",
+    "Your salary slip PDF is attached and is also saved in your employee portal.",
   ].join("\n");
 
   const html = baseLayout(
-    "Salary payment completed",
+    "Salary payment processed",
     `
-      <p style="font-size:15px;line-height:1.7;color:#cbd5e1;margin:0 0 18px;">Hello ${escapeHtml(input.employeeName)}, your salary for <strong>${escapeHtml(input.payPeriod)}</strong> has been paid.</p>
-      <table style="width:100%;border-collapse:collapse;background:#0b1220;border:1px solid #243244;border-radius:12px;overflow:hidden;">
-        <tr><td style="padding:10px 14px;color:#94a3b8;border-bottom:1px solid #243244;">Payment date</td><td style="padding:10px 14px;color:#f8fafc;text-align:right;border-bottom:1px solid #243244;">${escapeHtml(input.paymentDate)}</td></tr>
-        <tr><td style="padding:10px 14px;color:#94a3b8;border-bottom:1px solid #243244;">Gross earnings</td><td style="padding:10px 14px;color:#f8fafc;text-align:right;border-bottom:1px solid #243244;">${money(input.grossAmount)}</td></tr>
-        <tr><td style="padding:10px 14px;color:#94a3b8;border-bottom:1px solid #243244;">Deductions</td><td style="padding:10px 14px;color:#f8fafc;text-align:right;border-bottom:1px solid #243244;">${money(input.deductions)}</td></tr>
-        <tr><td style="padding:12px 14px;color:#e2e8f0;font-weight:700;">Net salary</td><td style="padding:12px 14px;color:#f8fafc;text-align:right;font-weight:700;">${money(input.netAmount)}</td></tr>
+      <p style="font-size:15px;line-height:1.7;color:#cbd5e1;margin:0 0 18px;">Hello ${escapeHtml(input.employeeName)}, your salary for <strong>${escapeHtml(input.payPeriod)}</strong> has been processed successfully.</p>
+      <div style="background:linear-gradient(135deg,#1d4ed8,#0f766e);border-radius:18px;padding:22px 24px;margin:0 0 18px;">
+        <p style="margin:0 0 8px;color:#dbeafe;font-size:12px;text-transform:uppercase;letter-spacing:.12em;">Net salary credited</p>
+        <p style="margin:0;color:#ffffff;font-size:32px;line-height:1.1;font-weight:800;">${money(input.netAmount)}</p>
+        <p style="margin:10px 0 0;color:#dbeafe;font-size:13px;">Payment date: ${escapeHtml(input.paymentDate)}</p>
+      </div>
+      <table style="width:100%;border-collapse:separate;border-spacing:0;background:#0b1220;border:1px solid #243244;border-radius:14px;overflow:hidden;">
+        <tr>
+          <td style="padding:12px 14px;color:#94a3b8;border-bottom:1px solid #243244;">Pay period</td>
+          <td style="padding:12px 14px;color:#f8fafc;text-align:right;border-bottom:1px solid #243244;font-weight:700;">${escapeHtml(input.payPeriod)}</td>
+        </tr>
+        <tr>
+          <td style="padding:12px 14px;color:#94a3b8;border-bottom:1px solid #243244;">Gross earnings</td>
+          <td style="padding:12px 14px;color:#f8fafc;text-align:right;border-bottom:1px solid #243244;">${money(input.grossAmount)}</td>
+        </tr>
+        <tr>
+          <td style="padding:12px 14px;color:#94a3b8;border-bottom:1px solid #243244;">Deductions</td>
+          <td style="padding:12px 14px;color:#f8fafc;text-align:right;border-bottom:1px solid #243244;">${money(input.deductions)}</td>
+        </tr>
+        <tr>
+          <td style="padding:12px 14px;color:#e2e8f0;font-weight:700;">Attached document</td>
+          <td style="padding:12px 14px;color:#f8fafc;text-align:right;font-weight:700;">Salary slip PDF</td>
+        </tr>
       </table>
-      <p style="font-size:13px;line-height:1.7;color:#94a3b8;margin:18px 0 0;">Your salary slip is attached as a PDF and is also available in your employee portal.</p>
+      <p style="font-size:13px;line-height:1.7;color:#94a3b8;margin:18px 0 0;">The attached PDF is your official salary slip. A permanent copy is also available in your employee portal.</p>
     `,
   );
 
-  return { subject: `Salary paid - ${input.payPeriod}`, text, html };
+  return { subject: `Salary credited - ${input.payPeriod}`, text, html };
 }
