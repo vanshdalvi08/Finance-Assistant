@@ -557,29 +557,61 @@ export default function Salary() {
 
   const addExtraDayMutation = useMutation({
     mutationFn: async ({ group, date }: { group: PendingPayrollGroup; date: string }) => {
-      const monthlyRecord = group.records.find((r) => r.source === "timesheet" && r.rate == null);
-      if (!monthlyRecord) {
-        throw new Error("Cannot find the monthly salary record to update.");
-      }
       const employee = employees.find((e) => e.id === group.employeeId);
       const monthlySalary = employee ? Math.max(0, Math.round(Number(employee.salary ?? 0) / 12)) : 0;
       const [year, month] = group.monthKey.split("-").map(Number);
       const daysInMonth = new Date(year!, month!, 0).getDate();
-      if (monthlySalary <= 0) {
-        throw new Error("Cannot calculate daily rate for this employee.");
-      }
       if (!date) {
         throw new Error("Select a date for the extra day.");
       }
       if (!date.startsWith(group.monthKey)) {
         throw new Error(`Date must be within ${group.monthKey}.`);
       }
-      const newDays = (Number(monthlyRecord.days ?? 0)) + 1;
-      const newAmount = Math.round(monthlySalary / daysInMonth * newDays);
-      return api.patchSalary(monthlyRecord.id, {
+
+      const monthlyRecord = group.records.find((record) => record.source === "timesheet" && record.rate == null);
+      const targetRecord =
+        monthlyRecord ??
+        [...group.records]
+          .filter((record) => record.source === "timesheet" && typeof record.rate === "number" && record.rate > 0)
+          .sort((left, right) => new Date(left.weekStart ?? left.date).getTime() - new Date(right.weekStart ?? right.date).getTime())
+          .at(-1);
+      if (!targetRecord) {
+        throw new Error("Cannot find the salary record to update.");
+      }
+      if (!targetRecord.employeeId) {
+        throw new Error("Cannot add an extra day without an employee-linked salary record.");
+      }
+
+      const existingDays = Number(targetRecord.days ?? 0);
+      const existingHours = Number(targetRecord.hours ?? 0);
+      const existingRate = Number(targetRecord.rate ?? 0);
+      const newDays = existingDays + 1;
+      const newHours = monthlyRecord ? existingHours : existingHours + 8;
+      const newAmount = monthlyRecord
+        ? monthlySalary > 0
+          ? Math.round((monthlySalary / daysInMonth) * newDays)
+          : getPayrollAmount(targetRecord)
+        : existingRate > 0
+          ? Math.round(newHours * existingRate)
+          : getPayrollAmount(targetRecord);
+
+      if (newAmount <= 0) {
+        throw new Error("Cannot calculate daily rate for this employee.");
+      }
+
+      return api.patchSalary(targetRecord.id, {
+        employeeId: targetRecord.employeeId,
+        employeeNameSnapshot: targetRecord.employeeNameSnapshot,
+        source: targetRecord.source,
+        status: targetRecord.status,
+        date: targetRecord.date,
+        weekStart: targetRecord.weekStart,
+        timesheetId: targetRecord.timesheetId,
+        rate: targetRecord.rate,
+        hours: newHours,
         days: newDays,
         amount: newAmount,
-        note: `${monthlyRecord.note || `Monthly salary for ${group.monthKey}`} (+1 day on ${date})`,
+        note: `${targetRecord.note || `Timesheet payout for ${group.monthKey}`} (+1 day on ${date})`,
       });
     },
     onSuccess: (updatedRecord) => {
