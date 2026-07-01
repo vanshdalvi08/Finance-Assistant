@@ -299,16 +299,26 @@ export default function Salary() {
             .filter((timesheetId): timesheetId is string => Boolean(timesheetId)),
         );
 
+        const isMonthlyGroup = group.records.some((r) => r.source === "timesheet" && r.rate == null);
+
         return {
           ...group,
           approvedTimesheets: group.employeeId
             ? timesheetEntries
-                .filter(
-                  (timesheet) =>
-                    timesheet.employeeId === group.employeeId &&
-                    timesheet.status === "approved" &&
-                    pendingTimesheetIds.has(timesheet.id),
-                )
+                .filter((timesheet) => {
+                  if (!(timesheet.employeeId === group.employeeId && timesheet.status === "approved")) return false;
+                  if (pendingTimesheetIds.has(timesheet.id)) return true;
+                  if (isMonthlyGroup) {
+                    // Include any timesheet whose week overlaps with the group's month
+                    const [year, month] = group.monthKey.split("-").map(Number);
+                    const monthStart = new Date(year!, month! - 1, 1);
+                    const monthEnd = new Date(year!, month!, 0);
+                    const weekStart = new Date(timesheet.weekStart);
+                    const weekEnd = addDays(weekStart, 6);
+                    return weekStart <= monthEnd && weekEnd >= monthStart;
+                  }
+                  return false;
+                })
                 .sort(
                   (left, right) =>
                     new Date(left.weekStart).getTime() - new Date(right.weekStart).getTime(),
