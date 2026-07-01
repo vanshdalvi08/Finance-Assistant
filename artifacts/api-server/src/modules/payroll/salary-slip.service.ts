@@ -154,7 +154,8 @@ export async function buildSalarySlipDraft(input: {
   const payPeriod = firstDate.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
   const daysInMonth = new Date(firstDate.getFullYear(), firstDate.getMonth() + 1, 0).getDate();
   const workedDays = await countWorkedDaysForSalaries(salaries);
-  const paidDays = workedDays > 0 ? workedDays : daysInMonth;
+  const adjustedSalaryDays = salaries.reduce((sum, salary) => sum + Math.max(0, Number(salary.days ?? 0)), 0);
+  const paidDays = Math.max(workedDays, adjustedSalaryDays) || daysInMonth;
 
   return {
     salaryIds: input.salaryIds,

@@ -305,6 +305,18 @@ test("salary slip preview uses worked days, fixed address, and basic-only earnin
     assert.equal(salary.amount, 900);
     generatedSalaryId = salary.id;
 
+    const adjustedSalaryResponse = await api(`/business/salaries/${salary.id}`, {
+      method: "PATCH",
+      token: adminToken,
+      body: {
+        ...salary,
+        days: 6,
+        amount: 1800,
+        note: `${salary.note ?? ""} (+3 admin days)`,
+      },
+    });
+    assert.equal(adjustedSalaryResponse.status, 200, JSON.stringify(adjustedSalaryResponse.json));
+
     const previewResponse = await api("/business/salary-slips/preview", {
       method: "POST",
       token: adminToken,
@@ -313,17 +325,17 @@ test("salary slip preview uses worked days, fixed address, and basic-only earnin
     assert.equal(previewResponse.status, 200, JSON.stringify(previewResponse.json));
     const draft = previewResponse.json.draft;
     assert.equal(draft.companyAddress, "Vastu Anand, Building No. 16, Parsik Nagar, Thane, Maharashtra, India");
-    assert.equal(draft.totalWorkingDays, 3);
-    assert.equal(draft.paidDays, 3);
+    assert.equal(draft.totalWorkingDays, 6);
+    assert.equal(draft.paidDays, 6);
     assert.deepEqual(draft.earnings, [
-      { label: "Basic", amount: 900 },
+      { label: "Basic", amount: 1800 },
       { label: "HRA", amount: 0 },
       { label: "Conveyance Allowance", amount: 0 },
       { label: "Medical Allowance", amount: 0 },
       { label: "Other Allowances", amount: 0 },
     ]);
-    assert.equal(draft.totalEarnings, 900);
-    assert.equal(draft.netSalary, 900);
+    assert.equal(draft.totalEarnings, 1800);
+    assert.equal(draft.netSalary, 1800);
 
     const fundResponse = await api("/business/funds", {
       method: "POST",
@@ -331,7 +343,7 @@ test("salary slip preview uses worked days, fixed address, and basic-only earnin
       body: {
         accountId,
         source: `Salary slip fund ${suffix}`,
-        amount: 1000,
+        amount: 2000,
         date: "2026-07-06",
         note: "salary-slip-confirm-idempotency",
       },
