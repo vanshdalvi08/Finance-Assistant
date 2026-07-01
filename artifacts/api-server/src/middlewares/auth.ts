@@ -68,6 +68,8 @@ async function loadUser(userId: string): Promise<PublicUser | null> {
     joiningDate: user.joiningDate ?? null,
     bankName: user.bankName ?? null,
     bankAccountNumber: user.bankAccountNumber ?? null,
+    ifscCode: user.ifscCode ?? null,
+    bankBranch: user.bankBranch ?? null,
     uan: user.uan ?? null,
     pfNumber: user.pfNumber ?? null,
     esiNumber: user.esiNumber ?? null,

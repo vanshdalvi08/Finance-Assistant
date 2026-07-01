@@ -212,7 +212,7 @@ export async function generateSalarySlipPdf(snapshot: SalarySlipSnapshot): Promi
   const top = 806;
   const width = 523;
   const headerHeight = 78;
-  const detailHeight = 124;
+  const detailHeight = 168;
   const summaryHeight = 72;
   const tableHeaderHeight = 28;
   const rowHeight = 24;
@@ -320,6 +320,28 @@ export async function generateSalarySlipPdf(snapshot: SalarySlipSnapshot): Promi
     valueText(snapshot.joiningDate),
     "Account No.",
     valueText(snapshot.bankAccountNumber) || "NA",
+  );
+  detailRow(
+    page,
+    regular,
+    x + 6,
+    detailY - 110,
+    snapshot.payType === "hourly" ? "Hourly Rate" : "Monthly Salary",
+    snapshot.payType === "hourly"
+      ? `INR ${snapshot.payRate.toLocaleString("en-IN")}/hr`
+      : `INR ${snapshot.payRate.toLocaleString("en-IN")}`,
+    "IFSC Code",
+    valueText(snapshot.ifscCode) || "NA",
+  );
+  detailRow(
+    page,
+    regular,
+    x + 6,
+    detailY - 132,
+    "Total Work Hours",
+    valueText(snapshot.totalHours > 0 ? `${snapshot.totalHours} hrs` : ""),
+    "Bank Branch",
+    valueText(snapshot.bankBranch) || "NA",
   );
 
   const summaryTop = detailBottom;

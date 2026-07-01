@@ -53,6 +53,8 @@ const employeeSchema = z
     joiningDate: z.string().optional(),
     bankName: z.string().max(120).optional(),
     bankAccountNumber: z.string().max(100).optional(),
+    ifscCode: z.string().max(20).optional(),
+    bankBranch: z.string().max(120).optional(),
     uan: z.string().max(100).optional(),
     pfNumber: z.string().max(100).optional(),
     esiNumber: z.string().max(100).optional(),
@@ -135,6 +137,8 @@ export default function Employees() {
       joiningDate: "",
       bankName: "",
       bankAccountNumber: "",
+      ifscCode: "",
+      bankBranch: "",
       uan: "",
       pfNumber: "",
       esiNumber: "",
@@ -170,6 +174,8 @@ export default function Employees() {
         joiningDate: payload.joiningDate || null,
         bankName: payload.bankName || null,
         bankAccountNumber: payload.bankAccountNumber || null,
+        ifscCode: payload.ifscCode || null,
+        bankBranch: payload.bankBranch || null,
         uan: payload.uan || null,
         pfNumber: payload.pfNumber || null,
         esiNumber: payload.esiNumber || null,
@@ -260,6 +266,8 @@ export default function Employees() {
       joiningDate: "",
       bankName: "",
       bankAccountNumber: "",
+      ifscCode: "",
+      bankBranch: "",
       uan: "",
       pfNumber: "",
       esiNumber: "",
@@ -285,6 +293,8 @@ export default function Employees() {
       joiningDate: "",
       bankName: "",
       bankAccountNumber: "",
+      ifscCode: "",
+      bankBranch: "",
       uan: "",
       pfNumber: "",
       esiNumber: "",
@@ -311,6 +321,8 @@ export default function Employees() {
       joiningDate: employee.joiningDate?.slice(0, 10) ?? "",
       bankName: employee.bankName ?? "",
       bankAccountNumber: employee.bankAccountNumber ?? "",
+      ifscCode: employee.ifscCode ?? "",
+      bankBranch: employee.bankBranch ?? "",
       uan: employee.uan ?? "",
       pfNumber: employee.pfNumber ?? "",
       esiNumber: employee.esiNumber ?? "",
@@ -655,14 +667,42 @@ export default function Employees() {
                       )}
                     />
                   </div>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <FormField
+                      control={form.control}
+                      name="bankAccountNumber"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Bank Account Number</FormLabel>
+                          <FormControl>
+                            <Input inputMode="numeric" autoComplete="off" placeholder="Account number" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="ifscCode"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>IFSC Code</FormLabel>
+                          <FormControl>
+                            <Input placeholder="e.g. SBIN0001234" {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
                   <FormField
                     control={form.control}
-                    name="bankAccountNumber"
+                    name="bankBranch"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Bank Account Number</FormLabel>
+                        <FormLabel>Bank Branch</FormLabel>
                         <FormControl>
-                          <Input inputMode="numeric" autoComplete="off" placeholder="Account number" {...field} />
+                          <Input placeholder="Branch name / city" {...field} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>

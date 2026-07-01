@@ -64,6 +64,8 @@ export interface PublicUser {
   joiningDate: Date | null;
   bankName: string | null;
   bankAccountNumber: string | null;
+  ifscCode: string | null;
+  bankBranch: string | null;
   uan: string | null;
   pfNumber: string | null;
   esiNumber: string | null;
@@ -105,6 +107,8 @@ export interface CreateEmployeeInput {
   joiningDate?: string | null;
   bankName?: string | null;
   bankAccountNumber?: string | null;
+  ifscCode?: string | null;
+  bankBranch?: string | null;
   uan?: string | null;
   pfNumber?: string | null;
   esiNumber?: string | null;
@@ -126,6 +130,8 @@ export interface UpdateEmployeeInput {
   joiningDate?: string | null;
   bankName?: string | null;
   bankAccountNumber?: string | null;
+  ifscCode?: string | null;
+  bankBranch?: string | null;
   uan?: string | null;
   pfNumber?: string | null;
   esiNumber?: string | null;
@@ -231,6 +237,8 @@ function publicUser(user: User): PublicUser {
     joiningDate: user.joiningDate ?? null,
     bankName: user.bankName ?? null,
     bankAccountNumber: user.bankAccountNumber ?? null,
+    ifscCode: user.ifscCode ?? null,
+    bankBranch: user.bankBranch ?? null,
     uan: user.uan ?? null,
     pfNumber: user.pfNumber ?? null,
     esiNumber: user.esiNumber ?? null,
@@ -733,6 +741,8 @@ export async function createEmployeeAccount(input: CreateEmployeeInput): Promise
         joiningDate: input.joiningDate ? new Date(input.joiningDate) : null,
         bankName: input.bankName?.trim() || null,
         bankAccountNumber: input.bankAccountNumber?.trim() || null,
+        ifscCode: input.ifscCode?.trim() || null,
+        bankBranch: input.bankBranch?.trim() || null,
         uan: input.uan?.trim() || null,
         pfNumber: input.pfNumber?.trim() || null,
         esiNumber: input.esiNumber?.trim() || null,
@@ -1040,6 +1050,8 @@ export async function updateEmployeeAccount(input: UpdateEmployeeInput): Promise
           input.bankAccountNumber === undefined
             ? existing.bankAccountNumber
             : input.bankAccountNumber?.trim() || null,
+        ifscCode: input.ifscCode === undefined ? existing.ifscCode : input.ifscCode?.trim() || null,
+        bankBranch: input.bankBranch === undefined ? existing.bankBranch : input.bankBranch?.trim() || null,
         uan: input.uan === undefined ? existing.uan : input.uan?.trim() || null,
         pfNumber: input.pfNumber === undefined ? existing.pfNumber : input.pfNumber?.trim() || null,
         esiNumber: input.esiNumber === undefined ? existing.esiNumber : input.esiNumber?.trim() || null,

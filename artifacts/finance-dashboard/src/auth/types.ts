@@ -16,6 +16,8 @@ export interface AuthUser {
   joiningDate?: string | null;
   bankName?: string | null;
   bankAccountNumber?: string | null;
+  ifscCode?: string | null;
+  bankBranch?: string | null;
   uan?: string | null;
   pfNumber?: string | null;
   esiNumber?: string | null;
@@ -84,6 +86,8 @@ export interface CreateEmployeeAccountPayload {
   joiningDate?: string | null;
   bankName?: string | null;
   bankAccountNumber?: string | null;
+  ifscCode?: string | null;
+  bankBranch?: string | null;
   uan?: string | null;
   pfNumber?: string | null;
   esiNumber?: string | null;
@@ -117,6 +121,8 @@ export interface UpdateEmployeeAccountPayload {
   joiningDate?: string | null;
   bankName?: string | null;
   bankAccountNumber?: string | null;
+  ifscCode?: string | null;
+  bankBranch?: string | null;
   uan?: string | null;
   pfNumber?: string | null;
   esiNumber?: string | null;

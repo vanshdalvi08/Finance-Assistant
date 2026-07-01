@@ -170,6 +170,11 @@ export type SalarySlipSnapshot = {
   esiNumber: string;
   bankName: string;
   bankAccountNumber: string;
+  ifscCode: string;
+  bankBranch: string;
+  totalHours: number;
+  payType: "monthly" | "hourly";
+  payRate: number;
   grossWages: number;
   totalWorkingDays: number;
   leaveDays: number;

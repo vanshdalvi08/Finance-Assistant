@@ -41,6 +41,8 @@ export interface Employee {
   joiningDate?: string | null;
   bankName?: string | null;
   bankAccountNumber?: string | null;
+  ifscCode?: string | null;
+  bankBranch?: string | null;
   uan?: string | null;
   pfNumber?: string | null;
   esiNumber?: string | null;
@@ -111,6 +113,11 @@ export interface SalarySlipDraft {
   esiNumber: string;
   bankName: string;
   bankAccountNumber: string;
+  ifscCode: string;
+  bankBranch: string;
+  totalHours: number;
+  payType: "monthly" | "hourly";
+  payRate: number;
   grossWages: number;
   totalWorkingDays: number;
   leaveDays: number;
@@ -491,6 +498,8 @@ interface AddEmployeeInput {
   joiningDate?: string | null;
   bankName?: string | null;
   bankAccountNumber?: string | null;
+  ifscCode?: string | null;
+  bankBranch?: string | null;
   uan?: string | null;
   pfNumber?: string | null;
   esiNumber?: string | null;
@@ -974,6 +983,8 @@ function mapAuthUserToEmployee(user: AuthUser): Employee {
     joiningDate: user.joiningDate ?? null,
     bankName: user.bankName ?? null,
     bankAccountNumber: user.bankAccountNumber ?? null,
+    ifscCode: user.ifscCode ?? null,
+    bankBranch: user.bankBranch ?? null,
     uan: user.uan ?? null,
     pfNumber: user.pfNumber ?? null,
     esiNumber: user.esiNumber ?? null,
@@ -1572,6 +1583,8 @@ export const api = {
     joiningDate?: string | null;
     bankName?: string | null;
     bankAccountNumber?: string | null;
+    ifscCode?: string | null;
+    bankBranch?: string | null;
     uan?: string | null;
     pfNumber?: string | null;
     esiNumber?: string | null;
@@ -1767,6 +1780,8 @@ export const api = {
       joiningDate: input.joiningDate,
       bankName: input.bankName,
       bankAccountNumber: input.bankAccountNumber,
+      ifscCode: input.ifscCode,
+      bankBranch: input.bankBranch,
       uan: input.uan,
       pfNumber: input.pfNumber,
       esiNumber: input.esiNumber,

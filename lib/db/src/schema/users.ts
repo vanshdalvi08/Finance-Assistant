@@ -32,6 +32,8 @@ export const usersTable = pgTable(
     joiningDate: timestamp("joining_date", { withTimezone: true }),
     bankName: text("bank_name"),
     bankAccountNumber: text("bank_account_number"),
+    ifscCode: text("ifsc_code"),
+    bankBranch: text("bank_branch"),
     uan: text("uan"),
     pfNumber: text("pf_number"),
     esiNumber: text("esi_number"),

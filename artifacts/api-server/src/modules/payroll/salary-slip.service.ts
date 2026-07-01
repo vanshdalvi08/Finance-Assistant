@@ -160,6 +160,13 @@ export async function buildSalarySlipDraft(input: {
     esiNumber: employee.esiNumber ?? "",
     bankName: employee.bankName ?? "",
     bankAccountNumber: employee.bankAccountNumber ?? "",
+    ifscCode: employee.ifscCode ?? "",
+    bankBranch: employee.bankBranch ?? "",
+    totalHours: salaries.reduce((sum, salary) => sum + Number(salary.hours ?? 0), 0),
+    payType: employee.payType,
+    payRate: employee.payType === "hourly"
+      ? employee.hourlyRate
+      : Math.round(employee.salary / 12),
     grossWages: total,
     totalWorkingDays: paidDays,
     leaveDays: 0,

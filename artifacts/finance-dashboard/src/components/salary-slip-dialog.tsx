@@ -178,6 +178,8 @@ export function SalarySlipDialog({
                 <TextField label="Date of joining" type="date" value={draft.joiningDate} onChange={(joiningDate) => update({ joiningDate })} />
                 <TextField label="Bank" value={draft.bankName} onChange={(bankName) => update({ bankName })} />
                 <TextField label="Account number" value={draft.bankAccountNumber} onChange={(bankAccountNumber) => update({ bankAccountNumber })} />
+                <TextField label="IFSC Code" value={draft.ifscCode} onChange={(ifscCode) => update({ ifscCode })} />
+                <TextField label="Bank Branch" value={draft.bankBranch} onChange={(bankBranch) => update({ bankBranch })} />
                 <TextField label="UAN" value={draft.uan} onChange={(uan) => update({ uan })} />
                 <TextField label="PF number" value={draft.pfNumber} onChange={(pfNumber) => update({ pfNumber })} />
                 <TextField label="ESI number" value={draft.esiNumber} onChange={(esiNumber) => update({ esiNumber })} />
