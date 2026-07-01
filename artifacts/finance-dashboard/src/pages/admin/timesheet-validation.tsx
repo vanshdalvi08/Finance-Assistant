@@ -73,18 +73,18 @@ function reviewWeekLabel(value: string) {
   return weekLabel(reviewWeekStart(value).toISOString());
 }
 
-function taskLineLabel(line: { task?: string; subTask?: string }) {
-  const task = line.task?.trim() || "Custom task";
+function taskLineLabel(line: { task?: string; subTask?: string; notes?: string }) {
+  const task = line.task?.trim() || line.notes?.trim() || "Custom task";
   return line.subTask ? `${task} - ${line.subTask}` : task;
 }
 
 function taskLineDisplayLabel(
-  line: { task?: string; subTask?: string; projectTaskId?: string },
+  line: { task?: string; subTask?: string; projectTaskId?: string; notes?: string },
   taskCatalogLookup?: Map<string, ProjectBudgetTask>,
 ) {
   const catalogTask = line.projectTaskId ? taskCatalogLookup?.get(line.projectTaskId) : undefined;
   if (catalogTask) {
-    const taskName = catalogTask.name?.trim() || line.task?.trim() || "Custom task";
+    const taskName = catalogTask.name?.trim() || line.task?.trim() || line.notes?.trim() || "Custom task";
     const taskDescription = catalogTask.description?.trim() || line.subTask?.trim() || "";
     return taskDescription ? `${taskName} - ${taskDescription}` : taskName;
   }
@@ -93,11 +93,11 @@ function taskLineDisplayLabel(
 }
 
 function taskLineDisplayParts(
-  line: { task?: string; subTask?: string; projectTaskId?: string },
+  line: { task?: string; subTask?: string; projectTaskId?: string; notes?: string },
   taskCatalogLookup?: Map<string, ProjectBudgetTask>,
 ) {
   const catalogTask = line.projectTaskId ? taskCatalogLookup?.get(line.projectTaskId) : undefined;
-  const taskName = catalogTask?.name?.trim() || line.task?.trim() || "Custom task";
+  const taskName = catalogTask?.name?.trim() || line.task?.trim() || line.notes?.trim() || "Custom task";
   const taskDescription = catalogTask?.description?.trim() || line.subTask?.trim() || "";
 
   return { taskName, taskDescription };

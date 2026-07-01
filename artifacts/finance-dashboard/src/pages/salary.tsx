@@ -193,12 +193,27 @@ function weekRangeLabel(sourceDate: string) {
   return `${format(weekStart, "dd MMM yyyy")} - ${format(weekEnd, "dd MMM yyyy")}`;
 }
 
+function timesheetLineTaskLabel(line: { task?: string; subTask?: string; notes?: string }) {
+  const task = line.task?.trim() || line.notes?.trim() || "Custom task";
+  const subTask = line.subTask?.trim();
+  return subTask ? `${task} - ${subTask}` : task;
+}
+
 function buildWorklogDays(timesheet: TimesheetEntry): WorklogDay[] {
   const rows = DAY_KEYS.map((dayKey, offset) => {
     const date = addDays(new Date(timesheet.weekStart), offset);
     const hours = timesheet.lines.reduce((sum, line) => sum + Number(line.hours?.[dayKey] ?? 0), 0);
     const workNote = timesheet.lines
-      .map((line) => line.workNotes?.[dayKey]?.trim() ?? "")
+      .map((line) => {
+        const dayHours = Number(line.hours?.[dayKey] ?? 0);
+        const note = line.workNotes?.[dayKey]?.trim() ?? "";
+        if (dayHours <= 0 && !note) {
+          return "";
+        }
+
+        const taskLabel = timesheetLineTaskLabel(line);
+        return note ? `${taskLabel}: ${note}` : taskLabel;
+      })
       .filter((value) => value.length > 0)
       .join(" | ");
 

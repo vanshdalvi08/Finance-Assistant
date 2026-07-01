@@ -71,12 +71,12 @@ function lineHoursInMonth(entry: TimesheetEntry, line: TimesheetEntry["lines"][n
 }
 
 function taskLineDisplayParts(
-  line: { task?: string; subTask?: string; projectTaskId?: string },
+  line: { task?: string; subTask?: string; projectTaskId?: string; notes?: string },
   taskCatalogLookup?: Map<string, ProjectBudgetTask>,
 ) {
   const catalogTask = line.projectTaskId ? taskCatalogLookup?.get(line.projectTaskId) : undefined;
-  const taskName = catalogTask?.name?.trim() || line.task?.trim() || "Custom task";
-  const shortDescription = catalogTask?.description?.trim() || "";
+  const taskName = catalogTask?.name?.trim() || line.task?.trim() || line.notes?.trim() || "Custom task";
+  const shortDescription = catalogTask?.description?.trim() || line.subTask?.trim() || "";
 
   return { taskName, shortDescription };
 }
