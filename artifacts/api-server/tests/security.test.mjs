@@ -87,6 +87,23 @@ test("API responses include security headers", { concurrency: false }, async () 
   assert.equal(response.headers.get("cross-origin-opener-policy"), "same-origin");
 });
 
+test("CORS preflight allows idempotency headers for protected mutations", { concurrency: false }, async () => {
+  const response = await api("/business/salary-slips/confirm", {
+    method: "OPTIONS",
+    headers: {
+      Origin: "http://localhost:5173",
+      "Access-Control-Request-Method": "POST",
+      "Access-Control-Request-Headers": "content-type,idempotency-key,x-idempotency-key",
+    },
+  });
+
+  assert.equal(response.status, 204);
+  assert.equal(response.headers.get("access-control-allow-origin"), "http://localhost:5173");
+  const allowedHeaders = response.headers.get("access-control-allow-headers")?.toLowerCase() ?? "";
+  assert.match(allowedHeaders, /(^|,\s*)idempotency-key(,|$)/);
+  assert.match(allowedHeaders, /(^|,\s*)x-idempotency-key(,|$)/);
+});
+
 test("public OAuth diagnostics are not exposed", { concurrency: false }, async () => {
   const response = await api("/auth/oauth-debug");
   assert.equal(response.status, 404, JSON.stringify(response.json));
