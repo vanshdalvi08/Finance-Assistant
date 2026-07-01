@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { addDays, format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
 import { CreditCard, Clock3, BadgeCheck, Plus, ChevronRight, CalendarDays } from "lucide-react";
-import type { FinancialAccount, TimesheetEntry } from "@/lib/api";
+import type { FinancialAccount, GeneratedSalarySlip, TimesheetEntry } from "@/lib/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -73,6 +73,15 @@ type PayrollWorklogEntry = {
   date: string;
   hours?: number;
   timesheet?: TimesheetEntry;
+};
+
+type PaidHistoryRow = {
+  id: string;
+  employeeName: string;
+  date: string;
+  note: string;
+  amount: number;
+  downloadUrl?: string;
 };
 
 const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
@@ -233,6 +242,7 @@ export default function Salary() {
   const { data: adminOverview } = useQuery({ queryKey: ["adminOverview"], queryFn: api.getAdminOverview });
   const { data: financialAccounts = [] } = useQuery({ queryKey: ["financialAccounts"], queryFn: api.getFinancialAccounts });
   const { data: timesheets = [] } = useQuery({ queryKey: ["timesheets"], queryFn: () => api.getTimesheets() });
+  const { data: salarySlips = [] } = useQuery({ queryKey: ["salary-slips"], queryFn: () => api.getSalarySlips() });
   const salaries = salaryData as SalaryRecord[];
   const timesheetEntries = timesheets as TimesheetEntry[];
   const activeAccounts = useMemo(
@@ -255,6 +265,31 @@ export default function Salary() {
     () => salaries.filter((record) => getPayrollStatus(record) === "paid"),
     [salaries],
   );
+  const paidHistory = useMemo<PaidHistoryRow[]>(() => {
+    if (salarySlips.length > 0) {
+      return [...salarySlips]
+        .sort((left, right) => new Date(right.paymentDate).getTime() - new Date(left.paymentDate).getTime())
+        .map((slip: GeneratedSalarySlip) => ({
+          id: slip.id,
+          employeeName: slip.snapshot?.employeeName ?? "Unknown",
+          date: slip.paymentDate,
+          note: `Salary slip for ${slip.payPeriod}`,
+          amount: slip.netAmount,
+          downloadUrl: slip.downloadUrl,
+        }));
+    }
+
+    return paidPayroll.map((record) => {
+      const employee = employees.find((item) => item.id === record.employeeId);
+      return {
+        id: record.id,
+        employeeName: record.employeeNameSnapshot ?? employee?.name ?? "Unknown",
+        date: getPayrollDate(record),
+        note: record.note || "-",
+        amount: getPayrollAmount(record),
+      };
+    });
+  }, [employees, paidPayroll, salarySlips]);
   const timesheetById = useMemo(
     () => new Map(timesheetEntries.map((entry) => [entry.id, entry])),
     [timesheetEntries],
@@ -373,9 +408,9 @@ export default function Salary() {
   }, [activeAccounts, pendingPayrollGroups]);
 
   const pendingAmount = pendingPayroll.reduce((sum, record) => sum + getPayrollAmount(record), 0);
-  const paidThisMonth = paidPayroll
-    .filter((record) => getPayrollDate(record).slice(0, 7) === new Date().toISOString().slice(0, 7))
-    .reduce((sum, record) => sum + getPayrollAmount(record), 0);
+  const paidThisMonth = paidHistory
+    .filter((record) => record.date.slice(0, 7) === new Date().toISOString().slice(0, 7))
+    .reduce((sum, record) => sum + record.amount, 0);
 
   const previewSalarySlipMutation = useMutation({
     mutationFn: ({ group, accountId }: { group: PendingPayrollGroup; accountId: string }) =>
@@ -397,10 +432,14 @@ export default function Salary() {
 
   const payMutation = useMutation({
     mutationFn: (draft: SalarySlipDraft) => api.confirmSalarySlip(draft, salarySlipIdempotencyKey || undefined),
-    onSuccess: ({ salaries: records }) => {
+    onSuccess: ({ slip, salaries: records }) => {
       for (const record of records) {
         queryClient.setQueryData<SalaryRecord[]>(["salaries"], (current) => upsertSalaryRecord(current, record));
       }
+      queryClient.setQueryData<GeneratedSalarySlip[]>(["salary-slips"], (current = []) => {
+        const existing = current.filter((item) => item.id !== slip.id);
+        return [slip, ...existing];
+      });
       setSalarySlipOpen(false);
       setSalarySlipDraft(null);
       setSalarySlipIdempotencyKey("");
@@ -1186,7 +1225,7 @@ export default function Salary() {
             </CardContent>
           </Card>
 
-          {paidPayroll.length > 0 ? (
+          {paidHistory.length > 0 ? (
             <div className="flex justify-end">
               <Button
                 variant="ghost"
@@ -1194,7 +1233,7 @@ export default function Salary() {
                 className="rounded-full px-4 text-muted-foreground hover:bg-secondary/70 hover:text-foreground"
                 onClick={() => setShowPaidHistory((current) => !current)}
               >
-                {showPaidHistory ? "Hide Paid History" : `Previous Paid Payroll (${paidPayroll.length})`}
+                {showPaidHistory ? "Hide Paid History" : `Previous Paid Payroll (${paidHistory.length})`}
               </Button>
             </div>
           ) : null}
@@ -1219,30 +1258,25 @@ export default function Salary() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {paidPayroll.length === 0 ? (
+                    {paidHistory.length === 0 ? (
                       <TableRow className="border-border/50">
                         <TableCell colSpan={4} className="py-10 text-center text-muted-foreground">
                           No paid payroll records yet.
                         </TableCell>
                       </TableRow>
                     ) : (
-                      paidPayroll.map((record) => {
-                        const employee = employees.find((item) => item.id === record.employeeId);
-                        const employeeName = record.employeeNameSnapshot ?? employee?.name ?? "Unknown";
-
-                        return (
-                          <TableRow key={record.id} className="border-border/50">
-                            <TableCell className="font-medium">{employeeName}</TableCell>
-                            <TableCell className="text-muted-foreground">
-                              {format(new Date(getPayrollDate(record)), "MMM dd, yyyy")}
-                            </TableCell>
-                            <TableCell className="text-muted-foreground">{record.note || "-"}</TableCell>
-                            <TableCell className="text-right font-medium text-foreground tabular-nums">
-                              {formatCurrency(getPayrollAmount(record))}
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })
+                      paidHistory.map((record) => (
+                        <TableRow key={record.id} className="border-border/50">
+                          <TableCell className="font-medium">{record.employeeName}</TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {format(new Date(record.date), "MMM dd, yyyy")}
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">{record.note}</TableCell>
+                          <TableCell className="text-right font-medium text-foreground tabular-nums">
+                            {formatCurrency(record.amount)}
+                          </TableCell>
+                        </TableRow>
+                      ))
                     )}
                   </TableBody>
                 </Table>
