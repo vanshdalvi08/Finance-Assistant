@@ -314,7 +314,7 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
 
           .content-shell {
             flex: 1;
-            padding: 2.2mm 5.5mm 0;
+            padding: 2.2mm 5.5mm 7mm;
           }
 
           .sheet-grid {
@@ -428,6 +428,14 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
             border-collapse: separate;
             border-spacing: 0;
             table-layout: fixed;
+          }
+
+          .table-card thead {
+            display: table-header-group;
+          }
+
+          .table-card tfoot {
+            display: table-row-group;
           }
 
           .table-card col:nth-child(1) {
@@ -666,8 +674,45 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
             }
 
             .sheet {
+              min-height: auto;
               box-shadow: none;
               border-radius: 0;
+              overflow: visible;
+            }
+
+            .content-shell {
+              padding-bottom: 12mm;
+            }
+
+            .table-card {
+              overflow: visible;
+            }
+
+            .table-card thead::before {
+              content: "";
+              display: table-row;
+              height: 7mm;
+            }
+
+            .table-card thead tr {
+              break-inside: avoid;
+              page-break-inside: avoid;
+            }
+
+            .table-card tr {
+              break-inside: avoid;
+              page-break-inside: avoid;
+            }
+
+            .footer-band {
+              position: fixed;
+              right: 0;
+              bottom: 0;
+              left: 0;
+              margin-top: 0;
+              height: 8mm;
+              padding: 1.25mm 9mm 1mm;
+              z-index: 10;
             }
           }
         </style>
