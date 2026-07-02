@@ -113,7 +113,7 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
         <style>
           @page {
             size: A4;
-            margin: 0 0 10mm;
+            margin: 0;
           }
 
           * {
@@ -435,7 +435,14 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
           }
 
           .table-card tfoot {
-            display: table-row-group;
+            display: table-footer-group;
+          }
+
+          .page-footer-spacer td {
+            height: 11mm;
+            border: 0;
+            padding: 0;
+            background: transparent;
           }
 
           .table-card col:nth-child(1) {
@@ -681,7 +688,7 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
             }
 
             .content-shell {
-              padding-bottom: 12mm;
+              padding-bottom: 10mm;
             }
 
             .table-card {
@@ -707,7 +714,7 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
             .footer-band {
               position: fixed;
               right: 0;
-              bottom: -10mm;
+              bottom: 0;
               left: 0;
               margin-top: 0;
               height: 8mm;
@@ -823,6 +830,11 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
                       <th class="right">Current amount</th>
                     </tr>
                   </thead>
+                  <tfoot>
+                    <tr class="page-footer-spacer">
+                      <td colspan="8"></td>
+                    </tr>
+                  </tfoot>
                   <tbody>
                     ${rows}
                     <tr class="total-row">
