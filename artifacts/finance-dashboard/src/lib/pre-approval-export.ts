@@ -113,7 +113,7 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
         <style>
           @page {
             size: A4;
-            margin: 0;
+            margin: 0 0 10mm;
           }
 
           * {
@@ -707,7 +707,7 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
             .footer-band {
               position: fixed;
               right: 0;
-              bottom: 0;
+              bottom: -10mm;
               left: 0;
               margin-top: 0;
               height: 8mm;
