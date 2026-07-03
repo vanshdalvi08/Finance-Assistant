@@ -584,7 +584,7 @@ export default function AdminReportsPage() {
                         <th style="width: 92px;">Date</th>
                         <th style="width: 48px;">Day</th>
                         <th>Task, short description & sub-task</th>
-                        <th class="num">Hours</th>
+                          <th class="num">Hours</th>
                         <th>Work Notes</th>
                       </tr>
                     </thead>
