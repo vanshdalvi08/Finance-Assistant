@@ -234,8 +234,8 @@ export default function Dashboard() {
   }, [chartData]);
 
   const trendTimesheets = useMemo(() => {
-    const approved = timesheets.filter((t) => t.status === "approved");
-    return workEmployee === "all" ? approved : approved.filter((t) => t.employeeId === workEmployee);
+    const logged = timesheets.filter((t) => t.status === "approved" || t.status === "submitted" || t.status === "draft");
+    return workEmployee === "all" ? logged : logged.filter((t) => t.employeeId === workEmployee);
   }, [timesheets, workEmployee]);
 
   const weeklyWorkData = useMemo(() => {
@@ -362,7 +362,7 @@ export default function Dashboard() {
     const filtered = timesheets.filter(
       (t) => (t.status === "approved" || t.status === "submitted" || t.status === "draft") && (heatmapEmployee === "all" || t.employeeId === heatmapEmployee),
     );
-    const lookup = new Map<string, { project: string; task: string; hours: number }>();
+    const lookup = new Map<string, { project: string; task: string; subTask: string; hours: number }>();
     for (const entry of filtered) {
       const ws = entry.weekStart?.slice(0, 10);
       if (!ws) continue;
@@ -378,8 +378,9 @@ export default function Dashboard() {
         if (monthHours <= 0) continue;
         const project = line.project?.trim() || "Custom project";
         const task = line.task?.trim() || "Custom task";
-        const key = `${project}::${task}`;
-        const row = lookup.get(key) ?? { project, task, hours: 0 };
+        const subTask = (line.subTask as string | undefined)?.trim() || "";
+        const key = `${project}::${task}::${subTask}`;
+        const row = lookup.get(key) ?? { project, task, subTask, hours: 0 };
         row.hours += monthHours;
         lookup.set(key, row);
       }
@@ -626,7 +627,7 @@ export default function Dashboard() {
             <div>
               <CardTitle className="text-base">Work Trend</CardTitle>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Approved hours —{" "}
+                Hours logged —{" "}
                 {workView === "weekly"
                   ? "by week"
                   : format(new Date(`${workMonth}-01T00:00:00`), "MMMM yyyy")}
@@ -877,6 +878,9 @@ export default function Dashboard() {
                                 {row.project}
                               </p>
                               <p className="text-sm font-medium truncate leading-snug">{row.task}</p>
+                              {row.subTask && (
+                                <p className="text-[11px] text-muted-foreground truncate leading-snug mt-0.5">{row.subTask}</p>
+                              )}
                             </div>
                             <span className="shrink-0 text-sm font-bold tabular-nums">
                               {Number.isInteger(row.hours) ? row.hours : row.hours.toFixed(1)}h
