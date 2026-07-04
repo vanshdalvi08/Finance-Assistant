@@ -2195,9 +2195,6 @@ export const api = {
 
   getTransactions: async () => (await businessGet<{ transactions: Transaction[] }>("/transactions")).transactions,
 
-  redatePayrollMonth: async (fromMonth: string, toDate: string) =>
-    (await businessPost<{ updated: number }>("/salaries/payment-month", { fromMonth, toDate }, "PATCH")).updated,
-
   getChartData: async () => (await businessGet<{ finance: ChartPoint[] }>("/charts")).finance,
 
   getAdminOverview: async () => businessGet<AdminOverview>("/overview"),
