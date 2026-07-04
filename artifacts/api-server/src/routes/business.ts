@@ -1324,14 +1324,29 @@ router.get("/transactions", requireTenantRole("admin"), async (_request, respons
       description: expense.description,
       category: expense.category,
     })),
-    ...tenantSalaries.map((salary) => ({
-      id: `tx_${salary.id}`,
-      type: "salary" as const,
-      amount: -Math.abs(salary.amount),
-      date: salary.paidAt ?? salary.date,
-      description: `${salary.employeeNameSnapshot ?? (salary.employeeId ? employeeNames.get(salary.employeeId) : undefined) ?? "Employee"} Salary`,
-      category: "Payroll",
-    })),
+    ...(() => {
+      const grouped = new Map<string, { id: string; type: "salary"; amount: number; date: string; description: string; category: string }>();
+      for (const salary of tenantSalaries) {
+        const paidDate = salary.paidAt ?? salary.date;
+        const month = paidDate.slice(0, 7);
+        const empId = salary.employeeId ?? "unknown";
+        const key = `${empId}::${month}`;
+        const name = salary.employeeNameSnapshot ?? (salary.employeeId ? employeeNames.get(salary.employeeId) : undefined) ?? "Employee";
+        if (grouped.has(key)) {
+          grouped.get(key)!.amount -= Math.abs(salary.amount);
+        } else {
+          grouped.set(key, {
+            id: `tx_salary_${empId}_${month.replace("-", "")}`,
+            type: "salary" as const,
+            amount: -Math.abs(salary.amount),
+            date: paidDate,
+            description: `${name} Salary`,
+            category: "Payroll",
+          });
+        }
+      }
+      return Array.from(grouped.values());
+    })(),
   ].sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime());
 
   response.json({ transactions });
