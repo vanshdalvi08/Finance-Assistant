@@ -315,7 +315,7 @@ export default function Dashboard() {
     const WEEK_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
     const dayMap = new Map<string, number>();
     const filtered = timesheets.filter(
-      (t) => (t.status === "approved" || t.status === "submitted") && (heatmapEmployee === "all" || t.employeeId === heatmapEmployee),
+      (t) => (t.status === "approved" || t.status === "submitted" || t.status === "draft") && (heatmapEmployee === "all" || t.employeeId === heatmapEmployee),
     );
     for (const entry of filtered) {
       const ws = entry.weekStart?.slice(0, 10);
@@ -360,7 +360,7 @@ export default function Dashboard() {
   const heatmapTaskRows = useMemo(() => {
     const KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
     const filtered = timesheets.filter(
-      (t) => (t.status === "approved" || t.status === "submitted") && (heatmapEmployee === "all" || t.employeeId === heatmapEmployee),
+      (t) => (t.status === "approved" || t.status === "submitted" || t.status === "draft") && (heatmapEmployee === "all" || t.employeeId === heatmapEmployee),
     );
     const lookup = new Map<string, { project: string; task: string; hours: number }>();
     for (const entry of filtered) {
