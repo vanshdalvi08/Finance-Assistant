@@ -1,12 +1,13 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { z } from "zod";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, gte, lt } from "drizzle-orm";
 import { db } from "@workspace/db";
 import {
   companySettingsTable,
   fundsTable,
   idempotencyKeysTable,
   preApprovalsTable,
+  salariesTable,
   usersTable,
   type CompanySettingsRecord,
   type PreApproval as DbPreApproval,
@@ -1297,6 +1298,35 @@ router.get("/charts", requireTenantRole("admin"), async (_request, response) => 
       }, new Map<string, number>()),
     ).map(([name, value]) => ({ name, value })).sort((left, right) => right.value - left.value),
   });
+});
+
+router.patch("/salaries/payment-month", requireTenantRole("admin"), async (request, response) => {
+  const parsed = z.object({
+    fromMonth: z.string().regex(/^\d{4}-\d{2}$/, "fromMonth must be YYYY-MM"),
+    toDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "toDate must be YYYY-MM-DD"),
+  }).safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ message: parsed.error.issues[0]?.message ?? "Invalid input" });
+    return;
+  }
+  const { fromMonth, toDate } = parsed.data;
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const monthStart = new Date(`${fromMonth}-01T00:00:00.000Z`);
+  const monthEnd = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 1);
+  const newPaidAt = new Date(`${toDate}T12:00:00.000Z`);
+  const result = await db
+    .update(salariesTable)
+    .set({ paidAt: newPaidAt, updatedAt: new Date() })
+    .where(
+      and(
+        eq(salariesTable.tenantId, tenantId),
+        eq(salariesTable.status, "paid"),
+        gte(salariesTable.paidAt, monthStart),
+        lt(salariesTable.paidAt, monthEnd),
+      ),
+    )
+    .returning({ id: salariesTable.id });
+  response.json({ updated: result.length });
 });
 
 router.get("/transactions", requireTenantRole("admin"), async (_request, response) => {

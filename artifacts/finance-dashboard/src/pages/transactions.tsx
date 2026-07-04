@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import {
   BanknoteArrowDown,
@@ -58,6 +58,18 @@ export default function Transactions() {
   const [search, setSearch] = useState("");
   const [showFilters, setShowFilters] = useState(false);
   const [openMonthKey, setOpenMonthKey] = useState<string | null>(null);
+  const [redateMonthKey, setRedateMonthKey] = useState<string | null>(null);
+  const [redateTarget, setRedateTarget] = useState("");
+  const queryClient = useQueryClient();
+  const redateMutation = useMutation({
+    mutationFn: ({ fromMonth, toDate }: { fromMonth: string; toDate: string }) =>
+      api.redatePayrollMonth(fromMonth, toDate),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      setRedateMonthKey(null);
+      setRedateTarget("");
+    },
+  });
 
   const { data: transactions = [], isLoading } = useQuery({
     queryKey: ["transactions"],
@@ -389,6 +401,19 @@ export default function Transactions() {
                         <Badge variant="outline" className="border-border/60 bg-secondary/40 text-xs text-muted-foreground">
                           {group.transactions.length} record{group.transactions.length === 1 ? "" : "s"}
                         </Badge>
+                        {group.transactions.some((t) => t.type === "salary") && (
+                          <button
+                            type="button"
+                            className="ml-1 rounded-md border border-orange-500/30 bg-orange-500/10 px-2 py-0.5 text-[11px] font-medium text-orange-300 hover:bg-orange-500/20 transition-colors"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setRedateMonthKey((k) => (k === group.key ? null : group.key));
+                              setRedateTarget("");
+                            }}
+                          >
+                            Redate Payroll
+                          </button>
+                        )}
                       </div>
                       <p className="text-xs text-muted-foreground">
                         {groupAccounts} account{groupAccounts === 1 ? "" : "s"} in this month · {formatCurrency(groupNet)} net movement
@@ -412,6 +437,36 @@ export default function Transactions() {
                       </div>
                     </div>
                   </button>
+
+                  {redateMonthKey === group.key && (
+                    <div className="flex items-center gap-3 border-b border-border/50 bg-orange-500/5 px-5 py-3">
+                      <p className="text-xs text-muted-foreground shrink-0">Move all payroll in <span className="font-semibold text-foreground">{group.label}</span> to:</p>
+                      <Input
+                        type="date"
+                        className="h-7 w-40 rounded-lg border-border/60 bg-card/70 text-xs"
+                        value={redateTarget}
+                        onChange={(e) => setRedateTarget(e.target.value)}
+                      />
+                      <Button
+                        size="sm"
+                        className="h-7 text-xs"
+                        disabled={!redateTarget || redateMutation.isPending}
+                        onClick={() => redateMutation.mutate({ fromMonth: group.key, toDate: redateTarget })}
+                      >
+                        {redateMutation.isPending ? "Moving…" : "Confirm"}
+                      </Button>
+                      <button
+                        type="button"
+                        className="text-xs text-muted-foreground hover:text-foreground"
+                        onClick={() => setRedateMonthKey(null)}
+                      >
+                        Cancel
+                      </button>
+                      {redateMutation.isError && (
+                        <p className="text-xs text-rose-400">Failed. Try again.</p>
+                      )}
+                    </div>
+                  )}
 
                   {isOpen ? (
                     <CardContent className="px-0 pb-0 pt-0">
