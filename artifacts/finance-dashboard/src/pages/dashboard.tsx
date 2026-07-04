@@ -273,7 +273,7 @@ export default function Dashboard() {
           if (h <= 0) return;
           const d = new Date(weekStart);
           d.setDate(weekStart.getDate() + i);
-          const key = d.toISOString().slice(0, 10);
+          const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
           if (!key.startsWith(workMonth)) return;
           dayMap.set(key, (dayMap.get(key) ?? 0) + h);
         });
@@ -281,7 +281,8 @@ export default function Dashboard() {
     }
     const [y, m] = workMonth.split("-").map(Number);
     const daysInMonth = new Date(y!, m!, 0).getDate();
-    const today = new Date().toISOString().slice(0, 10);
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
     const result = [];
     for (let d = 1; d <= daysInMonth; d++) {
       const date = `${workMonth}-${String(d).padStart(2, "0")}`;
@@ -314,7 +315,7 @@ export default function Dashboard() {
     const WEEK_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
     const dayMap = new Map<string, number>();
     const filtered = timesheets.filter(
-      (t) => t.status === "approved" && (heatmapEmployee === "all" || t.employeeId === heatmapEmployee),
+      (t) => (t.status === "approved" || t.status === "submitted") && (heatmapEmployee === "all" || t.employeeId === heatmapEmployee),
     );
     for (const entry of filtered) {
       const ws = entry.weekStart?.slice(0, 10);
@@ -359,7 +360,7 @@ export default function Dashboard() {
   const heatmapTaskRows = useMemo(() => {
     const KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
     const filtered = timesheets.filter(
-      (t) => t.status === "approved" && (heatmapEmployee === "all" || t.employeeId === heatmapEmployee),
+      (t) => (t.status === "approved" || t.status === "submitted") && (heatmapEmployee === "all" || t.employeeId === heatmapEmployee),
     );
     const lookup = new Map<string, { project: string; task: string; hours: number }>();
     for (const entry of filtered) {
@@ -371,7 +372,8 @@ export default function Dashboard() {
         KEYS.forEach((k, i) => {
           const d = new Date(weekStart);
           d.setDate(weekStart.getDate() + i);
-          if (d.toISOString().slice(0, 7) === heatmapMonth) monthHours += Number(line.hours[k] ?? 0);
+          const localMonth = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+          if (localMonth === heatmapMonth) monthHours += Number(line.hours[k] ?? 0);
         });
         if (monthHours <= 0) continue;
         const project = line.project?.trim() || "Custom project";
