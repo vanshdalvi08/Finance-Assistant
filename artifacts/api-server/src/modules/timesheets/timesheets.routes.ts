@@ -25,6 +25,7 @@ import {
   pushAuditEvent,
   reconcileDailyReviewState,
   readStore,
+  recallTimesheetForCorrection,
   reviewTimesheetFast,
   saveTimesheetFast,
   setTimesheetDayReviewStatusFast,
@@ -1951,6 +1952,68 @@ router.post("/timesheets/:id/reject", requireTenantRole("admin"), timesheetRevie
     );
   }
   response.json({ timesheet: reviewResult.timesheet, duplicate: false });
+});
+
+router.post("/timesheets/:id/recall", requireTenantRole("admin"), timesheetReviewLimiter, async (request, response) => {
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const store = await readStore();
+  const tenantEmployees = await loadEmployees(tenantId);
+  const tenantEmployeeIds = new Set(tenantEmployees.map((employee) => employee.id));
+  const existing = store.timesheets.find((entry) => entry.id === request.params.id);
+
+  if (!existing) {
+    respondNotFound(response, "Timesheet not found");
+    return;
+  }
+
+  try {
+    assertTenantEmployeeAccess(existing.employeeId, tenantEmployeeIds, request.auth?.user.role, request.auth?.user.id, () => new Error("Forbidden"));
+  } catch {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
+  let recallResult: { timesheet: TimesheetEntry };
+  try {
+    recallResult = await recallTimesheetForCorrection({
+      id: String(request.params.id),
+      tenantId,
+      actorName: request.auth?.user.name ?? "Admin",
+      requestId: String(request.id),
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("already been paid")) {
+      response.status(409).json({ message: error.message });
+      return;
+    }
+    if (error instanceof Error && error.message.includes("Only approved timesheets")) {
+      response.status(409).json({ message: error.message });
+      return;
+    }
+    throw error;
+  }
+
+  const actor = notificationActor(request);
+  await deliverNotification(
+    notifyEmployee(
+      existing.employeeId,
+      actor,
+      {
+        type: "timesheet_reverted",
+        title: "Timesheet recalled for correction",
+        body: `Your timesheet for the week of ${new Date(existing.weekStart).toLocaleDateString("en-IN", {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+        })} was recalled by your admin for review and correction.`,
+        link: "/employee/timesheet",
+        email: true,
+        metadata: { timesheetId: existing.id, employeeId: existing.employeeId },
+      },
+    ),
+  );
+
+  response.json({ timesheet: recallResult.timesheet });
 });
 
 router.delete("/timesheets/:id", requireTenantRole("admin", "employee"), async (request, response) => {

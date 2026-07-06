@@ -2014,6 +2014,9 @@ export const api = {
   rejectTimesheet: async (id: string, _reviewer: string, note: string) =>
     normalizeTimesheet((await businessPost<{ timesheet: TimesheetEntry }>(`/timesheets/${id}/reject`, { note })).timesheet),
 
+  recallTimesheet: async (id: string) =>
+    normalizeTimesheet((await businessPost<{ timesheet: TimesheetEntry }>(`/timesheets/${id}/recall`, {})).timesheet),
+
   getTimesheetSummary: async (scope?: { employeeId?: string }) => {
     const path = withQuery("/timesheets/summary", { employeeId: scope?.employeeId });
     return businessGet<{

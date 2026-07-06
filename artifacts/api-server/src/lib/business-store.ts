@@ -2538,9 +2538,10 @@ async function persistTargetedTimesheetUnsafe(input: {
   entry?: TimesheetEntry | null;
   deleteTimesheetId?: string | null;
   salary?: SalaryRecord | null;
+  deleteSalaryId?: string | null;
   auditEntry?: AuditTrailEntry | null;
 }): Promise<void> {
-  const { currentStore, nextStore, entry, deleteTimesheetId, salary, auditEntry } = input;
+  const { currentStore, nextStore, entry, deleteTimesheetId, salary, deleteSalaryId, auditEntry } = input;
   const projectTasks = nextStore.projectBudgets.flatMap((budget) => budget.tasks ?? []);
   const validProjectIds = new Set(nextStore.projectBudgets.map((budget) => budget.id));
   const validTaskIds = new Set(projectTasks.map((task) => task.id));
@@ -2582,6 +2583,10 @@ async function persistTargetedTimesheetUnsafe(input: {
       } else {
         await tx.insert(salariesTable).values(row);
       }
+    }
+
+    if (deleteSalaryId) {
+      await tx.delete(salariesTable).where(eq(salariesTable.id, deleteSalaryId));
     }
 
     if (auditEntry) {
@@ -3360,6 +3365,109 @@ export async function reviewTimesheetFast(input: {
       timesheet: structuredClone(reviewedEntry),
       salary: salary ? structuredClone(salary) : undefined,
     };
+  });
+}
+
+export async function recallTimesheetForCorrection(input: {
+  id: string;
+  tenantId: string;
+  actorName: string;
+  requestId?: string;
+}): Promise<{ timesheet: TimesheetEntry }> {
+  await ensureSchema();
+  return withStoreWriteLock(async () => {
+    storeReadPromise = null;
+    const current = storeCache ?? await readStore({ fresh: true });
+    const existing = current.timesheets.find((t) => t.id === input.id);
+
+    if (!existing) {
+      throw new Error("Timesheet not found");
+    }
+    if (existing.status !== "approved") {
+      throw new Error("Only approved timesheets can be recalled for correction");
+    }
+
+    // Determine which calendar months this timesheet spans
+    const affectedMonthKeys = new Set(
+      timesheetMonthBreakdowns(existing).map((b) => b.monthKey),
+    );
+    affectedMonthKeys.add(payrollMonthKey(existing.weekStart));
+
+    // Safety: block recall if any linked salary has been paid
+    const hasPaidSalary = current.salaries.some((s) => {
+      if ((s.tenantId ?? DEFAULT_TENANT_ID) !== input.tenantId) return false;
+      if (s.employeeId !== existing.employeeId) return false;
+      if (s.source !== "timesheet") return false;
+      if (s.status !== "paid") return false;
+      // Hourly: salary.timesheetId starts with the timesheet id
+      if (s.rate != null) {
+        return s.timesheetId === existing.id || s.timesheetId?.startsWith(existing.id + ":");
+      }
+      // Monthly: salary covers the same month
+      return affectedMonthKeys.has(payrollMonthKey(s.weekStart ?? s.date));
+    });
+    if (hasPaidSalary) {
+      throw new Error("Cannot recall a timesheet whose salary has already been paid");
+    }
+
+    const now = nowIso();
+    const recalledEntry = normalizeStore({
+      timesheets: [{
+        ...existing,
+        status: "submitted",
+        updatedAt: now,
+      }],
+    }).timesheets[0]!;
+
+    // For hourly employees: delete the specific pending salary record tied to this timesheet.
+    // For monthly employees: leave the monthly salary record; the reconciler recalculates on next page load.
+    const pendingHourlySalaryId = current.salaries.find(
+      (s) =>
+        (s.tenantId ?? DEFAULT_TENANT_ID) === input.tenantId &&
+        s.employeeId === existing.employeeId &&
+        s.source === "timesheet" &&
+        s.rate != null &&
+        s.status === "pending" &&
+        (s.timesheetId === existing.id || s.timesheetId?.startsWith(existing.id + ":")),
+    )?.id ?? null;
+
+    const auditEntry = createAuditEntry({
+      tenantId: input.tenantId,
+      actorName: input.actorName,
+      actorRole: "admin",
+      action: "reverted",
+      entityType: "timesheet",
+      entityId: existing.id,
+      summary: `Recalled timesheet for ${existing.employeeNameSnapshot} for correction.`,
+      requestId: input.requestId,
+      details: {
+        entityLabel: existing.employeeNameSnapshot,
+        requestId: input.requestId,
+        changedFields: ["status"],
+        before: summarizeTimesheetAudit(existing),
+        after: summarizeTimesheetAudit(recalledEntry),
+        context: { operation: "timesheet_recall" },
+      },
+    });
+
+    const nextStore = normalizeStore({
+      ...current,
+      timesheets: current.timesheets.map((t) => (t.id === existing.id ? recalledEntry : t)),
+      salaries: pendingHourlySalaryId
+        ? current.salaries.filter((s) => s.id !== pendingHourlySalaryId)
+        : current.salaries,
+      auditTrail: [auditEntry, ...current.auditTrail].slice(0, 250),
+    });
+
+    await persistTargetedTimesheetUnsafe({
+      currentStore: current,
+      nextStore,
+      entry: recalledEntry,
+      deleteSalaryId: pendingHourlySalaryId,
+      auditEntry,
+    });
+    cacheStore(nextStore);
+    return { timesheet: structuredClone(recalledEntry) };
   });
 }
 

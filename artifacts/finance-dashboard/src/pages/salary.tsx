@@ -9,10 +9,11 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { addDays, format } from "date-fns";
 import { useToast } from "@/hooks/use-toast";
-import { CreditCard, Clock3, BadgeCheck, Plus, ChevronRight, CalendarDays } from "lucide-react";
+import { CreditCard, Clock3, BadgeCheck, Plus, ChevronRight, CalendarDays, RotateCcw } from "lucide-react";
 import type { FinancialAccount, GeneratedSalarySlip, TimesheetEntry } from "@/lib/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -251,6 +252,8 @@ export default function Salary() {
   const [salarySlipIdempotencyKey, setSalarySlipIdempotencyKey] = useState("");
   const [addDayGroupKey, setAddDayGroupKey] = useState<string | null>(null);
   const [addDayDate, setAddDayDate] = useState("");
+  const [recallGroupKey, setRecallGroupKey] = useState<string | null>(null);
+  const [recallSelectedIds, setRecallSelectedIds] = useState<Set<string>>(new Set());
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
   const { data: salaryData = [] } = useQuery({ queryKey: ["salaries"], queryFn: api.getSalaries });
@@ -642,6 +645,32 @@ export default function Salary() {
     onError: (error) => {
       toast({
         title: "Could not add extra day",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const recallMutation = useMutation({
+    mutationFn: async (ids: string[]) => {
+      return Promise.all(ids.map((id) => api.recallTimesheet(id)));
+    },
+    onSuccess: (_, ids) => {
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["salaries"] }),
+        queryClient.invalidateQueries({ queryKey: ["timesheets"] }),
+        queryClient.invalidateQueries({ queryKey: ["adminOverview"] }),
+      ]);
+      toast({
+        title: "Timesheets recalled",
+        description: `${ids.length} timesheet${ids.length !== 1 ? "s" : ""} moved back to submitted — ready for review in the Timesheets tab.`,
+      });
+      setRecallGroupKey(null);
+      setRecallSelectedIds(new Set());
+    },
+    onError: (error) => {
+      toast({
+        title: "Recall failed",
         description: error instanceof Error ? error.message : "Please try again.",
         variant: "destructive",
       });
@@ -1203,6 +1232,87 @@ export default function Salary() {
                                             </div>
                                           );
                                         })}
+
+                                        {isTimesheetGroup && group.approvedTimesheets.length > 0 ? (
+                                          <Dialog
+                                            open={recallGroupKey === group.key}
+                                            onOpenChange={(open) => {
+                                              if (open) {
+                                                setRecallGroupKey(group.key);
+                                                setRecallSelectedIds(new Set(group.approvedTimesheets.map((t) => t.id)));
+                                              } else {
+                                                setRecallGroupKey(null);
+                                                setRecallSelectedIds(new Set());
+                                              }
+                                            }}
+                                          >
+                                            <DialogTrigger asChild>
+                                              <Button
+                                                size="sm"
+                                                variant="outline"
+                                                className="w-full rounded-xl border-border/60 text-muted-foreground hover:border-orange-300 hover:bg-orange-50/50 hover:text-orange-700 dark:hover:border-orange-800 dark:hover:bg-orange-950/20 dark:hover:text-orange-400"
+                                              >
+                                                <RotateCcw className="mr-2 h-3.5 w-3.5" />
+                                                Recall for Correction
+                                              </Button>
+                                            </DialogTrigger>
+                                            <DialogContent className="max-w-md">
+                                              <DialogHeader>
+                                                <DialogTitle className="flex items-center gap-2">
+                                                  <RotateCcw className="h-4 w-4 text-muted-foreground" />
+                                                  Recall for Correction
+                                                </DialogTitle>
+                                              </DialogHeader>
+                                              <div className="space-y-4">
+                                                <p className="text-sm text-muted-foreground">
+                                                  Select weeks to recall. Recalled timesheets move back to <strong>Submitted</strong> status so you can revert them to the employee for editing, then re-approve once corrected.
+                                                </p>
+                                                <div className="space-y-2">
+                                                  {group.approvedTimesheets.map((timesheet) => (
+                                                    <label
+                                                      key={timesheet.id}
+                                                      className="flex cursor-pointer items-center gap-3 rounded-xl border border-border/60 px-3 py-2.5 hover:bg-muted/40"
+                                                    >
+                                                      <Checkbox
+                                                        checked={recallSelectedIds.has(timesheet.id)}
+                                                        onCheckedChange={(checked) => {
+                                                          setRecallSelectedIds((prev) => {
+                                                            const next = new Set(prev);
+                                                            if (checked) next.add(timesheet.id);
+                                                            else next.delete(timesheet.id);
+                                                            return next;
+                                                          });
+                                                        }}
+                                                      />
+                                                      <div className="flex-1 text-sm">
+                                                        <span className="font-medium">
+                                                          Week of {format(new Date(timesheet.weekStart), "dd MMM yyyy")}
+                                                        </span>
+                                                      </div>
+                                                    </label>
+                                                  ))}
+                                                </div>
+                                                <div className="flex gap-2 justify-end pt-1">
+                                                  <DialogClose asChild>
+                                                    <Button variant="outline" size="sm" className="rounded-xl" disabled={recallMutation.isPending}>
+                                                      Cancel
+                                                    </Button>
+                                                  </DialogClose>
+                                                  <Button
+                                                    size="sm"
+                                                    className="rounded-xl bg-orange-600 text-white hover:bg-orange-700 dark:bg-orange-700 dark:hover:bg-orange-600"
+                                                    disabled={recallSelectedIds.size === 0 || recallMutation.isPending}
+                                                    onClick={() => recallMutation.mutate(Array.from(recallSelectedIds))}
+                                                  >
+                                                    {recallMutation.isPending
+                                                      ? "Recalling…"
+                                                      : `Recall ${recallSelectedIds.size} Week${recallSelectedIds.size !== 1 ? "s" : ""}`}
+                                                  </Button>
+                                                </div>
+                                              </div>
+                                            </DialogContent>
+                                          </Dialog>
+                                        ) : null}
 
                                         {isMonthlyPayroll ? (
                                           <div className="rounded-2xl border border-dashed border-border/60 bg-background/40 p-4">
