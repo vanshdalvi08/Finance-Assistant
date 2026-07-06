@@ -190,6 +190,22 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
           }
         }
       }
+      // Detect duplicate pending records for this employee/month (created by old reconciler bugs).
+      const allForMonth = store.salaries.filter(
+        (salary) =>
+          tenantSalaryFilter(salary, tenantId) &&
+          salary.source === "timesheet" &&
+          salary.employeeId === groupEmployeeId &&
+          salary.rate == null &&
+          salary.status === "pending" &&
+          (
+            payrollMonthKey(salary.weekStart ?? salary.date) === monthKey ||
+            monthKeyFromTimesheetId(salary.timesheetId) === monthKey
+          ),
+      );
+      if (allForMonth.length > 1) {
+        return true;
+      }
       // Preserve admin-added extra days but cap at the actual days in the month.
       const storedDays = Number(existing?.days ?? 0);
       const maxDays = daysInCalendarMonth(monthKey);
@@ -382,6 +398,26 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
         nextSalaries[existingIndex] = salary;
       } else {
         nextSalaries.unshift(salary);
+      }
+
+      // Remove any other duplicate pending records for the same employee/month.
+      const keptId = salary.id;
+      for (let i = nextSalaries.length - 1; i >= 0; i--) {
+        const s = nextSalaries[i]!;
+        if (
+          s.id !== keptId &&
+          tenantSalaryFilter(s, tenantId) &&
+          s.source === "timesheet" &&
+          s.employeeId === employee.id &&
+          s.rate == null &&
+          s.status !== "paid" &&
+          (
+            payrollMonthKey(s.weekStart ?? s.date) === monthKey ||
+            monthKeyFromTimesheetId(s.timesheetId) === monthKey
+          )
+        ) {
+          nextSalaries.splice(i, 1);
+        }
       }
     }
 
