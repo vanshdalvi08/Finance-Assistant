@@ -206,18 +206,22 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
       if (allForMonth.length > 1) {
         return true;
       }
-      // Preserve admin-added extra days but cap at the actual days in the month.
-      const storedDays = Number(existing?.days ?? 0);
       const maxDays = daysInCalendarMonth(monthKey);
-      const reconciledDays = Math.min(Math.max(totalDays, storedDays), maxDays);
+      const reconciledDays = Math.min(totalDays, maxDays);
       const reconciledAmount = monthlyAmount > 0
         ? Math.round(monthlyAmount / maxDays * reconciledDays)
         : 0;
+      // Also re-reconcile if a stale record's timesheetId is scoped to a different month
+      // (mismatch between weekStart and timesheetId means the record is inconsistent).
+      const existingMonthViaTimesheetId = monthKeyFromTimesheetId(existing?.timesheetId);
+      if (existing && existingMonthViaTimesheetId != null && existingMonthViaTimesheetId !== monthKey) {
+        return true;
+      }
       return (
         !existing ||
         (existing.status === "pending" && (
           Number(existing.hours ?? 0) !== totalHours ||
-          storedDays !== reconciledDays ||
+          Number(existing.days ?? 0) !== reconciledDays ||
           existing.amount !== reconciledAmount
         ))
       );
@@ -358,7 +362,15 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
             monthKeyFromTimesheetId(salary.timesheetId) === monthKey
           ),
       );
-      const existing = existingIndex >= 0 ? nextSalaries[existingIndex] : undefined;
+      const existingCandidate = existingIndex >= 0 ? nextSalaries[existingIndex] : undefined;
+      // Skip records whose scoped timesheetId maps to a different month — they are stale
+      // (mismatched weekStart vs timesheetId). The deduplication pass will clean them up.
+      const candidateMonthViaId = monthKeyFromTimesheetId(existingCandidate?.timesheetId);
+      const existing = existingCandidate && candidateMonthViaId != null && candidateMonthViaId !== monthKey
+        ? undefined
+        : existingCandidate;
+      const effectiveExistingIndex = existing ? existingIndex : -1;
+
       if (existing?.status === "paid") {
         continue;
       }
@@ -368,9 +380,8 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
         continue;
       }
 
-      // Preserve admin-added extra days but cap at the actual days in the month.
       const monthCalendarDays = daysInCalendarMonth(monthKey);
-      const reconciledDays = Math.min(Math.max(totalDays, Number(existing?.days ?? 0)), monthCalendarDays);
+      const reconciledDays = totalDays;
       const proratedAmount = monthlyAmount > 0
         ? Math.round(monthlyAmount / monthCalendarDays * reconciledDays)
         : 0;
@@ -385,7 +396,7 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
         note: existing?.note || `Monthly salary for ${monthKey}`,
         status: "pending",
         source: "timesheet",
-        weekStart: existing?.weekStart ?? firstWorkDate ?? firstTimesheet.weekStart,
+        weekStart: firstWorkDate ?? existing?.weekStart ?? firstTimesheet.weekStart,
         hours: totalHours,
         rate: undefined,
         days: reconciledDays,
@@ -394,8 +405,8 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
         updatedAt,
       };
 
-      if (existingIndex >= 0) {
-        nextSalaries[existingIndex] = salary;
+      if (effectiveExistingIndex >= 0) {
+        nextSalaries[effectiveExistingIndex] = salary;
       } else {
         nextSalaries.unshift(salary);
       }
