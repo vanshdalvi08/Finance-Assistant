@@ -66,6 +66,10 @@ function tenantSalaryFilter(salary: SalaryRecord, tenantId: string) {
   return (salary.tenantId ?? DEFAULT_TENANT_ID) === tenantId;
 }
 
+function monthKeyFromTimesheetId(value?: string): string | undefined {
+  return value?.match(/:(\d{4}-\d{2})$/)?.[1];
+}
+
 function payrollMonthKey(value: string) {
   return calendarMonthKey(value);
 }
@@ -171,7 +175,10 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
           salary.source === "timesheet" &&
           salary.employeeId === groupEmployeeId &&
           salary.rate == null &&
-          payrollMonthKey(salary.weekStart ?? salary.date) === monthKey,
+          (
+            payrollMonthKey(salary.weekStart ?? salary.date) === monthKey ||
+            monthKeyFromTimesheetId(salary.timesheetId) === monthKey
+          ),
       );
       let totalDays = 0;
       let totalHours = 0;
@@ -183,17 +190,18 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
           }
         }
       }
-      // Only reconcile if timesheets compute MORE days than stored (admin may have added extras).
+      // Preserve admin-added extra days but cap at the actual days in the month.
       const storedDays = Number(existing?.days ?? 0);
-      const reconciledDays = Math.max(totalDays, storedDays);
+      const maxDays = daysInCalendarMonth(monthKey);
+      const reconciledDays = Math.min(Math.max(totalDays, storedDays), maxDays);
       const reconciledAmount = monthlyAmount > 0
-        ? Math.round(monthlyAmount / daysInCalendarMonth(monthKey) * reconciledDays)
+        ? Math.round(monthlyAmount / maxDays * reconciledDays)
         : 0;
       return (
         !existing ||
         (existing.status === "pending" && (
           Number(existing.hours ?? 0) !== totalHours ||
-          storedDays < totalDays ||
+          storedDays !== reconciledDays ||
           existing.amount !== reconciledAmount
         ))
       );
@@ -329,7 +337,10 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
           salary.source === "timesheet" &&
           salary.employeeId === employee.id &&
           salary.rate == null &&
-          payrollMonthKey(salary.weekStart ?? salary.date) === monthKey,
+          (
+            payrollMonthKey(salary.weekStart ?? salary.date) === monthKey ||
+            monthKeyFromTimesheetId(salary.timesheetId) === monthKey
+          ),
       );
       const existing = existingIndex >= 0 ? nextSalaries[existingIndex] : undefined;
       if (existing?.status === "paid") {
@@ -341,10 +352,11 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
         continue;
       }
 
-      // Preserve admin-added extra days: use whichever is larger — computed timesheet days or stored days.
-      const reconciledDays = Math.max(totalDays, Number(existing?.days ?? 0));
+      // Preserve admin-added extra days but cap at the actual days in the month.
+      const monthCalendarDays = daysInCalendarMonth(monthKey);
+      const reconciledDays = Math.min(Math.max(totalDays, Number(existing?.days ?? 0)), monthCalendarDays);
       const proratedAmount = monthlyAmount > 0
-        ? Math.round(monthlyAmount / daysInCalendarMonth(monthKey) * reconciledDays)
+        ? Math.round(monthlyAmount / monthCalendarDays * reconciledDays)
         : 0;
 
       const salary: SalaryRecord = {
