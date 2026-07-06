@@ -653,22 +653,46 @@ export default function Salary() {
 
   const recallMutation = useMutation({
     mutationFn: async (ids: string[]) => {
-      return Promise.all(ids.map((id) => api.recallTimesheet(id)));
+      // Use allSettled so a single failure doesn't abandon the rest.
+      const results = await Promise.allSettled(ids.map((id) => api.recallTimesheet(id)));
+      const succeeded = results.filter((r) => r.status === "fulfilled").length;
+      const failed = results.filter((r) => r.status === "rejected");
+      if (succeeded === 0) {
+        // All failed — surface the first error message so onError can show it.
+        const firstMessage = failed[0]?.reason instanceof Error ? failed[0].reason.message : "Please try again.";
+        throw new Error(firstMessage);
+      }
+      return { succeeded, failedCount: failed.length };
     },
-    onSuccess: (_, ids) => {
+    onSuccess: ({ succeeded, failedCount }) => {
       void Promise.all([
         queryClient.invalidateQueries({ queryKey: ["salaries"] }),
         queryClient.invalidateQueries({ queryKey: ["timesheets"] }),
         queryClient.invalidateQueries({ queryKey: ["adminOverview"] }),
       ]);
-      toast({
-        title: "Timesheets recalled",
-        description: `${ids.length} timesheet${ids.length !== 1 ? "s" : ""} moved back to submitted — ready for review in the Timesheets tab.`,
-      });
       setRecallGroupKey(null);
       setRecallSelectedIds(new Set());
+      if (failedCount > 0) {
+        toast({
+          title: `${succeeded} recalled, ${failedCount} failed`,
+          description: "Some weeks could not be recalled — check the Timesheets tab for their current status.",
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Timesheets recalled",
+          description: `${succeeded} week${succeeded !== 1 ? "s" : ""} moved back to submitted — ready for review in the Timesheets tab.`,
+        });
+      }
     },
     onError: (error) => {
+      // All recalls failed — still refresh so the UI matches server state.
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["salaries"] }),
+        queryClient.invalidateQueries({ queryKey: ["timesheets"] }),
+      ]);
+      setRecallGroupKey(null);
+      setRecallSelectedIds(new Set());
       toast({
         title: "Recall failed",
         description: error instanceof Error ? error.message : "Please try again.",

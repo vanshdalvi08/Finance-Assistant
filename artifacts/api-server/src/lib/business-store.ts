@@ -3419,8 +3419,7 @@ export async function recallTimesheetForCorrection(input: {
       }],
     }).timesheets[0]!;
 
-    // For hourly employees: delete the specific pending salary record tied to this timesheet.
-    // For monthly employees: leave the monthly salary record; the reconciler recalculates on next page load.
+    // Hourly: delete the specific pending salary record tied to this timesheet.
     const pendingHourlySalaryId = current.salaries.find(
       (s) =>
         (s.tenantId ?? DEFAULT_TENANT_ID) === input.tenantId &&
@@ -3430,6 +3429,40 @@ export async function recallTimesheetForCorrection(input: {
         s.status === "pending" &&
         (s.timesheetId === existing.id || s.timesheetId?.startsWith(existing.id + ":")),
     )?.id ?? null;
+
+    // Monthly: if this is the LAST approved timesheet for an affected month (after this recall),
+    // delete the monthly salary record. The reconciler only processes months that still have
+    // approved timesheets, so without this cleanup the record would linger with the old amount.
+    let pendingMonthlySalaryId: string | null = null;
+    for (const monthKey of affectedMonthKeys) {
+      const hasOtherApprovedForMonth = current.timesheets.some((t) => {
+        if (t.id === existing.id) return false;
+        if (t.employeeId !== existing.employeeId) return false;
+        if (t.status !== "approved") return false;
+        return timesheetMonthBreakdowns(t).some((b) => b.monthKey === monthKey);
+      });
+      if (!hasOtherApprovedForMonth) {
+        const orphan = current.salaries.find((s) =>
+          (s.tenantId ?? DEFAULT_TENANT_ID) === input.tenantId &&
+          s.employeeId === existing.employeeId &&
+          s.source === "timesheet" &&
+          s.rate == null &&
+          s.status === "pending" &&
+          (
+            payrollMonthKey(s.weekStart ?? s.date) === monthKey ||
+            s.timesheetId?.match(/:(\d{4}-\d{2})$/)?.[1] === monthKey
+          ),
+        );
+        if (orphan) {
+          pendingMonthlySalaryId = orphan.id;
+          break;
+        }
+      }
+    }
+
+    // Exactly one of these will be non-null: hourly employees have per-timesheet salary records,
+    // monthly employees have per-month salary records. An employee cannot be both.
+    const deleteSalaryId = pendingHourlySalaryId ?? pendingMonthlySalaryId;
 
     const auditEntry = createAuditEntry({
       tenantId: input.tenantId,
@@ -3453,8 +3486,8 @@ export async function recallTimesheetForCorrection(input: {
     const nextStore = normalizeStore({
       ...current,
       timesheets: current.timesheets.map((t) => (t.id === existing.id ? recalledEntry : t)),
-      salaries: pendingHourlySalaryId
-        ? current.salaries.filter((s) => s.id !== pendingHourlySalaryId)
+      salaries: deleteSalaryId
+        ? current.salaries.filter((s) => s.id !== deleteSalaryId)
         : current.salaries,
       auditTrail: [auditEntry, ...current.auditTrail].slice(0, 250),
     });
@@ -3463,7 +3496,7 @@ export async function recallTimesheetForCorrection(input: {
       currentStore: current,
       nextStore,
       entry: recalledEntry,
-      deleteSalaryId: pendingHourlySalaryId,
+      deleteSalaryId,
       auditEntry,
     });
     cacheStore(nextStore);
