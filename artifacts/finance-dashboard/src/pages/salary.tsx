@@ -400,6 +400,25 @@ export default function Salary() {
       .sort((left, right) => right.totalAmount - left.totalAmount);
   }, [employees, pendingPayroll, timesheetEntries]);
 
+  const groupedByMonth = useMemo(() => {
+    const monthMap = new Map<string, { monthLabel: string; totalAmount: number; totalHours: number; groups: PendingPayrollGroup[] }>();
+    for (const group of pendingPayrollGroups) {
+      const bucket = monthMap.get(group.monthKey) ?? {
+        monthLabel: group.monthLabels[0] ?? group.monthKey,
+        totalAmount: 0,
+        totalHours: 0,
+        groups: [],
+      };
+      bucket.groups.push(group);
+      bucket.totalAmount += group.totalAmount;
+      bucket.totalHours += group.totalHours;
+      monthMap.set(group.monthKey, bucket);
+    }
+    return Array.from(monthMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b)) // chronological
+      .map(([monthKey, data]) => ({ monthKey, ...data }));
+  }, [pendingPayrollGroups]);
+
   useEffect(() => {
     if (pendingPayrollGroups.length === 0 || activeAccounts.length === 0) {
       return;
@@ -946,17 +965,17 @@ export default function Salary() {
                 Pending Payroll
               </CardTitle>
             </CardHeader>
-            <CardContent>
+            <CardContent className="p-0">
               <div className="overflow-x-auto">
                 <Table>
                   <TableHeader>
                     <TableRow className="border-border/50">
-                      <TableHead>Employee</TableHead>
+                      <TableHead className="pl-4">Employee</TableHead>
                       <TableHead>Pending Entries</TableHead>
                       <TableHead className="text-right">Hours</TableHead>
                       <TableHead className="text-right">Amount</TableHead>
                       <TableHead>Source</TableHead>
-                      <TableHead className="text-right">Action</TableHead>
+                      <TableHead className="text-right pr-4">Action</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -967,7 +986,24 @@ export default function Salary() {
                         </TableCell>
                       </TableRow>
                     ) : (
-                      pendingPayrollGroups.map((group) => {
+                      groupedByMonth.flatMap(({ monthKey, monthLabel, totalAmount, groups }) => [
+                        <TableRow key={`month-${monthKey}`} className="border-y border-border/60 bg-muted/25 hover:bg-muted/25">
+                          <TableCell colSpan={6} className="py-2.5 pl-4 pr-4">
+                            <div className="flex items-center gap-3">
+                              <div className="flex items-center gap-2">
+                                <CalendarDays className="h-3.5 w-3.5 text-muted-foreground/70" />
+                                <span className="font-semibold text-sm">{monthLabel}</span>
+                              </div>
+                              <Badge variant="secondary" className="rounded-full px-2 py-0 text-xs font-normal">
+                                {groups.length} {groups.length === 1 ? "employee" : "employees"}
+                              </Badge>
+                              <div className="ml-auto">
+                                <span className="text-sm font-semibold tabular-nums">{formatCurrency(totalAmount)}</span>
+                              </div>
+                            </div>
+                          </TableCell>
+                        </TableRow>,
+                        ...groups.map((group) => {
                         const isTimesheetGroup = group.records.some((record) => record.source === "timesheet");
                         const isMonthlyPayroll = isTimesheetGroup && group.records.some((r) => r.source === "timesheet" && r.rate == null);
                         const displayedEntryCount = isTimesheetGroup
@@ -996,13 +1032,8 @@ export default function Salary() {
 
                         return (
                           <TableRow key={group.key} className="border-border/50">
-                            <TableCell className="font-medium">
-                              <div className="space-y-1">
-                                <div>{group.employeeName}</div>
-                                <div className="text-xs text-muted-foreground">
-                                  {group.monthLabels.join(" • ")}
-                                </div>
-                              </div>
+                            <TableCell className="pl-4 font-medium">
+                              {group.employeeName}
                             </TableCell>
                             <TableCell className="text-muted-foreground">
                               {displayedEntryCount}{" "}
@@ -1034,7 +1065,7 @@ export default function Salary() {
                                 ) : null}
                               </div>
                             </TableCell>
-                            <TableCell className="text-right">
+                            <TableCell className="pr-4 text-right">
                               <Dialog>
                                 <DialogTrigger asChild>
                                   <Button size="sm" variant="outline" className="gap-2 rounded-full">
@@ -1398,7 +1429,8 @@ export default function Salary() {
                             </TableCell>
                           </TableRow>
                         );
-                      })
+                        }),
+                      ])
                     )}
                   </TableBody>
                 </Table>
