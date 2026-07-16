@@ -30,6 +30,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
@@ -1394,15 +1395,36 @@ export default function EmployeeTimesheetPage() {
                                       </p>
                                     </HoverCardContent>
                                   </HoverCard>
+                                ) : blockTaskWindowDay ? (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <div className="relative">
+                                        <Input
+                                          type="text"
+                                          inputMode="decimal"
+                                          disabled
+                                          className="h-[40px] w-[58px] rounded-[16px] border border-slate-200/90 bg-slate-50 px-2 pb-[5px] pt-0 text-center text-[0.95rem] font-medium leading-none text-slate-400 shadow-none dark:border-[#1a1f2e] dark:bg-slate-900 dark:text-slate-500"
+                                          placeholder={placeholder}
+                                          value={hourInputValue(line.hours[day.key])}
+                                          readOnly
+                                        />
+                                      </div>
+                                    </TooltipTrigger>
+                                    <TooltipContent side="bottom" sideOffset={8} className="max-w-[220px] text-center">
+                                      {selectedTask?.startDate && selectedTask?.endDate
+                                        ? `Task window: ${format(new Date(`${selectedTask.startDate}T12:00:00Z`), "MMM d, yyyy")} – ${format(new Date(`${selectedTask.endDate}T12:00:00Z`), "MMM d, yyyy")}`
+                                        : "Outside task window"}
+                                    </TooltipContent>
+                                  </Tooltip>
                                 ) : (
                                   <div className="relative">
                                     <Input
                                       type="text"
                                       inputMode="decimal"
-                                      disabled={readOnly || dayLocked || isOffDay || blockTaskWindowDay}
+                                      disabled={readOnly || dayLocked || isOffDay}
                                       className={cn(
                                         "h-[40px] w-[58px] rounded-[16px] border border-slate-200/90 bg-white px-2 pb-[5px] pt-0 text-center text-[0.95rem] font-medium leading-none text-slate-700 shadow-none transition focus-visible:border-sky-400/50 focus-visible:ring-4 focus-visible:ring-sky-500/10 dark:border-[#1a1f2e] dark:bg-slate-950/90 dark:text-slate-100 dark:focus-visible:border-sky-400/70",
-                                        (readOnly || dayLocked || isOffDay || blockTaskWindowDay) && "bg-slate-50 text-slate-400 dark:bg-slate-900 dark:text-slate-500",
+                                        (readOnly || dayLocked || isOffDay) && "bg-slate-50 text-slate-400 dark:bg-slate-900 dark:text-slate-500",
                                       )}
                                       placeholder={placeholder}
                                       value={hourInputValue(line.hours[day.key])}
@@ -1413,7 +1435,7 @@ export default function EmployeeTimesheetPage() {
                                         changeHour(line.id, day.key, event.target.value);
                                       }}
                                     />
-                                    {hoveredCell?.lineId === line.id && hoveredCell.day === day.key && !readOnly && !dayLocked && !isOffDay && !blockTaskWindowDay ? (
+                                    {hoveredCell?.lineId === line.id && hoveredCell.day === day.key && !readOnly && !dayLocked && !isOffDay ? (
                                       <button
                                         type="button"
                                         className="absolute inset-x-0 bottom-[4px] flex h-3 items-center justify-center text-slate-200 transition hover:text-slate-400"
