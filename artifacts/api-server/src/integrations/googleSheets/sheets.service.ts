@@ -130,6 +130,11 @@ function readGoogleSheetsEnv() {
 }
 
 export async function isGoogleSheetsEnabledForTenant(tenantId: string): Promise<boolean> {
+  // If credentials are not configured, there is nothing to enable.
+  if (!readGoogleSheetsEnv()) {
+    return false;
+  }
+
   const rows = await db
     .select({ data: companySettingsTable.data })
     .from(companySettingsTable)
@@ -137,7 +142,8 @@ export async function isGoogleSheetsEnabledForTenant(tenantId: string): Promise<
     .limit(1);
 
   const settings = rows[0]?.data as { googleSheetsEnabled?: unknown } | undefined;
-  return settings?.googleSheetsEnabled === true;
+  // Opt-out model: enabled by default when credentials are present unless explicitly disabled in DB.
+  return settings?.googleSheetsEnabled !== false;
 }
 
 function escapeSheetName(sheetName: string) {
