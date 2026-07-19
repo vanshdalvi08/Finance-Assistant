@@ -167,26 +167,26 @@ async function ensureWorksheetExists(
   });
 
   const existingSheet = spreadsheet.data.sheets?.some((sheet) => sheet.properties?.title === trimmedSheetName);
-  if (existingSheet) {
-    return;
-  }
 
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId,
-    requestBody: {
-      requests: [
-        {
-          addSheet: {
-            properties: {
-              title: trimmedSheetName,
+  if (!existingSheet) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            addSheet: {
+              properties: {
+                title: trimmedSheetName,
+              },
             },
           },
-        },
-      ],
-    },
-  });
+        ],
+      },
+    });
+  }
 
-  // Write column headers to the freshly created sheet
+  // Always write the correct header row (row 1), whether the sheet was just created or
+  // already existed with stale headers from a previous schema version.
   const headers = TAB_HEADERS[trimmedSheetName];
   if (headers && headers.length > 0) {
     await sheets.spreadsheets.values.update({
