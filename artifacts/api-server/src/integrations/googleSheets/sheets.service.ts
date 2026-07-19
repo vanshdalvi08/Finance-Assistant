@@ -5,17 +5,93 @@ import { companySettingsTable } from "@workspace/db/schema";
 import { logger } from "../../lib/logger";
 import { optionalEnv } from "../../lib/env";
 
-export interface AppendTimesheetRowInput {
+export interface DailyReviewRowInput {
+  tabName: "Daily Reviews";
   employeeName: string;
   department: string;
+  date: string;
+  week: string;
   project: string;
   task: string;
+  hours: number;
   workNote: string;
-  week: string;
-  totalHours: number;
   approvedBy: string;
   approvedAt: string;
-  tabName?: string;
+}
+
+export interface WeeklyApprovalRowInput {
+  tabName: "Weekly Approvals";
+  employeeName: string;
+  department: string;
+  week: string;
+  project: string;
+  task: string;
+  totalHours: number;
+  workNote: string;
+  approvedBy: string;
+  approvedAt: string;
+}
+
+export type AppendTimesheetRowInput = DailyReviewRowInput | WeeklyApprovalRowInput;
+
+const TAB_HEADERS: Record<string, string[]> = {
+  "Daily Reviews": [
+    "Employee Name",
+    "Department",
+    "Date",
+    "Week",
+    "Project",
+    "Task",
+    "Hours",
+    "Work Note",
+    "Approved By",
+    "Approved At",
+  ],
+  "Weekly Approvals": [
+    "Employee Name",
+    "Department",
+    "Week",
+    "Project",
+    "Task",
+    "Total Hours",
+    "Work Note",
+    "Approved By",
+    "Approved At",
+  ],
+};
+
+function buildRowValues(input: AppendTimesheetRowInput): unknown[] {
+  if (input.tabName === "Daily Reviews") {
+    return [
+      input.employeeName,
+      input.department,
+      input.date,
+      input.week,
+      input.project,
+      input.task,
+      input.hours,
+      input.workNote,
+      input.approvedBy,
+      input.approvedAt,
+    ];
+  }
+  return [
+    input.employeeName,
+    input.department,
+    input.week,
+    input.project,
+    input.task,
+    input.totalHours,
+    input.workNote,
+    input.approvedBy,
+    input.approvedAt,
+  ];
+}
+
+function tabRange(tabName: string): string {
+  const headers = TAB_HEADERS[tabName];
+  if (!headers || headers.length === 0) return "A:J";
+  return `A:${String.fromCharCode(64 + headers.length)}`;
 }
 
 interface GoogleServiceAccountCredentials {
@@ -64,36 +140,6 @@ export async function isGoogleSheetsEnabledForTenant(tenantId: string): Promise<
   return settings?.googleSheetsEnabled === true;
 }
 
-function normalizeAppendPayload(input: AppendTimesheetRowInput) {
-  const employeeName = input.employeeName.trim();
-  const department = input.department.trim();
-  const project = input.project.trim();
-  const task = input.task.trim();
-  const workNote = input.workNote.trim();
-  const week = input.week.trim();
-  const approvedBy = input.approvedBy.trim();
-  const approvedAt = input.approvedAt.trim();
-  const tabName = input.tabName?.trim() || "Sheet1";
-  const totalHours = Number(input.totalHours ?? 0);
-
-  if (!employeeName || !department || !project || !task || !week || !approvedBy || !approvedAt || !Number.isFinite(totalHours)) {
-    return null;
-  }
-
-  return {
-    employeeName,
-    department,
-    project,
-    task,
-    workNote,
-    week,
-    totalHours: Number(totalHours.toFixed(2)),
-    approvedBy,
-    approvedAt,
-    tabName,
-  };
-}
-
 function escapeSheetName(sheetName: string) {
   const trimmed = sheetName.trim();
   return `'${trimmed.replace(/'/g, "''")}'`;
@@ -133,6 +179,19 @@ async function ensureWorksheetExists(
       ],
     },
   });
+
+  // Write column headers to the freshly created sheet
+  const headers = TAB_HEADERS[trimmedSheetName];
+  if (headers && headers.length > 0) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${escapeSheetName(trimmedSheetName)}!A1`,
+      valueInputOption: "RAW",
+      requestBody: {
+        values: [headers],
+      },
+    });
+  }
 }
 
 export async function appendTimesheetRow(input: AppendTimesheetRowInput): Promise<boolean> {
@@ -142,9 +201,12 @@ export async function appendTimesheetRow(input: AppendTimesheetRowInput): Promis
     return false;
   }
 
-  const row = normalizeAppendPayload(input);
-  if (!row) {
-    logger.warn({ payload: input }, "Skipping Google Sheets append because timesheet row payload is incomplete");
+  const employeeName = input.employeeName.trim();
+  const approvedBy = input.approvedBy.trim();
+  const week = input.week.trim();
+
+  if (!employeeName || !approvedBy || !week) {
+    logger.warn({ payload: input }, "Skipping Google Sheets append because required fields are missing");
     return false;
   }
 
@@ -153,27 +215,16 @@ export async function appendTimesheetRow(input: AppendTimesheetRowInput): Promis
     scopes: ["https://www.googleapis.com/auth/spreadsheets"],
   });
   const sheets = google.sheets({ version: "v4", auth });
-  const tabName = row.tabName || "Sheet1";
+  const tabName = input.tabName;
+
   await ensureWorksheetExists(sheets, env.spreadsheetId, tabName);
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: env.spreadsheetId,
-    range: `${escapeSheetName(tabName)}!A:I`,
+    range: `${escapeSheetName(tabName)}!${tabRange(tabName)}`,
     valueInputOption: "RAW",
     requestBody: {
-      values: [
-        [
-          row.employeeName,
-          row.department,
-          row.project,
-          row.task,
-          row.workNote,
-          row.week,
-          row.totalHours,
-          row.approvedBy,
-          row.approvedAt,
-        ],
-      ],
+      values: [buildRowValues(input)],
     },
   });
 

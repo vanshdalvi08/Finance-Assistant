@@ -5,10 +5,12 @@ import { appEvents, type TimesheetApprovedEvent, type TimesheetDayReviewedEvent 
 import { logger } from "../../lib/logger";
 import { hashSha256 } from "../../lib/security";
 import { appendTimesheetRow, isGoogleSheetsEnabledForTenant } from "./sheets.service";
-import { buildDailyReviewRowFromReviewedDay, buildWeeklyApprovalRows } from "./sheets.rows";
+import { buildDailyReviewRowsFromReviewedDay, buildWeeklyApprovalRows } from "./sheets.rows";
 
 async function claimDailyReviewExportIdempotency(event: TimesheetDayReviewedEvent, requestHash: string) {
-  const key = `timesheet-daily-review-sheet:${event.timesheet.id}:${event.day}`;
+  // Include reviewedAt in the key so each distinct review action (including re-reviews after a revert)
+  // gets its own idempotency slot, while retries of the same action are still deduplicated.
+  const key = `timesheet-daily-review-sheet:${event.timesheet.id}:${event.day}:${event.reviewedAt}`;
   const keyHash = hashSha256(key);
   const createdAt = new Date();
   const insertedRows = await db
@@ -34,7 +36,13 @@ async function claimDailyReviewExportIdempotency(event: TimesheetDayReviewedEven
   const existingRows = await db
     .select()
     .from(idempotencyKeysTable)
-    .where(and(eq(idempotencyKeysTable.tenantId, event.tenantId), eq(idempotencyKeysTable.scope, "timesheet_daily_review_sheet"), eq(idempotencyKeysTable.keyHash, keyHash)))
+    .where(
+      and(
+        eq(idempotencyKeysTable.tenantId, event.tenantId),
+        eq(idempotencyKeysTable.scope, "timesheet_daily_review_sheet"),
+        eq(idempotencyKeysTable.keyHash, keyHash),
+      ),
+    )
     .limit(1);
 
   const row = existingRows[0];
@@ -81,8 +89,8 @@ async function handleTimesheetDayReviewed(event: TimesheetDayReviewedEvent) {
     return;
   }
 
-  const row = buildDailyReviewRowFromReviewedDay(event);
-  if (!row) {
+  const rows = buildDailyReviewRowsFromReviewedDay(event);
+  if (rows.length === 0) {
     return;
   }
 
@@ -92,8 +100,8 @@ async function handleTimesheetDayReviewed(event: TimesheetDayReviewedEvent) {
       day: event.day,
       reviewedAt: event.reviewedAt,
       employeeId: event.timesheet.employeeId,
-      hours: row.totalHours,
-      workNote: row.workNote,
+      rowCount: rows.length,
+      projects: rows.map((r) => r.project),
     }),
   );
 
@@ -110,7 +118,9 @@ async function handleTimesheetDayReviewed(event: TimesheetDayReviewedEvent) {
   }
 
   try {
-    await appendTimesheetRow(row);
+    for (const row of rows) {
+      await appendTimesheetRow(row);
+    }
     if (idempotencyClaim?.created) {
       await db
         .update(idempotencyKeysTable)

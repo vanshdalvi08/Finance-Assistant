@@ -1,133 +1,156 @@
 import { DAY_KEYS, type DayKey, type TimesheetTaskLine } from "../../lib/business-store";
 import type { TimesheetApprovedEvent, TimesheetDayReviewedEvent } from "../../lib/events";
-import type { AppendTimesheetRowInput } from "./sheets.service";
+import type { DailyReviewRowInput, WeeklyApprovalRowInput } from "./sheets.service";
 
-const DAY_LABELS: Record<DayKey, string> = {
-  mon: "Monday",
-  tue: "Tuesday",
-  wed: "Wednesday",
-  thu: "Thursday",
-  fri: "Friday",
-  sat: "Saturday",
-  sun: "Sunday",
+const DAY_OFFSETS: Record<DayKey, number> = {
+  mon: 0,
+  tue: 1,
+  wed: 2,
+  thu: 3,
+  fri: 4,
+  sat: 5,
+  sun: 6,
 };
 
-function weekRangeLabel(weekStart: string) {
-  const start = new Date(weekStart);
-  const end = new Date(weekStart);
+function weekRangeLabel(weekStart: string): string {
+  const start = new Date(`${weekStart.slice(0, 10)}T12:00:00Z`);
+  const end = new Date(start);
   end.setUTCDate(start.getUTCDate() + 6);
-  const startLabel = start.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
-  const endLabel = end.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
-  return `${startLabel} - ${endLabel}`;
+  const opts: Intl.DateTimeFormatOptions = { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" };
+  return `${start.toLocaleDateString("en-IN", opts)} - ${end.toLocaleDateString("en-IN", opts)}`;
 }
 
-function lineHours(line: TimesheetTaskLine) {
-  return DAY_KEYS.reduce((sum, day) => sum + Number(line.hours[day] ?? 0), 0);
-}
-
-function summarizeDayWorkNotes(lines: TimesheetTaskLine[], day: DayKey) {
-  const notes = lines
-    .map((line) => line.workNotes?.[day]?.trim())
-    .filter((note): note is string => Boolean(note));
-
-  if (notes.length === 0) {
-    return "";
-  }
-
-  return Array.from(new Set(notes)).join("\n");
-}
-
-function hasApprovedWork(event: TimesheetApprovedEvent) {
-  return event.timesheet.lines.some((line) => DAY_KEYS.some((day) => Number(line.hours[day] ?? 0) > 0));
-}
-
-function buildApprovalRowBase(event: Pick<TimesheetApprovedEvent, "employee" | "approvedBy" | "timesheet"> | Pick<TimesheetDayReviewedEvent, "employee" | "reviewedBy" | "timesheet" | "reviewedAt">) {
-  const employeeName = event.employee?.name?.trim() || event.timesheet.employeeNameSnapshot?.trim();
-  const department = event.employee?.department?.trim() || "Unassigned";
-  const approvedBy = "approvedBy" in event ? event.approvedBy.name.trim() : event.reviewedBy.name.trim();
-  const approvedAt = "approvedBy" in event ? event.timesheet.reviewedAt?.trim() || new Date().toISOString() : event.reviewedAt.trim();
-  const week = weekRangeLabel(event.timesheet.weekStart);
-
-  if (!employeeName || !approvedBy || !approvedAt || !week) {
-    return null;
-  }
-
-  return {
-    employeeName,
-    department,
-    approvedBy,
-    approvedAt,
-    week,
-  };
-}
-
-export function buildWeeklyApprovalRows(event: TimesheetApprovedEvent): AppendTimesheetRowInput[] {
-  if (event.timesheet.status !== "approved" || !hasApprovedWork(event)) {
-    return [];
-  }
-
-  const base = buildApprovalRowBase(event);
-  if (!base) {
-    return [];
-  }
-
-  return event.timesheet.lines.flatMap((line) => {
-    const project = line.project?.trim() || "";
-    const task = line.task?.trim() || "";
-    const totalHours = lineHours(line);
-
-    if (!project || !task || totalHours <= 0) {
-      return [];
-    }
-
-    return [
-      {
-        ...base,
-        project,
-        task,
-        workNote: "",
-        totalHours,
-        tabName: "Weekly Approvals",
-      },
-    ];
+function dayDateLabel(weekStart: string, day: DayKey): string {
+  const d = new Date(`${weekStart.slice(0, 10)}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + DAY_OFFSETS[day]);
+  return d.toLocaleDateString("en-IN", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
   });
 }
 
-export function buildDailyReviewRowFromReviewedDay(event: TimesheetDayReviewedEvent): AppendTimesheetRowInput | null {
-  const base = buildApprovalRowBase(event);
-  if (!base) {
+function formatApprovedAt(isoString: string): string {
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return isoString;
+  return d.toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "UTC",
+  });
+}
+
+function lineHoursForDay(line: TimesheetTaskLine, day: DayKey): number {
+  return Number(line.hours[day] ?? 0);
+}
+
+function lineWorkNoteForDay(line: TimesheetTaskLine, day: DayKey): string {
+  return line.workNotes?.[day]?.trim() ?? "";
+}
+
+function weeklyLineWorkNote(line: TimesheetTaskLine): string {
+  return Array.from(
+    new Set(
+      DAY_KEYS.map((day) => line.workNotes?.[day]?.trim()).filter((n): n is string => Boolean(n)),
+    ),
+  ).join("\n");
+}
+
+type EventBase =
+  | Pick<TimesheetApprovedEvent, "employee" | "approvedBy" | "timesheet">
+  | Pick<TimesheetDayReviewedEvent, "employee" | "reviewedBy" | "timesheet" | "reviewedAt">;
+
+function buildBase(event: EventBase) {
+  const employeeName = event.employee?.name?.trim() || event.timesheet.employeeNameSnapshot?.trim();
+  const department = event.employee?.department?.trim() || "Unassigned";
+  const approvedBy = "approvedBy" in event ? event.approvedBy.name.trim() : event.reviewedBy.name.trim();
+  const rawApprovedAt =
+    "approvedBy" in event
+      ? event.timesheet.reviewedAt?.trim() || new Date().toISOString()
+      : event.reviewedAt.trim();
+  const approvedAt = formatApprovedAt(rawApprovedAt);
+  const week = weekRangeLabel(event.timesheet.weekStart);
+
+  if (!employeeName || !approvedBy || !week) {
     return null;
   }
 
-  const totalHours = event.timesheet.lines.reduce((sum, line) => sum + Number(line.hours[event.day] ?? 0), 0);
-  const workNote = summarizeDayWorkNotes(event.timesheet.lines, event.day);
-
-  return {
-    ...base,
-    project: "Daily Review",
-    task: `${DAY_LABELS[event.day]} verification`,
-    workNote,
-    totalHours,
-    tabName: "Daily Reviews",
-  };
+  return { employeeName, department, approvedBy, approvedAt, week };
 }
 
-export function buildDailyReviewRowsFromApprovedTimesheet(event: TimesheetApprovedEvent): AppendTimesheetRowInput[] {
-  if (event.timesheet.status !== "approved" || !hasApprovedWork(event)) {
-    return [];
-  }
-
-  const base = buildApprovalRowBase(event);
+export function buildDailyReviewRowsFromReviewedDay(event: TimesheetDayReviewedEvent): DailyReviewRowInput[] {
+  const base = buildBase(event);
   if (!base) {
     return [];
   }
 
-  return DAY_KEYS.map((day) => ({
-    ...base,
-    project: "Daily Review",
-    task: `${DAY_LABELS[day]} verification`,
-    workNote: summarizeDayWorkNotes(event.timesheet.lines, day),
-    totalHours: event.timesheet.lines.reduce((sum, line) => sum + Number(line.hours[day] ?? 0), 0),
-    tabName: "Daily Reviews",
-  }));
+  const date = dayDateLabel(event.timesheet.weekStart, event.day);
+
+  const taskRows: DailyReviewRowInput[] = event.timesheet.lines
+    .filter((line) => lineHoursForDay(line, event.day) > 0 || lineWorkNoteForDay(line, event.day))
+    .map((line) => ({
+      tabName: "Daily Reviews" as const,
+      ...base,
+      date,
+      project: line.project?.trim() || "—",
+      task: line.task?.trim() || "—",
+      hours: lineHoursForDay(line, event.day),
+      workNote: lineWorkNoteForDay(line, event.day),
+    }));
+
+  if (taskRows.length === 0) {
+    return [
+      {
+        tabName: "Daily Reviews" as const,
+        ...base,
+        date,
+        project: "—",
+        task: "—",
+        hours: 0,
+        workNote: "",
+      },
+    ];
+  }
+
+  return taskRows;
+}
+
+export function buildWeeklyApprovalRows(event: TimesheetApprovedEvent): WeeklyApprovalRowInput[] {
+  if (event.timesheet.status !== "approved") {
+    return [];
+  }
+
+  const base = buildBase(event);
+  if (!base) {
+    return [];
+  }
+
+  const rows: WeeklyApprovalRowInput[] = [];
+
+  for (const line of event.timesheet.lines) {
+    const project = line.project?.trim();
+    const task = line.task?.trim();
+    const totalHours = DAY_KEYS.reduce((sum, day) => sum + Number(line.hours[day] ?? 0), 0);
+
+    if (!project || !task || totalHours <= 0) {
+      continue;
+    }
+
+    rows.push({
+      tabName: "Weekly Approvals" as const,
+      ...base,
+      project,
+      task,
+      totalHours,
+      workNote: weeklyLineWorkNote(line),
+    });
+  }
+
+  return rows;
 }
