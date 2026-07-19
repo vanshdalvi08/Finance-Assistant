@@ -100,6 +100,7 @@ export function buildDailyReviewRowsFromReviewedDay(event: TimesheetDayReviewedE
       date,
       project: line.project?.trim() || "—",
       task: line.task?.trim() || "—",
+      subTask: line.subTask?.trim() || "",
       hours: lineHoursForDay(line, event.day),
       workNote: lineWorkNoteForDay(line, event.day),
     }));
@@ -112,6 +113,7 @@ export function buildDailyReviewRowsFromReviewedDay(event: TimesheetDayReviewedE
         date,
         project: "—",
         task: "—",
+        subTask: "",
         hours: 0,
         workNote: "",
       },

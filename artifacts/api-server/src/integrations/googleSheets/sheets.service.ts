@@ -13,6 +13,7 @@ export interface DailyReviewRowInput {
   week: string;
   project: string;
   task: string;
+  subTask: string;
   hours: number;
   workNote: string;
   approvedBy: string;
@@ -42,6 +43,7 @@ const TAB_HEADERS: Record<string, string[]> = {
     "Week",
     "Project",
     "Task",
+    "Sub-Task",
     "Hours",
     "Work Note",
     "Approved By",
@@ -69,6 +71,7 @@ function buildRowValues(input: AppendTimesheetRowInput): unknown[] {
       input.week,
       input.project,
       input.task,
+      input.subTask,
       input.hours,
       input.workNote,
       input.approvedBy,
