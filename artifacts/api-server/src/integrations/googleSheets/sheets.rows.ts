@@ -84,7 +84,10 @@ function buildBase(event: EventBase) {
   return { employeeName, department, approvedBy, approvedAt, week };
 }
 
-export function buildDailyReviewRowsFromReviewedDay(event: TimesheetDayReviewedEvent): DailyReviewRowInput[] {
+export function buildDailyReviewRowsFromReviewedDay(
+  event: TimesheetDayReviewedEvent,
+  taskDescriptions: Map<string, string> = new Map(),
+): DailyReviewRowInput[] {
   const base = buildBase(event);
   if (!base) {
     return [];
@@ -100,7 +103,7 @@ export function buildDailyReviewRowsFromReviewedDay(event: TimesheetDayReviewedE
       date,
       project: line.project?.trim() || "—",
       task: line.task?.trim() || "—",
-      description: line.notes?.trim() || "",
+      description: (line.projectTaskId ? taskDescriptions.get(line.projectTaskId) : undefined) ?? "",
       hours: lineHoursForDay(line, event.day),
       workNote: lineWorkNoteForDay(line, event.day),
     }));

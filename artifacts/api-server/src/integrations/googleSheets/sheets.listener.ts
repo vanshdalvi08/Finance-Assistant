@@ -2,10 +2,24 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import { idempotencyKeysTable } from "@workspace/db/schema";
 import { appEvents, type TimesheetApprovedEvent, type TimesheetDayReviewedEvent } from "../../lib/events";
+import { readStore } from "../../lib/business-store";
 import { logger } from "../../lib/logger";
 import { hashSha256 } from "../../lib/security";
 import { appendTimesheetRow, isGoogleSheetsEnabledForTenant } from "./sheets.service";
 import { buildDailyReviewRowsFromReviewedDay, buildWeeklyApprovalRows } from "./sheets.rows";
+
+async function buildTaskDescriptionLookup(): Promise<Map<string, string>> {
+  const store = await readStore();
+  const map = new Map<string, string>();
+  for (const budget of store.projectBudgets) {
+    for (const task of budget.tasks) {
+      if (task.description?.trim()) {
+        map.set(task.id, task.description.trim());
+      }
+    }
+  }
+  return map;
+}
 
 async function claimDailyReviewExportIdempotency(event: TimesheetDayReviewedEvent, requestHash: string) {
   // Include reviewedAt in the key so each distinct review action (including re-reviews after a revert)
@@ -89,7 +103,8 @@ async function handleTimesheetDayReviewed(event: TimesheetDayReviewedEvent) {
     return;
   }
 
-  const rows = buildDailyReviewRowsFromReviewedDay(event);
+  const taskDescriptions = await buildTaskDescriptionLookup();
+  const rows = buildDailyReviewRowsFromReviewedDay(event, taskDescriptions);
   if (rows.length === 0) {
     return;
   }
