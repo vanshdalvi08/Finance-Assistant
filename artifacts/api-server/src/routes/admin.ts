@@ -1212,7 +1212,8 @@ router.delete("/clients/:id", async (request, response) => {
 
 // POST /api/admin/backfill-timesheet-sheets
 // Pushes all previously-reviewed timesheet days to Google Sheets without touching the UI.
-// Idempotent — already-exported days are silently skipped via the idempotency table.
+// Returns 202 immediately and processes in the background — the job may take several minutes
+// for large datasets. Idempotent: already-exported days are skipped via the idempotency table.
 // Body: { since?: "YYYY-MM-DD" }  (default: "2026-05-01")
 router.post("/backfill-timesheet-sheets", async (request, response) => {
   const tenantId = request.auth?.user.tenantId;
@@ -1237,7 +1238,7 @@ router.post("/backfill-timesheet-sheets", async (request, response) => {
   const employeeMap = new Map(employeeRows.map((e) => [e.id, e]));
 
   if (employeeIdSet.size === 0) {
-    response.json({ total: 0, exported: 0, skipped: 0, errors: [] });
+    response.json({ message: "No employees found for this tenant.", queued: 0 });
     return;
   }
 
@@ -1247,70 +1248,85 @@ router.post("/backfill-timesheet-sheets", async (request, response) => {
     (ts) => employeeIdSet.has(ts.employeeId) && ts.weekStart >= since,
   );
 
-  // One shared task-description map for the whole backfill
-  const taskDescriptions = await buildTaskDescriptionLookup();
-
-  let total = 0;
-  let exported = 0;
-  let skipped = 0;
-  const errors: string[] = [];
-
+  // Count how many reviewed days will be processed so the user knows what to expect
+  let queued = 0;
   for (const ts of timesheets) {
-    const emp = employeeMap.get(ts.employeeId);
-    const employeeProfile: UserProfile | null = emp
-      ? {
-          id: emp.id,
-          tenantId,
-          name: emp.name ?? "",
-          email: "",
-          role: "employee",
-          employeeId: null,
-          position: null,
-          department: emp.department ?? null,
-          salary: 0,
-          payType: "monthly",
-          hourlyRate: 0,
-          status: "active",
-        }
-      : null;
-
     for (const day of DAY_KEYS) {
-      if (ts.dailyReviewStatus?.[day] !== "reviewed") continue;
-      total++;
-
-      // Use the actual calendar date of this day as reviewedAt — it's deterministic
-      // from weekStart + dayIndex so the idempotency key stays stable across re-runs,
-      // even if ts.updatedAt changes later when other days on the same timesheet are reviewed.
-      const dayIndex = DAY_KEYS.indexOf(day);
-      const weekBase = new Date(ts.weekStart);
-      weekBase.setUTCDate(weekBase.getUTCDate() + dayIndex);
-      const reviewedAt = weekBase.toISOString();
-
-      const event: TimesheetDayReviewedEvent = {
-        tenantId,
-        timesheet: ts,
-        employee: employeeProfile,
-        day,
-        reviewedAt,
-        reviewedBy: { name: ts.reviewedBy?.trim() || "Admin" },
-      };
-
-      try {
-        const result = await exportDayToSheets(event, taskDescriptions);
-        if (result === "exported") exported++;
-        else skipped++;
-      } catch (err) {
-        const msg = `${ts.id}:${day} — ${err instanceof Error ? err.message : String(err)}`;
-        errors.push(msg);
-        logger.error({ err, timesheetId: ts.id, day }, "Backfill Sheets export failed");
-      }
-
-      // Stay well under the Sheets API quota (300 req/min per project)
-      await new Promise<void>((resolve) => setTimeout(resolve, 150));
+      if (ts.dailyReviewStatus?.[day] === "reviewed") queued++;
     }
   }
 
-  response.json({ total, exported, skipped, errors });
+  // Respond immediately — the actual export runs in the background.
+  // Large datasets (3+ months, 10+ employees) can take several minutes due to Sheets API rate limits.
+  response.status(202).json({
+    message: `Backfill started for ${queued} reviewed day(s) since ${since}. Check your Google Sheet in a few minutes.`,
+    queued,
+  });
+
+  // Run the export asynchronously after the response has been sent
+  void (async () => {
+    const taskDescriptions = await buildTaskDescriptionLookup();
+    let exported = 0;
+    let skipped = 0;
+    let errors = 0;
+
+    for (const ts of timesheets) {
+      const emp = employeeMap.get(ts.employeeId);
+      const employeeProfile: UserProfile | null = emp
+        ? {
+            id: emp.id,
+            tenantId,
+            name: emp.name ?? "",
+            email: "",
+            role: "employee",
+            employeeId: null,
+            position: null,
+            department: emp.department ?? null,
+            salary: 0,
+            payType: "monthly",
+            hourlyRate: 0,
+            status: "active",
+          }
+        : null;
+
+      for (const day of DAY_KEYS) {
+        if (ts.dailyReviewStatus?.[day] !== "reviewed") continue;
+
+        // Deterministic reviewedAt from weekStart + dayIndex — stable across re-runs
+        const dayIndex = DAY_KEYS.indexOf(day);
+        const weekBase = new Date(ts.weekStart);
+        weekBase.setUTCDate(weekBase.getUTCDate() + dayIndex);
+        const reviewedAt = weekBase.toISOString();
+
+        const event: TimesheetDayReviewedEvent = {
+          tenantId,
+          timesheet: ts,
+          employee: employeeProfile,
+          day,
+          reviewedAt,
+          reviewedBy: { name: ts.reviewedBy?.trim() || "Admin" },
+        };
+
+        try {
+          const result = await exportDayToSheets(event, taskDescriptions);
+          if (result === "exported") exported++;
+          else skipped++;
+        } catch (err) {
+          errors++;
+          logger.error({ err, timesheetId: ts.id, day }, "Backfill Sheets export failed for day");
+        }
+
+        // ~700ms between days keeps us comfortably under Google's 100 write-requests/min quota
+        // (each day = ~3 API calls: get spreadsheet, write header, append values)
+        await new Promise<void>((resolve) => setTimeout(resolve, 700));
+      }
+    }
+
+    logger.info(
+      { tenantId, since, queued, exported, skipped, errors },
+      "Google Sheets backfill completed",
+    );
+  })();
 });
 
 export default router;

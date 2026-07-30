@@ -171,11 +171,9 @@ export default function Settings() {
   const backfillMutation = useMutation({
     mutationFn: () => api.backfillTimesheetSheets(backfillSince),
     onSuccess: (result) => {
-      const summary = `${result.exported} exported, ${result.skipped} already synced, ${result.errors.length} errors`;
       toast({
-        title: result.errors.length > 0 ? "Backfill completed with errors" : "Backfill complete",
-        description: summary,
-        variant: result.errors.length > 0 ? "destructive" : "default",
+        title: "Backfill running in background",
+        description: result.message,
       });
     },
     onError: (error) => {
