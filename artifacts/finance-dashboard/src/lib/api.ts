@@ -2327,7 +2327,7 @@ export const api = {
     requestJson<void>("/notifications/read-all", { method: "POST", data: {} }),
 
   backfillTimesheetSheets: async (since = "2026-05-01") =>
-    requestJson<{ message: string; queued: number }>(
+    requestJson<{ message: string; queued: number; breakdown: { name: string; days: number }[] }>(
       "/admin/backfill-timesheet-sheets",
       { method: "POST", data: { since } },
     ),

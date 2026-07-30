@@ -1243,8 +1243,9 @@ router.post("/backfill-timesheet-sheets", async (request, response) => {
     return;
   }
 
-  // readStore() returns properly-typed TimesheetEntry[] (weekStart normalised to ISO string)
-  const store = await readStore();
+  // Always read fresh from the DB so we don't miss timesheets that were reviewed/approved
+  // after the last cache population.
+  const store = await readStore({ fresh: true });
   const timesheets = store.timesheets.filter(
     (ts) => employeeIdSet.has(ts.employeeId) && ts.weekStart >= since,
   );
@@ -1252,26 +1253,39 @@ router.post("/backfill-timesheet-sheets", async (request, response) => {
   // A day is eligible for backfill if:
   //   (a) it was individually day-reviewed (dailyReviewStatus[day] === "reviewed"), OR
   //   (b) the whole week was approved (ts.status === "approved") — covers employees whose
-  //       timesheets were batch-approved rather than day-reviewed one by one.
-  // Idempotency keys are keyed on (tsId, day, weekDate) so both paths produce the same key —
+  //       timesheets were batch-approved rather than day-reviewed one by one, OR
+  //   (c) the whole week was submitted (ts.status === "submitted") — the admin may have
+  //       reviewed individual days without doing the final week-level approval yet.
+  // Idempotency keys are keyed on (tsId, day, weekDate) so all paths produce the same key —
   // running this on an already-synced day is always a no-op.
   function isDayEligible(ts: (typeof timesheets)[number], day: (typeof DAY_KEYS)[number]): boolean {
-    return ts.dailyReviewStatus?.[day] === "reviewed" || ts.status === "approved";
+    return (
+      ts.dailyReviewStatus?.[day] === "reviewed" ||
+      ts.status === "approved" ||
+      ts.status === "submitted"
+    );
   }
 
-  // Count how many eligible days will be processed so the user knows what to expect
+  // Build a per-employee breakdown so the toast can show a meaningful count
+  const perEmployee: Record<string, { name: string; days: number }> = {};
   let queued = 0;
   for (const ts of timesheets) {
+    const emp = employeeMap.get(ts.employeeId);
+    const empName = emp?.name ?? ts.employeeId;
     for (const day of DAY_KEYS) {
-      if (isDayEligible(ts, day)) queued++;
+      if (!isDayEligible(ts, day)) continue;
+      queued++;
+      if (!perEmployee[ts.employeeId]) perEmployee[ts.employeeId] = { name: empName, days: 0 };
+      perEmployee[ts.employeeId].days++;
     }
   }
 
   // Respond immediately — the actual export runs in the background.
   // Large datasets (3+ months, 10+ employees) can take several minutes due to Sheets API rate limits.
   response.status(202).json({
-    message: `Backfill started for ${queued} reviewed day(s) since ${since}. Check your Google Sheet in a few minutes.`,
+    message: `Backfill started — ${queued} day(s) queued across ${Object.keys(perEmployee).length} employee(s) since ${since}. Check your Google Sheet in a few minutes.`,
     queued,
+    breakdown: Object.values(perEmployee).sort((a, b) => b.days - a.days),
   });
 
   // Run the export asynchronously after the response has been sent

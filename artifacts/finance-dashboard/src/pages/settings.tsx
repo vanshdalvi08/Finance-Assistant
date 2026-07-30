@@ -168,9 +168,11 @@ export default function Settings() {
   }, [companyInfo]);
 
   const [backfillSince, setBackfillSince] = useState("2026-05-01");
+  const [backfillResult, setBackfillResult] = useState<{ message: string; queued: number; breakdown: { name: string; days: number }[] } | null>(null);
   const backfillMutation = useMutation({
     mutationFn: () => api.backfillTimesheetSheets(backfillSince),
     onSuccess: (result) => {
+      setBackfillResult(result);
       toast({
         title: "Backfill running in background",
         description: result.message,
@@ -342,7 +344,7 @@ export default function Settings() {
                 <Input
                   id="backfill-since"
                   value={backfillSince}
-                  onChange={(e) => setBackfillSince(e.target.value)}
+                  onChange={(e) => { setBackfillSince(e.target.value); setBackfillResult(null); }}
                   placeholder="2026-05-01"
                   className="h-8 text-sm font-mono w-40"
                 />
@@ -352,11 +354,29 @@ export default function Settings() {
                 size="sm"
                 className="mt-5"
                 disabled={backfillMutation.isPending || !/^\d{4}-\d{2}-\d{2}$/.test(backfillSince)}
-                onClick={() => backfillMutation.mutate()}
+                onClick={() => { setBackfillResult(null); backfillMutation.mutate(); }}
               >
                 {backfillMutation.isPending ? "Syncing…" : "Sync to Sheets"}
               </Button>
             </div>
+            {backfillResult && backfillResult.breakdown.length > 0 && (
+              <div className="rounded-lg border border-border/50 overflow-hidden">
+                <div className="px-3 py-2 bg-secondary/20 text-xs font-medium text-muted-foreground">
+                  Days queued per employee — if an employee is missing or has fewer days than expected, check their timesheet status in the app
+                </div>
+                <div className="divide-y divide-border/40">
+                  {backfillResult.breakdown.map((row) => (
+                    <div key={row.name} className="flex items-center justify-between px-3 py-1.5 text-sm">
+                      <span>{row.name}</span>
+                      <span className="tabular-nums font-medium text-muted-foreground">{row.days} days</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="px-3 py-2 bg-secondary/10 text-xs text-muted-foreground border-t border-border/40">
+                  Total: {backfillResult.queued} days queued · Rows are being written to Google Sheets in the background
+                </div>
+              </div>
+            )}
           </div>
 
           <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Category Manager</h2>
