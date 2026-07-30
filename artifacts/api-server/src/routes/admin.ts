@@ -1278,12 +1278,20 @@ router.post("/backfill-timesheet-sheets", async (request, response) => {
       if (ts.dailyReviewStatus?.[day] !== "reviewed") continue;
       total++;
 
+      // Use the actual calendar date of this day as reviewedAt — it's deterministic
+      // from weekStart + dayIndex so the idempotency key stays stable across re-runs,
+      // even if ts.updatedAt changes later when other days on the same timesheet are reviewed.
+      const dayIndex = DAY_KEYS.indexOf(day);
+      const weekBase = new Date(ts.weekStart);
+      weekBase.setUTCDate(weekBase.getUTCDate() + dayIndex);
+      const reviewedAt = weekBase.toISOString();
+
       const event: TimesheetDayReviewedEvent = {
         tenantId,
         timesheet: ts,
         employee: employeeProfile,
         day,
-        reviewedAt: ts.updatedAt,
+        reviewedAt,
         reviewedBy: { name: ts.reviewedBy?.trim() || "Admin" },
       };
 
