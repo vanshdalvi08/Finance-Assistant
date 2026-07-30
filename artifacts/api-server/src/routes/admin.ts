@@ -21,6 +21,7 @@ import { createId, invalidateBusinessStoreCache, readStore, DAY_KEYS } from "../
 import type { UserProfile } from "../lib/business-store";
 import type { TimesheetDayReviewedEvent } from "../lib/events";
 import { exportDayToSheets, buildTaskDescriptionLookup } from "../integrations/googleSheets/sheets.listener";
+import { isGoogleSheetsEnabledForTenant } from "../integrations/googleSheets/sheets.service";
 import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../lib/notifications";
 import { hashSha256 } from "../lib/security";
 import { logger } from "../lib/logger";
@@ -1248,11 +1249,21 @@ router.post("/backfill-timesheet-sheets", async (request, response) => {
     (ts) => employeeIdSet.has(ts.employeeId) && ts.weekStart >= since,
   );
 
-  // Count how many reviewed days will be processed so the user knows what to expect
+  // A day is eligible for backfill if:
+  //   (a) it was individually day-reviewed (dailyReviewStatus[day] === "reviewed"), OR
+  //   (b) the whole week was approved (ts.status === "approved") — covers employees whose
+  //       timesheets were batch-approved rather than day-reviewed one by one.
+  // Idempotency keys are keyed on (tsId, day, weekDate) so both paths produce the same key —
+  // running this on an already-synced day is always a no-op.
+  function isDayEligible(ts: (typeof timesheets)[number], day: (typeof DAY_KEYS)[number]): boolean {
+    return ts.dailyReviewStatus?.[day] === "reviewed" || ts.status === "approved";
+  }
+
+  // Count how many eligible days will be processed so the user knows what to expect
   let queued = 0;
   for (const ts of timesheets) {
     for (const day of DAY_KEYS) {
-      if (ts.dailyReviewStatus?.[day] === "reviewed") queued++;
+      if (isDayEligible(ts, day)) queued++;
     }
   }
 
@@ -1265,6 +1276,12 @@ router.post("/backfill-timesheet-sheets", async (request, response) => {
 
   // Run the export asynchronously after the response has been sent
   void (async () => {
+    // Check once whether Sheets is enabled — avoids a DB round-trip per day inside the loop
+    if (!(await isGoogleSheetsEnabledForTenant(tenantId))) {
+      logger.warn({ tenantId }, "Backfill skipped — Google Sheets is not enabled for this tenant");
+      return;
+    }
+
     const taskDescriptions = await buildTaskDescriptionLookup();
     let exported = 0;
     let skipped = 0;
@@ -1290,7 +1307,7 @@ router.post("/backfill-timesheet-sheets", async (request, response) => {
         : null;
 
       for (const day of DAY_KEYS) {
-        if (ts.dailyReviewStatus?.[day] !== "reviewed") continue;
+        if (!isDayEligible(ts, day)) continue;
 
         // Deterministic reviewedAt from weekStart + dayIndex — stable across re-runs
         const dayIndex = DAY_KEYS.indexOf(day);
