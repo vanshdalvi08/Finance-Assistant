@@ -8,7 +8,7 @@ import { hashSha256 } from "../../lib/security";
 import { appendTimesheetRow, isGoogleSheetsEnabledForTenant } from "./sheets.service";
 import { buildDailyReviewRowsFromReviewedDay } from "./sheets.rows";
 
-async function buildTaskDescriptionLookup(): Promise<Map<string, string>> {
+export async function buildTaskDescriptionLookup(): Promise<Map<string, string>> {
   const store = await readStore();
   const map = new Map<string, string>();
   for (const budget of store.projectBudgets) {
@@ -70,15 +70,20 @@ async function claimDailyReviewExportIdempotency(event: TimesheetDayReviewedEven
   return { row, created: false };
 }
 
-async function handleTimesheetDayReviewed(event: TimesheetDayReviewedEvent) {
+// Exported so the backfill endpoint can reuse the full pipeline (idempotency + append).
+// Returns "exported" | "skipped" | "disabled". Throws on unrecoverable Sheets API errors.
+export async function exportDayToSheets(
+  event: TimesheetDayReviewedEvent,
+  taskDescriptions?: Map<string, string>,
+): Promise<"exported" | "skipped" | "disabled"> {
   if (!(await isGoogleSheetsEnabledForTenant(event.tenantId))) {
-    return;
+    return "disabled";
   }
 
-  const taskDescriptions = await buildTaskDescriptionLookup();
-  const rows = buildDailyReviewRowsFromReviewedDay(event, taskDescriptions);
+  const descriptions = taskDescriptions ?? (await buildTaskDescriptionLookup());
+  const rows = buildDailyReviewRowsFromReviewedDay(event, descriptions);
   if (rows.length === 0) {
-    return;
+    return "skipped";
   }
 
   const requestHash = hashSha256(
@@ -93,42 +98,38 @@ async function handleTimesheetDayReviewed(event: TimesheetDayReviewedEvent) {
   );
 
   const idempotencyClaim = await claimDailyReviewExportIdempotency(event, requestHash);
-  if (idempotencyClaim && !idempotencyClaim.created) {
+  if (!idempotencyClaim.created) {
     if (idempotencyClaim.row.status === "completed") {
-      return;
+      return "skipped";
     }
     logger.warn(
       { timesheetId: event.timesheet.id, tenantId: event.tenantId, day: event.day },
       "Skipping Google Sheets sync because a daily review export is already in progress",
     );
-    return;
+    return "skipped";
   }
 
   try {
     for (const row of rows) {
       await appendTimesheetRow(row);
     }
-    if (idempotencyClaim?.created) {
-      await db
-        .update(idempotencyKeysTable)
-        .set({
-          status: "completed",
-          responseEntityId: event.timesheet.id,
-          updatedAt: new Date(),
-        })
-        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
-    }
+    await db
+      .update(idempotencyKeysTable)
+      .set({ status: "completed", responseEntityId: event.timesheet.id, updatedAt: new Date() })
+      .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    return "exported";
   } catch (error) {
-    if (idempotencyClaim?.created) {
-      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
-    }
+    await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    throw error;
+  }
+}
+
+async function handleTimesheetDayReviewed(event: TimesheetDayReviewedEvent) {
+  try {
+    await exportDayToSheets(event);
+  } catch (error) {
     logger.error(
-      {
-        err: error,
-        tenantId: event.tenantId,
-        timesheetId: event.timesheet.id,
-        day: event.day,
-      },
+      { err: error, tenantId: event.tenantId, timesheetId: event.timesheet.id, day: event.day },
       "Google Sheets daily review append failed",
     );
   }

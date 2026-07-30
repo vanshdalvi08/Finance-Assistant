@@ -1,8 +1,8 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { z } from "zod";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, gte } from "drizzle-orm";
 import { db } from "@workspace/db";
-import { auditTrailTable, idempotencyKeysTable } from "@workspace/db/schema";
+import { auditTrailTable, idempotencyKeysTable, usersTable } from "@workspace/db/schema";
 import {
   createAdminAccount,
   createClientAccount,
@@ -17,7 +17,10 @@ import {
   updateClientAccount,
   updateEmployeeAccount,
 } from "../lib/auth-service";
-import { createId, invalidateBusinessStoreCache } from "../lib/business-store";
+import { createId, invalidateBusinessStoreCache, readStore, DAY_KEYS } from "../lib/business-store";
+import type { UserProfile } from "../lib/business-store";
+import type { TimesheetDayReviewedEvent } from "../lib/events";
+import { exportDayToSheets, buildTaskDescriptionLookup } from "../integrations/googleSheets/sheets.listener";
 import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../lib/notifications";
 import { hashSha256 } from "../lib/security";
 import { logger } from "../lib/logger";
@@ -1205,6 +1208,101 @@ router.delete("/clients/:id", async (request, response) => {
     const resolved = classifyAdminRouteError(error, "Failed to remove client");
     response.status(resolved.status).json({ message: resolved.message });
   }
+});
+
+// POST /api/admin/backfill-timesheet-sheets
+// Pushes all previously-reviewed timesheet days to Google Sheets without touching the UI.
+// Idempotent — already-exported days are silently skipped via the idempotency table.
+// Body: { since?: "YYYY-MM-DD" }  (default: "2026-05-01")
+router.post("/backfill-timesheet-sheets", async (request, response) => {
+  const tenantId = request.auth?.user.tenantId;
+  if (!tenantId) {
+    response.status(401).json({ message: "Unauthorized" });
+    return;
+  }
+
+  const since: string = typeof request.body?.since === "string" ? request.body.since : "2026-05-01";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(since)) {
+    response.status(400).json({ message: "Invalid `since` date — expected YYYY-MM-DD" });
+    return;
+  }
+
+  // Batch-fetch all employees for this tenant (name + department used in Sheets rows)
+  const employeeRows = await db
+    .select({ id: usersTable.id, name: usersTable.name, department: usersTable.department })
+    .from(usersTable)
+    .where(eq(usersTable.tenantId, tenantId));
+
+  const employeeIdSet = new Set(employeeRows.map((e) => e.id));
+  const employeeMap = new Map(employeeRows.map((e) => [e.id, e]));
+
+  if (employeeIdSet.size === 0) {
+    response.json({ total: 0, exported: 0, skipped: 0, errors: [] });
+    return;
+  }
+
+  // readStore() returns properly-typed TimesheetEntry[] (weekStart normalised to ISO string)
+  const store = await readStore();
+  const timesheets = store.timesheets.filter(
+    (ts) => employeeIdSet.has(ts.employeeId) && ts.weekStart >= since,
+  );
+
+  // One shared task-description map for the whole backfill
+  const taskDescriptions = await buildTaskDescriptionLookup();
+
+  let total = 0;
+  let exported = 0;
+  let skipped = 0;
+  const errors: string[] = [];
+
+  for (const ts of timesheets) {
+    const emp = employeeMap.get(ts.employeeId);
+    const employeeProfile: UserProfile | null = emp
+      ? {
+          id: emp.id,
+          tenantId,
+          name: emp.name ?? "",
+          email: "",
+          role: "employee",
+          employeeId: null,
+          position: null,
+          department: emp.department ?? null,
+          salary: 0,
+          payType: "monthly",
+          hourlyRate: 0,
+          status: "active",
+        }
+      : null;
+
+    for (const day of DAY_KEYS) {
+      if (ts.dailyReviewStatus?.[day] !== "reviewed") continue;
+      total++;
+
+      const event: TimesheetDayReviewedEvent = {
+        tenantId,
+        timesheet: ts,
+        employee: employeeProfile,
+        day,
+        reviewedAt: ts.updatedAt,
+        reviewedBy: { name: ts.reviewedBy?.trim() || "Admin" },
+      };
+
+      try {
+        const result = await exportDayToSheets(event, taskDescriptions);
+        if (result === "exported") exported++;
+        else skipped++;
+      } catch (err) {
+        const msg = `${ts.id}:${day} — ${err instanceof Error ? err.message : String(err)}`;
+        errors.push(msg);
+        logger.error({ err, timesheetId: ts.id, day }, "Backfill Sheets export failed");
+      }
+
+      // Stay well under the Sheets API quota (300 req/min per project)
+      await new Promise<void>((resolve) => setTimeout(resolve, 150));
+    }
+  }
+
+  response.json({ total, exported, skipped, errors });
 });
 
 export default router;

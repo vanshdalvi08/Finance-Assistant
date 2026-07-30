@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Pencil, Trash2, Building2, Home, Settings as SettingsIcon, WalletCards, ArrowRight } from "lucide-react";
+import { Plus, Pencil, Trash2, Building2, Home, Settings as SettingsIcon, WalletCards, ArrowRight, Sheet } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const PRESET_COLORS = [
@@ -167,6 +167,26 @@ export default function Settings() {
     });
   }, [companyInfo]);
 
+  const [backfillSince, setBackfillSince] = useState("2026-05-01");
+  const backfillMutation = useMutation({
+    mutationFn: () => api.backfillTimesheetSheets(backfillSince),
+    onSuccess: (result) => {
+      const summary = `${result.exported} exported, ${result.skipped} already synced, ${result.errors.length} errors`;
+      toast({
+        title: result.errors.length > 0 ? "Backfill completed with errors" : "Backfill complete",
+        description: summary,
+        variant: result.errors.length > 0 ? "destructive" : "default",
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "Backfill failed",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const companyMutation = useMutation({
     mutationFn: api.updateCompanySettings,
     onSuccess: (saved) => {
@@ -304,6 +324,42 @@ export default function Settings() {
               </div>
             </button>
           </Link>
+
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Integrations</h2>
+          <div className="rounded-2xl border border-border/50 bg-card/60 p-5 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="rounded-xl bg-secondary/40 p-2.5 text-muted-foreground">
+                <Sheet className="h-4 w-4" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold">Backfill Google Sheets</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Push all verified timesheet days from a start date to Google Sheets. Safe to run multiple times — already-synced days are skipped automatically.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="space-y-1 flex-1">
+                <Label htmlFor="backfill-since" className="text-xs text-muted-foreground">Start date (YYYY-MM-DD)</Label>
+                <Input
+                  id="backfill-since"
+                  value={backfillSince}
+                  onChange={(e) => setBackfillSince(e.target.value)}
+                  placeholder="2026-05-01"
+                  className="h-8 text-sm font-mono w-40"
+                />
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-5"
+                disabled={backfillMutation.isPending || !/^\d{4}-\d{2}-\d{2}$/.test(backfillSince)}
+                onClick={() => backfillMutation.mutate()}
+              >
+                {backfillMutation.isPending ? "Syncing…" : "Sync to Sheets"}
+              </Button>
+            </div>
+          </div>
 
           <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Category Manager</h2>
           <CategorySection group="office" categories={categories} onAdd={openAdd} onEdit={openEdit} onDelete={deleteMutation.mutate} />
