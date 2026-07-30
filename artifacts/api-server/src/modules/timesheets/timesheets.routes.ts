@@ -1331,7 +1331,7 @@ router.patch("/timesheets/:id/daily-review/:day", requireTenantRole("admin"), as
       reviewedAt: updated.updatedAt ?? nowIso(),
       reviewedBy: {
         userId: request.auth?.user.id,
-        name: request.auth?.user.name ?? "Admin",
+        name: request.auth?.user.name?.trim() || "Admin",
       },
     });
   }
