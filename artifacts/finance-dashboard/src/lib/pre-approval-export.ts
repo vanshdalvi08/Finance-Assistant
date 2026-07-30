@@ -64,7 +64,10 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
   const project = preApproval.projectInfo ?? {};
   const previouslyBilled = Math.max(0, Number(project.previouslyBilledAmount ?? 0));
   const currentAmount = Math.max(0, Number(preApproval.totalAmount ?? 0));
-  const totalBilled = previouslyBilled + currentAmount;
+  const includeGst = Boolean(project.includeGst);
+  const gstAmount = includeGst ? Math.round(currentAmount * 0.18) : 0;
+  const currentAmountWithGst = currentAmount + gstAmount;
+  const totalBilled = previouslyBilled + currentAmountWithGst;
   const documentDate = preApproval.date || preApproval.createdAt || new Date().toISOString();
   const preApprovalCode = project.documentNumber?.trim() || `REFO-${formatDocDateCode(documentDate)}-${preApproval.id.slice(0, 4).toUpperCase()}`;
   const revision = project.revision?.trim() || "01";
@@ -838,13 +841,28 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
                   <tbody>
                     ${rows}
                     <tr class="total-row">
-                      <td colspan="3" class="right">Total</td>
+                      <td colspan="3" class="right">${includeGst ? "Subtotal" : "Total"}</td>
                       <td></td>
                       <td class="right numeric-cell"><span>${preApproval.totalHours.toFixed(2)}</span></td>
                       <td class="right numeric-cell"><span>${formatCurrency(preApproval.totalAmount)}</span></td>
                       <td class="right numeric-cell"><span>${formatCurrency(previouslyBilled)}</span></td>
                       <td class="right numeric-cell"><span>${formatCurrency(currentAmount)}</span></td>
                     </tr>
+                    ${includeGst ? `
+                    <tr class="total-row" style="background:#f0fdf4;">
+                      <td colspan="5" class="right" style="color:#4d7c60;font-size:8.5px;letter-spacing:0.04em;">GST @ 18%</td>
+                      <td class="right numeric-cell" style="color:#4d7c60;"><span>${formatCurrency(gstAmount)}</span></td>
+                      <td class="right numeric-cell" style="color:#4d7c60;"><span>—</span></td>
+                      <td class="right numeric-cell" style="color:#4d7c60;"><span>${formatCurrency(gstAmount)}</span></td>
+                    </tr>
+                    <tr class="total-row" style="background:#f0fdf4;border-top:1.5px solid #bbf7d0;">
+                      <td colspan="3" class="right" style="font-size:9.5px;">Grand Total (incl. GST)</td>
+                      <td></td>
+                      <td class="right numeric-cell"><span>${preApproval.totalHours.toFixed(2)}</span></td>
+                      <td class="right numeric-cell"><span>${formatCurrency(preApproval.totalAmount + gstAmount)}</span></td>
+                      <td class="right numeric-cell"><span>${formatCurrency(previouslyBilled)}</span></td>
+                      <td class="right numeric-cell"><span>${formatCurrency(currentAmountWithGst)}</span></td>
+                    </tr>` : ""}
                   </tbody>
                 </table>
               </div>
@@ -859,7 +877,7 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
               </div>
 
               <div class="billing-summary">
-                Progress billing summary: Amount previously billed ${formatCurrency(previouslyBilled)}. Current amount ${formatCurrency(currentAmount)}. Total ${formatCurrency(totalBilled)}.
+                Progress billing summary: Amount previously billed ${formatCurrency(previouslyBilled)}. Current amount ${formatCurrency(currentAmountWithGst)}${includeGst ? ` (incl. GST ${formatCurrency(gstAmount)})` : ""}. Total ${formatCurrency(totalBilled)}.
               </div>
               </div>
             </div>

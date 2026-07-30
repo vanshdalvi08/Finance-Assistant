@@ -1,12 +1,12 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "@workspace/db";
 import { idempotencyKeysTable } from "@workspace/db/schema";
-import { appEvents, type TimesheetApprovedEvent, type TimesheetDayReviewedEvent } from "../../lib/events";
+import { appEvents, type TimesheetDayReviewedEvent } from "../../lib/events";
 import { readStore } from "../../lib/business-store";
 import { logger } from "../../lib/logger";
 import { hashSha256 } from "../../lib/security";
 import { appendTimesheetRow, isGoogleSheetsEnabledForTenant } from "./sheets.service";
-import { buildDailyReviewRowsFromReviewedDay, buildWeeklyApprovalRows } from "./sheets.rows";
+import { buildDailyReviewRowsFromReviewedDay } from "./sheets.rows";
 
 async function buildTaskDescriptionLookup(): Promise<Map<string, string>> {
   const store = await readStore();
@@ -68,34 +68,6 @@ async function claimDailyReviewExportIdempotency(event: TimesheetDayReviewedEven
   }
 
   return { row, created: false };
-}
-
-async function handleTimesheetApproved(event: TimesheetApprovedEvent) {
-  if (!(await isGoogleSheetsEnabledForTenant(event.tenantId))) {
-    return;
-  }
-
-  const weeklyRows = buildWeeklyApprovalRows(event);
-
-  if (weeklyRows.length === 0) {
-    logger.warn({ timesheetId: event.timesheet.id, tenantId: event.tenantId }, "Skipping Google Sheets sync for empty approved timesheet");
-    return;
-  }
-
-  try {
-    for (const row of weeklyRows) {
-      await appendTimesheetRow(row);
-    }
-  } catch (error) {
-    logger.error(
-      {
-        err: error,
-        tenantId: event.tenantId,
-        timesheetId: event.timesheet.id,
-      },
-      "Google Sheets append failed after timesheet approval",
-    );
-  }
 }
 
 async function handleTimesheetDayReviewed(event: TimesheetDayReviewedEvent) {
@@ -169,9 +141,6 @@ declare global {
 
 if (!globalThis.__timesheetGoogleSheetsListenerRegistered__) {
   globalThis.__timesheetGoogleSheetsListenerRegistered__ = true;
-  appEvents.on("timesheet_approved", (event) => {
-    void handleTimesheetApproved(event);
-  });
   appEvents.on("timesheet_day_reviewed", (event) => {
     void handleTimesheetDayReviewed(event);
   });

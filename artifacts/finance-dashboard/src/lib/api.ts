@@ -425,6 +425,7 @@ export interface PreApprovalProjectInfo {
   retainagePercent?: number;
   retainageAmount?: number;
   previouslyBilledAmount?: number;
+  includeGst?: boolean;
 }
 
 export interface PreApproval {

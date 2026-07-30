@@ -127,6 +127,7 @@ export interface PreApprovalProjectInfoRecord {
   retainagePercent?: number;
   retainageAmount?: number;
   previouslyBilledAmount?: number;
+  includeGst?: boolean;
 }
 
 export interface CompanySettingsRecord extends PreApprovalPartyInfoRecord {

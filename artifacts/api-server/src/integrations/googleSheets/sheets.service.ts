@@ -6,7 +6,7 @@ import { logger } from "../../lib/logger";
 import { optionalEnv } from "../../lib/env";
 
 export interface DailyReviewRowInput {
-  tabName: "Daily Reviews";
+  tabName: string; // e.g. "Daily Reviews - Jul 2026"
   employeeName: string;
   department: string;
   date: string;
@@ -20,20 +20,7 @@ export interface DailyReviewRowInput {
   approvedAt: string;
 }
 
-export interface WeeklyApprovalRowInput {
-  tabName: "Weekly Approvals";
-  employeeName: string;
-  department: string;
-  week: string;
-  project: string;
-  task: string;
-  totalHours: number;
-  workNote: string;
-  approvedBy: string;
-  approvedAt: string;
-}
-
-export type AppendTimesheetRowInput = DailyReviewRowInput | WeeklyApprovalRowInput;
+export type AppendTimesheetRowInput = DailyReviewRowInput;
 
 const TAB_HEADERS: Record<string, string[]> = {
   "Daily Reviews": [
@@ -49,50 +36,33 @@ const TAB_HEADERS: Record<string, string[]> = {
     "Approved By",
     "Approved At",
   ],
-  "Weekly Approvals": [
-    "Employee Name",
-    "Department",
-    "Week",
-    "Project",
-    "Task",
-    "Total Hours",
-    "Work Note",
-    "Approved By",
-    "Approved At",
-  ],
 };
 
 function buildRowValues(input: AppendTimesheetRowInput): unknown[] {
-  if (input.tabName === "Daily Reviews") {
-    return [
-      input.employeeName,
-      input.department,
-      input.date,
-      input.week,
-      input.project,
-      input.task,
-      input.description,
-      input.hours,
-      input.workNote,
-      input.approvedBy,
-      input.approvedAt,
-    ];
-  }
   return [
     input.employeeName,
     input.department,
+    input.date,
     input.week,
     input.project,
     input.task,
-    input.totalHours,
+    input.description,
+    input.hours,
     input.workNote,
     input.approvedBy,
     input.approvedAt,
   ];
 }
 
+function getHeadersForTab(tabName: string): string[] | undefined {
+  for (const key of Object.keys(TAB_HEADERS)) {
+    if (tabName.startsWith(key)) return TAB_HEADERS[key];
+  }
+  return undefined;
+}
+
 function tabRange(tabName: string): string {
-  const headers = TAB_HEADERS[tabName];
+  const headers = getHeadersForTab(tabName);
   if (!headers || headers.length === 0) return "A:J";
   return `A:${String.fromCharCode(64 + headers.length)}`;
 }
@@ -190,7 +160,7 @@ async function ensureWorksheetExists(
 
   // Always write the correct header row (row 1), whether the sheet was just created or
   // already existed with stale headers from a previous schema version.
-  const headers = TAB_HEADERS[trimmedSheetName];
+  const headers = getHeadersForTab(trimmedSheetName);
   if (headers && headers.length > 0) {
     await sheets.spreadsheets.values.update({
       spreadsheetId,
