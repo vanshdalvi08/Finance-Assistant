@@ -177,7 +177,6 @@ export default function PreApprovalsPage() {
     notes: "",
   });
   const [rows, setRows] = useState<WorkRowDraft[]>([createRow()]);
-  const [includeGst, setIncludeGst] = useState(false);
 
   const { data: preApprovals = [] } = useQuery({
     queryKey: ["preApprovals"],
@@ -227,9 +226,9 @@ export default function PreApprovalsPage() {
       },
       { hours: 0, amount: 0 },
     );
-    const gstAmount = includeGst ? Math.round(base.amount * 0.18) : 0;
+    const gstAmount = Math.round(base.amount * 0.18);
     return { ...base, gstAmount, grandTotal: base.amount + gstAmount };
-  }, [rows, includeGst]);
+  }, [rows]);
 
   const payload = () => ({
     title: form.title.trim(),
@@ -239,7 +238,7 @@ export default function PreApprovalsPage() {
     notes: form.notes.trim(),
     companyInfo,
     clientInfo,
-    projectInfo: { ...projectInfo, includeGst },
+    projectInfo: { ...projectInfo, includeGst: true },
     tasks: rows
       .map((row) => ({
         id: row.id,
@@ -335,7 +334,6 @@ export default function PreApprovalsPage() {
     setClientInfo(clientToPartyInfo(defaultClient));
     setProjectInfo({ ...emptyProjectInfo, documentNumber: createDocumentNumber(today), revision: "01" });
     setRows([createRow()]);
-    setIncludeGst(false);
     setDialogOpen(true);
   }
 
@@ -364,7 +362,6 @@ export default function PreApprovalsPage() {
           }))
         : [createRow()],
     );
-    setIncludeGst(item.projectInfo?.includeGst ?? false);
     setDialogOpen(true);
   }
 
@@ -372,7 +369,6 @@ export default function PreApprovalsPage() {
     setDialogOpen(false);
     setEditing(null);
     setRows([createRow()]);
-    setIncludeGst(false);
   }
 
   function updateRow<K extends keyof WorkRowDraft>(index: number, field: K, value: WorkRowDraft[K]) {
@@ -466,19 +462,22 @@ export default function PreApprovalsPage() {
                       </p>
                       {item.notes ? <p className="mt-2 max-w-3xl text-sm text-muted-foreground">{item.notes}</p> : null}
                     </div>
-                    <div className="rounded-lg border border-border/50 bg-secondary/10 px-4 py-3 text-left md:min-w-44 md:text-right">
-                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                        {item.projectInfo?.includeGst ? "Grand Total (incl. GST)" : "Total Quotation"}
-                      </p>
-                      <p className="mt-1 text-lg font-semibold">
-                        {formatCurrency(item.projectInfo?.includeGst ? item.totalAmount + Math.round(item.totalAmount * 0.18) : item.totalAmount)}
-                      </p>
-                      {item.projectInfo?.includeGst ? (
-                        <p className="mt-0.5 text-xs text-muted-foreground">
-                          {formatCurrency(item.totalAmount)} + {formatCurrency(Math.round(item.totalAmount * 0.18))} GST
-                        </p>
-                      ) : null}
-                      <p className="mt-1 text-xs text-muted-foreground">{item.totalHours.toFixed(1)} total hours</p>
+                    <div className="rounded-lg border border-border/50 bg-secondary/10 px-4 py-3 text-left md:min-w-52 md:text-right">
+                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{item.totalHours.toFixed(1)} total hours</p>
+                      <div className="mt-2 space-y-1 text-sm">
+                        <div className="flex justify-between gap-6">
+                          <span className="text-muted-foreground">Subtotal</span>
+                          <span className="tabular-nums">{formatCurrency(item.totalAmount)}</span>
+                        </div>
+                        <div className="flex justify-between gap-6">
+                          <span className="text-muted-foreground">GST (18%)</span>
+                          <span className="tabular-nums text-muted-foreground">+ {formatCurrency(Math.round(item.totalAmount * 0.18))}</span>
+                        </div>
+                        <div className="flex justify-between gap-6 border-t border-border/50 pt-1 font-semibold">
+                          <span>Grand Total</span>
+                          <span className="tabular-nums">{formatCurrency(item.totalAmount + Math.round(item.totalAmount * 0.18))}</span>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
@@ -507,25 +506,19 @@ export default function PreApprovalsPage() {
                           </TableRow>
                         ))}
                         <TableRow className="bg-secondary/20 hover:bg-secondary/20">
-                          <TableCell className="font-semibold" colSpan={2}>
-                            {item.projectInfo?.includeGst ? "Subtotal" : "Total"}
-                          </TableCell>
+                          <TableCell className="font-semibold" colSpan={2}>Subtotal</TableCell>
                           <TableCell className="text-right font-semibold tabular-nums">{item.totalHours.toFixed(1)}</TableCell>
                           <TableCell />
                           <TableCell className="text-right font-semibold tabular-nums">{formatCurrency(item.totalAmount)}</TableCell>
                         </TableRow>
-                        {item.projectInfo?.includeGst ? (
-                          <>
-                            <TableRow className="bg-secondary/20 hover:bg-secondary/20">
-                              <TableCell className="text-muted-foreground" colSpan={4}>GST (18%)</TableCell>
-                              <TableCell className="text-right tabular-nums text-muted-foreground">{formatCurrency(Math.round(item.totalAmount * 0.18))}</TableCell>
-                            </TableRow>
-                            <TableRow className="bg-secondary/30 hover:bg-secondary/30">
-                              <TableCell className="font-bold" colSpan={4}>Grand Total</TableCell>
-                              <TableCell className="text-right font-bold tabular-nums">{formatCurrency(item.totalAmount + Math.round(item.totalAmount * 0.18))}</TableCell>
-                            </TableRow>
-                          </>
-                        ) : null}
+                        <TableRow className="bg-secondary/20 hover:bg-secondary/20">
+                          <TableCell className="text-muted-foreground" colSpan={4}>GST (18%)</TableCell>
+                          <TableCell className="text-right tabular-nums text-muted-foreground">+ {formatCurrency(Math.round(item.totalAmount * 0.18))}</TableCell>
+                        </TableRow>
+                        <TableRow className="bg-secondary/30 hover:bg-secondary/30">
+                          <TableCell className="font-bold" colSpan={4}>Grand Total</TableCell>
+                          <TableCell className="text-right font-bold tabular-nums">{formatCurrency(item.totalAmount + Math.round(item.totalAmount * 0.18))}</TableCell>
+                        </TableRow>
                       </TableBody>
                     </Table>
                   </div>
@@ -829,36 +822,18 @@ export default function PreApprovalsPage() {
                   <p className="mt-2 text-2xl font-semibold tabular-nums">{formTotals.hours.toFixed(1)}h</p>
                 </div>
                 <div className="rounded-lg border border-border/50 bg-secondary/10 p-4">
-                  <div className="flex items-start justify-between gap-2">
-                    <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">
-                      {includeGst ? "Grand Total (incl. GST)" : "Final Quotation"}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => setIncludeGst((v) => !v)}
-                      className={cn(
-                        "flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-semibold transition-colors",
-                        includeGst
-                          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                          : "border-border/60 bg-background text-muted-foreground hover:border-border",
-                      )}
-                    >
-                      GST 18%
-                    </button>
-                  </div>
+                  <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Grand Total (incl. GST)</p>
                   <p className="mt-2 text-2xl font-semibold tabular-nums">{formatCurrency(formTotals.grandTotal)}</p>
-                  {includeGst ? (
-                    <div className="mt-2 space-y-0.5 border-t border-border/40 pt-2 text-xs text-muted-foreground">
-                      <div className="flex justify-between">
-                        <span>Subtotal</span>
-                        <span className="tabular-nums">{formatCurrency(formTotals.amount)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>GST (18%)</span>
-                        <span className="tabular-nums">{formatCurrency(formTotals.gstAmount)}</span>
-                      </div>
+                  <div className="mt-2 space-y-0.5 border-t border-border/40 pt-2 text-xs text-muted-foreground">
+                    <div className="flex justify-between">
+                      <span>Subtotal</span>
+                      <span className="tabular-nums">{formatCurrency(formTotals.amount)}</span>
                     </div>
-                  ) : null}
+                    <div className="flex justify-between">
+                      <span>GST (18%)</span>
+                      <span className="tabular-nums">+ {formatCurrency(formTotals.gstAmount)}</span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
