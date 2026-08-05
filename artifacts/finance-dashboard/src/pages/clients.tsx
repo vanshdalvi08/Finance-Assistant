@@ -28,6 +28,7 @@ type ClientForm = {
   company: string;
   address: string;
   website: string;
+  gstin: string;
   billingEmail: string;
   status: "Active" | "Inactive";
 };
@@ -39,6 +40,7 @@ const emptyForm: ClientForm = {
   company: "",
   address: "",
   website: "",
+  gstin: "",
   billingEmail: "",
   status: "Active",
 };
@@ -118,6 +120,7 @@ export default function ClientsPage() {
       company: client.company ?? "",
       address: client.address ?? "",
       website: client.website ?? "",
+      gstin: client.gstin ?? "",
       billingEmail: client.billingEmail ?? client.email,
       status: client.status,
     });
@@ -251,6 +254,15 @@ export default function ClientsPage() {
                 <div className="space-y-2 md:col-span-2">
                   <Label>Website</Label>
                   <Input value={form.website} onChange={(event) => setForm((current) => ({ ...current, website: event.target.value }))} />
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label>GSTIN</Label>
+                  <Input
+                    value={form.gstin}
+                    onChange={(event) => setForm((current) => ({ ...current, gstin: event.target.value.toUpperCase() }))}
+                    placeholder="e.g. 27AABCU9603R1ZX"
+                    maxLength={15}
+                  />
                 </div>
               </div>
             </div>

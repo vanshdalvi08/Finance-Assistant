@@ -162,6 +162,7 @@ export interface CreateClientInput {
   company?: string | null;
   address?: string | null;
   website?: string | null;
+  gstin?: string | null;
   billingEmail?: string | null;
   status?: "active" | "inactive";
 }
@@ -888,6 +889,7 @@ export async function createClientAccount(input: CreateClientInput): Promise<{ u
     phone,
     email: input.billingEmail?.trim() || email,
     website: input.website?.trim() || "",
+    gstin: input.gstin?.trim().toUpperCase() || undefined,
   };
 
   let user: User;
@@ -1113,6 +1115,7 @@ export async function updateClientAccount(input: UpdateClientInput): Promise<{ u
           phone,
           email: input.billingEmail?.trim() || email,
           website: input.website?.trim() || "",
+          gstin: input.gstin?.trim().toUpperCase() || undefined,
         },
         status: input.status ?? "active",
         updatedAt: now,

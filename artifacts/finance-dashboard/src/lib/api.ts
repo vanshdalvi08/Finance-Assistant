@@ -57,6 +57,7 @@ export interface ClientAccount {
   company?: string;
   address?: string;
   website?: string;
+  gstin?: string;
   billingEmail?: string;
   status: "Active" | "Inactive";
   temporaryPassword?: string;
@@ -413,6 +414,7 @@ export interface PreApprovalPartyInfo {
   phone?: string;
   email?: string;
   website?: string;
+  gstin?: string;
 }
 
 export interface PreApprovalProjectInfo {
@@ -426,6 +428,10 @@ export interface PreApprovalProjectInfo {
   retainageAmount?: number;
   previouslyBilledAmount?: number;
   includeGst?: boolean;
+  placeOfSupply?: string;
+  sacCode?: string;
+  /** "igst" = single 18% line; "cgst_sgst" = CGST 9% + SGST 9% split */
+  taxType?: "igst" | "cgst_sgst";
 }
 
 export interface PreApproval {
@@ -1005,6 +1011,7 @@ function mapAuthUserToClient(user: AuthUser): ClientAccount {
     company: user.department ?? "",
     address: user.clientInfo?.address ?? "",
     website: user.clientInfo?.website ?? "",
+    gstin: user.clientInfo?.gstin ?? "",
     billingEmail: user.clientInfo?.email ?? user.email,
     status: user.status === "inactive" ? "Inactive" : "Active",
   };
@@ -1655,6 +1662,7 @@ export const api = {
     company?: string;
     address?: string;
     website?: string;
+    gstin?: string;
     billingEmail?: string;
     status?: "Active" | "Inactive";
   }) => {
@@ -1665,6 +1673,7 @@ export const api = {
       company: input.company,
       address: input.address,
       website: input.website,
+      gstin: input.gstin,
       billingEmail: input.billingEmail,
       status: input.status === "Inactive" ? "inactive" : "active",
     });
@@ -1683,6 +1692,7 @@ export const api = {
     company?: string;
     address?: string;
     website?: string;
+    gstin?: string;
     billingEmail?: string;
     status?: "Active" | "Inactive";
   }) => {
@@ -1694,6 +1704,7 @@ export const api = {
       company: input.company,
       address: input.address,
       website: input.website,
+      gstin: input.gstin,
       billingEmail: input.billingEmail,
       status: input.status === "Inactive" ? "inactive" : "active",
     });

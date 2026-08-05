@@ -28,6 +28,7 @@ export interface AuthUser {
     phone?: string;
     email?: string;
     website?: string;
+    gstin?: string;
   };
   status?: "active" | "inactive";
   createdAt?: string;
@@ -137,6 +138,7 @@ export interface CreateClientAccountPayload {
   phone: string;
   company?: string;
   address?: string;
+  gstin?: string;
   website?: string;
   billingEmail?: string;
   status?: "active" | "inactive";

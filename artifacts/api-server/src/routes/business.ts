@@ -406,6 +406,7 @@ const partyInfoSchema = z.object({
   phone: z.string().trim().optional(),
   email: z.string().trim().optional(),
   website: z.string().trim().optional(),
+  gstin: z.string().trim().max(15).optional(),
 });
 
 const projectInfoSchema = z.object({
@@ -418,6 +419,9 @@ const projectInfoSchema = z.object({
   retainagePercent: z.coerce.number().min(0).max(100).optional(),
   retainageAmount: z.coerce.number().min(0).optional(),
   previouslyBilledAmount: z.coerce.number().min(0).optional(),
+  placeOfSupply: z.string().trim().optional(),
+  sacCode: z.string().trim().optional(),
+  taxType: z.enum(["igst", "cgst_sgst"]).optional(),
 });
 
 const preApprovalSchema = z.object({
@@ -450,6 +454,7 @@ function requestHashForPreApprovalMutation(input: z.infer<typeof preApprovalSche
         phone: input.companyInfo?.phone?.trim() ?? "",
         email: input.companyInfo?.email?.trim() ?? "",
         website: input.companyInfo?.website?.trim() ?? "",
+        gstin: input.companyInfo?.gstin?.trim().toUpperCase() ?? "",
       },
       clientInfo: {
         companyName: input.clientInfo?.companyName?.trim() ?? "",
@@ -457,6 +462,7 @@ function requestHashForPreApprovalMutation(input: z.infer<typeof preApprovalSche
         phone: input.clientInfo?.phone?.trim() ?? "",
         email: input.clientInfo?.email?.trim() ?? "",
         website: input.clientInfo?.website?.trim() ?? "",
+        gstin: input.clientInfo?.gstin?.trim().toUpperCase() ?? "",
       },
       projectInfo: {
         documentNumber: input.projectInfo?.documentNumber?.trim() ?? "",
@@ -468,6 +474,9 @@ function requestHashForPreApprovalMutation(input: z.infer<typeof preApprovalSche
         retainagePercent: Number(input.projectInfo?.retainagePercent ?? 0),
         retainageAmount: Number(input.projectInfo?.retainageAmount ?? 0),
         previouslyBilledAmount: Number(input.projectInfo?.previouslyBilledAmount ?? 0),
+        placeOfSupply: input.projectInfo?.placeOfSupply?.trim() ?? "",
+        sacCode: input.projectInfo?.sacCode?.trim() ?? "",
+        taxType: input.projectInfo?.taxType ?? "igst",
       },
       tasks: (input.tasks ?? []).map((task) => ({
         id: task.id?.trim() ?? "",

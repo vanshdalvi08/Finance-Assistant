@@ -50,6 +50,7 @@ const emptyPartyInfo: PreApprovalPartyInfo = {
   phone: "",
   email: "",
   website: "",
+  gstin: "",
 };
 
 const emptyProjectInfo: PreApprovalProjectInfo = {
@@ -62,15 +63,19 @@ const emptyProjectInfo: PreApprovalProjectInfo = {
   retainagePercent: 0,
   retainageAmount: 0,
   previouslyBilledAmount: 0,
+  placeOfSupply: "",
+  sacCode: "",
+  taxType: "igst",
 };
 
-function clientToPartyInfo(client: { name: string; email: string; phone?: string; company?: string; address?: string; website?: string; billingEmail?: string } | undefined): PreApprovalPartyInfo {
+function clientToPartyInfo(client: { name: string; email: string; phone?: string; company?: string; address?: string; website?: string; gstin?: string; billingEmail?: string } | undefined): PreApprovalPartyInfo {
   return {
     companyName: client?.company || client?.name || "",
     address: client?.address ?? "",
     phone: client?.phone ?? "",
     email: client?.billingEmail || client?.email || "",
     website: client?.website ?? "",
+    gstin: client?.gstin ?? "",
   };
 }
 
@@ -226,9 +231,12 @@ export default function PreApprovalsPage() {
       },
       { hours: 0, amount: 0 },
     );
-    const gstAmount = Math.round(base.amount * 0.18);
+    // CGST+SGST: each half is independently rounded per Indian GST rules.
+    // 2 × Math.round(9%) avoids a ₹1 mismatch vs Math.round(18%) on amounts like ₹1,150.
+    const cgstEach = Math.round(base.amount * 0.09);
+    const gstAmount = projectInfo.taxType === "cgst_sgst" ? cgstEach * 2 : Math.round(base.amount * 0.18);
     return { ...base, gstAmount, grandTotal: base.amount + gstAmount };
-  }, [rows]);
+  }, [rows, projectInfo.taxType]);
 
   const payload = () => ({
     title: form.title.trim(),
@@ -346,8 +354,11 @@ export default function PreApprovalsPage() {
       date: format(new Date(item.date), "yyyy-MM-dd"),
       notes: item.notes ?? "",
     });
-    setCompanyInfo({ ...emptyPartyInfo, ...item.companyInfo });
-    setClientInfo({ ...emptyPartyInfo, ...item.clientInfo });
+    const savedCompany = { ...emptyPartyInfo, ...item.companyInfo };
+    setCompanyInfo({ ...savedCompany, gstin: savedCompany.gstin || companySettings?.gstin || "" });
+    const savedClient = { ...emptyPartyInfo, ...item.clientInfo };
+    const matchedClient = clients.find((c) => c.id === item.clientId);
+    setClientInfo({ ...savedClient, gstin: savedClient.gstin || matchedClient?.gstin || "" });
     setProjectInfo({ ...emptyProjectInfo, ...item.projectInfo });
     setRows(
       item.tasks.length
@@ -469,13 +480,26 @@ export default function PreApprovalsPage() {
                           <span className="text-muted-foreground">Subtotal</span>
                           <span className="tabular-nums">{formatCurrency(item.totalAmount)}</span>
                         </div>
-                        <div className="flex justify-between gap-6">
-                          <span className="text-muted-foreground">GST (18%)</span>
-                          <span className="tabular-nums text-muted-foreground">+ {formatCurrency(Math.round(item.totalAmount * 0.18))}</span>
-                        </div>
+                        {item.projectInfo?.taxType === "cgst_sgst" ? (
+                          <>
+                            <div className="flex justify-between gap-6">
+                              <span className="text-muted-foreground">CGST (9%)</span>
+                              <span className="tabular-nums text-muted-foreground">+ {formatCurrency(Math.round(item.totalAmount * 0.09))}</span>
+                            </div>
+                            <div className="flex justify-between gap-6">
+                              <span className="text-muted-foreground">SGST (9%)</span>
+                              <span className="tabular-nums text-muted-foreground">+ {formatCurrency(Math.round(item.totalAmount * 0.09))}</span>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="flex justify-between gap-6">
+                            <span className="text-muted-foreground">IGST (18%)</span>
+                            <span className="tabular-nums text-muted-foreground">+ {formatCurrency(Math.round(item.totalAmount * 0.18))}</span>
+                          </div>
+                        )}
                         <div className="flex justify-between gap-6 border-t border-border/50 pt-1 font-semibold">
                           <span>Grand Total</span>
-                          <span className="tabular-nums">{formatCurrency(item.totalAmount + Math.round(item.totalAmount * 0.18))}</span>
+                          <span className="tabular-nums">{formatCurrency(item.totalAmount + (item.projectInfo?.taxType === "cgst_sgst" ? Math.round(item.totalAmount * 0.09) * 2 : Math.round(item.totalAmount * 0.18)))}</span>
                         </div>
                       </div>
                     </div>
@@ -511,13 +535,26 @@ export default function PreApprovalsPage() {
                           <TableCell />
                           <TableCell className="text-right font-semibold tabular-nums">{formatCurrency(item.totalAmount)}</TableCell>
                         </TableRow>
-                        <TableRow className="bg-secondary/20 hover:bg-secondary/20">
-                          <TableCell className="text-muted-foreground" colSpan={4}>GST (18%)</TableCell>
-                          <TableCell className="text-right tabular-nums text-muted-foreground">+ {formatCurrency(Math.round(item.totalAmount * 0.18))}</TableCell>
-                        </TableRow>
+                        {item.projectInfo?.taxType === "cgst_sgst" ? (
+                          <>
+                            <TableRow className="bg-secondary/20 hover:bg-secondary/20">
+                              <TableCell className="text-muted-foreground" colSpan={4}>CGST (9%)</TableCell>
+                              <TableCell className="text-right tabular-nums text-muted-foreground">+ {formatCurrency(Math.round(item.totalAmount * 0.09))}</TableCell>
+                            </TableRow>
+                            <TableRow className="bg-secondary/20 hover:bg-secondary/20">
+                              <TableCell className="text-muted-foreground" colSpan={4}>SGST (9%)</TableCell>
+                              <TableCell className="text-right tabular-nums text-muted-foreground">+ {formatCurrency(Math.round(item.totalAmount * 0.09))}</TableCell>
+                            </TableRow>
+                          </>
+                        ) : (
+                          <TableRow className="bg-secondary/20 hover:bg-secondary/20">
+                            <TableCell className="text-muted-foreground" colSpan={4}>IGST (18%)</TableCell>
+                            <TableCell className="text-right tabular-nums text-muted-foreground">+ {formatCurrency(Math.round(item.totalAmount * 0.18))}</TableCell>
+                          </TableRow>
+                        )}
                         <TableRow className="bg-secondary/30 hover:bg-secondary/30">
                           <TableCell className="font-bold" colSpan={4}>Grand Total</TableCell>
-                          <TableCell className="text-right font-bold tabular-nums">{formatCurrency(item.totalAmount + Math.round(item.totalAmount * 0.18))}</TableCell>
+                          <TableCell className="text-right font-bold tabular-nums">{formatCurrency(item.totalAmount + (item.projectInfo?.taxType === "cgst_sgst" ? Math.round(item.totalAmount * 0.09) * 2 : Math.round(item.totalAmount * 0.18)))}</TableCell>
                         </TableRow>
                       </TableBody>
                     </Table>
@@ -714,6 +751,12 @@ export default function PreApprovalsPage() {
                     <Input value={companyInfo.email ?? ""} onChange={(event) => updateCompanyInfo("email", event.target.value)} placeholder="Email" />
                   </div>
                   <Input value={companyInfo.website ?? ""} onChange={(event) => updateCompanyInfo("website", event.target.value)} placeholder="Website" />
+                  <Input
+                    value={companyInfo.gstin ?? ""}
+                    onChange={(event) => updateCompanyInfo("gstin", event.target.value.toUpperCase())}
+                    placeholder="Company GSTIN (e.g. 27AABCU9603R1ZX)"
+                    maxLength={15}
+                  />
                 </div>
               </div>
 
@@ -728,6 +771,12 @@ export default function PreApprovalsPage() {
                     <Input value={clientInfo.email ?? ""} onChange={(event) => updateClientInfo("email", event.target.value)} placeholder="Email" />
                   </div>
                   <Input value={clientInfo.website ?? ""} onChange={(event) => updateClientInfo("website", event.target.value)} placeholder="Website" />
+                  <Input
+                    value={clientInfo.gstin ?? ""}
+                    onChange={(event) => updateClientInfo("gstin", event.target.value.toUpperCase())}
+                    placeholder="Client GSTIN (e.g. 29ABCDE1234F1ZK)"
+                    maxLength={15}
+                  />
                 </div>
               </div>
             </div>
@@ -744,6 +793,33 @@ export default function PreApprovalsPage() {
                     placeholder="Describe the work covered by this quotation..."
                     rows={3}
                   />
+                </div>
+                <div className="space-y-2">
+                  <Label>Place of Supply</Label>
+                  <Input
+                    value={projectInfo.placeOfSupply ?? ""}
+                    onChange={(event) => updateProjectInfo("placeOfSupply", event.target.value)}
+                    placeholder="e.g. Maharashtra (27)"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>SAC Code</Label>
+                  <Input
+                    value={projectInfo.sacCode ?? ""}
+                    onChange={(event) => updateProjectInfo("sacCode", event.target.value)}
+                    placeholder="e.g. 998314"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>GST Type</Label>
+                  <select
+                    value={projectInfo.taxType ?? "igst"}
+                    onChange={(event) => updateProjectInfo("taxType", event.target.value)}
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="igst">IGST (18%) — Inter-state</option>
+                    <option value="cgst_sgst">CGST (9%) + SGST (9%) — Intra-state</option>
+                  </select>
                 </div>
                 <div className="space-y-2">
                   <Label>Project Start Date</Label>
@@ -822,17 +898,32 @@ export default function PreApprovalsPage() {
                   <p className="mt-2 text-2xl font-semibold tabular-nums">{formTotals.hours.toFixed(1)}h</p>
                 </div>
                 <div className="rounded-lg border border-border/50 bg-secondary/10 p-4">
-                  <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Grand Total (incl. GST)</p>
+                  <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">
+                    {projectInfo.taxType === "cgst_sgst" ? "Grand Total (incl. CGST + SGST)" : "Grand Total (incl. IGST)"}
+                  </p>
                   <p className="mt-2 text-2xl font-semibold tabular-nums">{formatCurrency(formTotals.grandTotal)}</p>
                   <div className="mt-2 space-y-0.5 border-t border-border/40 pt-2 text-xs text-muted-foreground">
                     <div className="flex justify-between">
                       <span>Subtotal</span>
                       <span className="tabular-nums">{formatCurrency(formTotals.amount)}</span>
                     </div>
-                    <div className="flex justify-between">
-                      <span>GST (18%)</span>
-                      <span className="tabular-nums">+ {formatCurrency(formTotals.gstAmount)}</span>
-                    </div>
+                    {projectInfo.taxType === "cgst_sgst" ? (
+                      <>
+                        <div className="flex justify-between">
+                          <span>CGST (9%)</span>
+                          <span className="tabular-nums">+ {formatCurrency(Math.round(formTotals.amount * 0.09))}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>SGST (9%)</span>
+                          <span className="tabular-nums">+ {formatCurrency(Math.round(formTotals.amount * 0.09))}</span>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="flex justify-between">
+                        <span>IGST (18%)</span>
+                        <span className="tabular-nums">+ {formatCurrency(formTotals.gstAmount)}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>

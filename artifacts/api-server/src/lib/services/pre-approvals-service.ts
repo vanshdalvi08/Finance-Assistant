@@ -32,6 +32,7 @@ export type PreApprovalPartyInfoInput = {
   phone?: string;
   email?: string;
   website?: string;
+  gstin?: string;
 };
 
 export type PreApprovalTaskInput = {

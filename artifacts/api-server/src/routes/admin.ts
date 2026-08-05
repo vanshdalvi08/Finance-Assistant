@@ -82,6 +82,7 @@ const createClientSchema = z.object({
   company: z.string().trim().min(2).optional(),
   address: z.string().trim().optional(),
   website: z.string().trim().optional(),
+  gstin: z.string().trim().max(15).optional(),
   billingEmail: z.string().trim().email().optional(),
   status: z.enum(["active", "inactive"]).optional(),
 });
@@ -361,6 +362,7 @@ function requestHashForClientCreate(input: z.infer<typeof createClientSchema>) {
       company: input.company?.trim() ?? null,
       address: input.address?.trim() ?? null,
       website: input.website?.trim() ?? null,
+      gstin: input.gstin?.trim().toUpperCase() ?? null,
       billingEmail: input.billingEmail?.trim().toLowerCase() ?? null,
       status: input.status ?? "active",
     }),
@@ -377,6 +379,7 @@ function requestHashForClientUpdate(input: z.infer<typeof updateClientSchema>) {
       company: input.company?.trim() ?? null,
       address: input.address?.trim() ?? null,
       website: input.website?.trim() ?? null,
+      gstin: input.gstin?.trim().toUpperCase() ?? null,
       billingEmail: input.billingEmail?.trim().toLowerCase() ?? null,
       status: input.status ?? "active",
     }),

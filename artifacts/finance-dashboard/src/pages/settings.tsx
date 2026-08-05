@@ -43,6 +43,7 @@ interface CompanyFormState {
   phone: string;
   email: string;
   website: string;
+  gstin: string;
 }
 
 function CategoryCard({
@@ -141,6 +142,7 @@ export default function Settings() {
     phone: "",
     email: "",
     website: "",
+    gstin: "",
   });
 
   const { data: categories = [] } = useQuery({
@@ -164,6 +166,7 @@ export default function Settings() {
       phone: companyInfo.phone ?? "",
       email: companyInfo.email ?? "",
       website: companyInfo.website ?? "",
+      gstin: companyInfo.gstin ?? "",
     });
   }, [companyInfo]);
 
@@ -293,6 +296,16 @@ export default function Settings() {
                 <div className="space-y-2 md:col-span-2">
                   <Label>Address</Label>
                   <Input value={companyForm.address} onChange={(event) => setCompanyForm((current) => ({ ...current, address: event.target.value }))} />
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label>GSTIN (Your Company)</Label>
+                  <Input
+                    value={companyForm.gstin}
+                    onChange={(event) => setCompanyForm((current) => ({ ...current, gstin: event.target.value.toUpperCase() }))}
+                    placeholder="e.g. 27AABCU9603R1ZX"
+                    maxLength={15}
+                  />
+                  <p className="text-xs text-muted-foreground">Saved here and auto-filled on every Tax Invoice.</p>
                 </div>
               </div>
               <div className="flex justify-end">

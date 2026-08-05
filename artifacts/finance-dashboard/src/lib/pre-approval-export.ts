@@ -64,7 +64,12 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
   const project = preApproval.projectInfo ?? {};
   const previouslyBilled = Math.max(0, Number(project.previouslyBilledAmount ?? 0));
   const currentAmount = Math.max(0, Number(preApproval.totalAmount ?? 0));
-  const gstAmount = Math.round(currentAmount * 0.18);
+  const taxType = project.taxType ?? "igst";
+  // CGST+SGST: each half is independently rounded to the nearest rupee (per Indian GST rules).
+  // Using 2 × Math.round(9%) rather than Math.round(18%) avoids a ₹1 mismatch on amounts
+  // where rounding each half separately differs from rounding the whole (e.g. ₹1,150).
+  const cgstEach = Math.round(currentAmount * 0.09);
+  const gstAmount = taxType === "cgst_sgst" ? cgstEach * 2 : Math.round(currentAmount * 0.18);
   const currentAmountWithGst = currentAmount + gstAmount;
   const totalBilled = previouslyBilled + currentAmountWithGst;
   const documentDate = preApproval.date || preApproval.createdAt || new Date().toISOString();
@@ -760,7 +765,7 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
               </div>
             </div>
             <div class="doc-title-row">
-              <h1>TITLE : ${escapeHtml(documentTitle)}</h1>
+              <h1>TAX INVOICE : ${escapeHtml(documentTitle)}</h1>
             </div>
 
             <div class="content-shell">
@@ -773,6 +778,7 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
                     <div class="party-row"><span class="party-label">Phone</span><span class="party-separator">:-</span><span class="party-value">${escapeHtml(company.phone || "")}</span></div>
                     <div class="party-row"><span class="party-label">Email</span><span class="party-separator">:-</span><span class="party-value">${escapeHtml(company.email || "")}</span></div>
                     <div class="party-row"><span class="party-label">Website</span><span class="party-separator">:-</span><span class="party-value">${escapeHtml(company.website || "")}</span></div>
+                    ${company.gstin ? `<div class="party-row"><span class="party-label">GSTIN</span><span class="party-separator">:-</span><span class="party-value">${escapeHtml(company.gstin)}</span></div>` : ""}
                   </div>
                 </div>
                 <div class="info-card">
@@ -783,6 +789,7 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
                     <div class="party-row"><span class="party-label">Phone</span><span class="party-separator">:-</span><span class="party-value">${escapeHtml(client.phone || "")}</span></div>
                     <div class="party-row"><span class="party-label">Email</span><span class="party-separator">:-</span><span class="party-value">${escapeHtml(client.email || "")}</span></div>
                     <div class="party-row"><span class="party-label">Website</span><span class="party-separator">:-</span><span class="party-value">${escapeHtml(client.website || "")}</span></div>
+                    ${client.gstin ? `<div class="party-row"><span class="party-label">GSTIN</span><span class="party-separator">:-</span><span class="party-value">${escapeHtml(client.gstin)}</span></div>` : ""}
                   </div>
                 </div>
               </div>
@@ -802,6 +809,8 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
                   <tr><td>Total contract value</td><td>${formatCurrency(Number(project.totalContractValue ?? 0))}</td></tr>
                   <tr><td>Total bill amount</td><td>${formatCurrency(totalBilled)}</td></tr>
                   <tr><td>Work Description</td><td class="work-description">${escapeHtml(project.workDescription || preApproval.title)}</td></tr>
+                  ${project.placeOfSupply ? `<tr><td>Place of Supply</td><td>${escapeHtml(project.placeOfSupply)}</td></tr>` : ""}
+                  ${project.sacCode ? `<tr><td>SAC Code</td><td>${escapeHtml(project.sacCode)}</td></tr>` : ""}
                 </table>
               </div>
 
@@ -847,12 +856,27 @@ export function exportPreApprovalPdf(preApproval: PreApproval) {
                       <td class="right numeric-cell"><span>${formatCurrency(previouslyBilled)}</span></td>
                       <td class="right numeric-cell"><span>${formatCurrency(currentAmount)}</span></td>
                     </tr>
+                    ${taxType === "cgst_sgst" ? `
                     <tr class="total-row" style="background:#f0fdf4;">
-                      <td colspan="5" class="right" style="color:#4d7c60;font-size:8.5px;letter-spacing:0.04em;">GST @ 18%</td>
+                      <td colspan="5" class="right" style="color:#4d7c60;font-size:8.5px;letter-spacing:0.04em;">CGST @ 9%</td>
+                      <td class="right numeric-cell" style="color:#4d7c60;"><span>+ ${formatCurrency(cgstEach)}</span></td>
+                      <td class="right numeric-cell" style="color:#4d7c60;"><span>—</span></td>
+                      <td class="right numeric-cell" style="color:#4d7c60;"><span>+ ${formatCurrency(cgstEach)}</span></td>
+                    </tr>
+                    <tr class="total-row" style="background:#f0fdf4;">
+                      <td colspan="5" class="right" style="color:#4d7c60;font-size:8.5px;letter-spacing:0.04em;">SGST @ 9%</td>
+                      <td class="right numeric-cell" style="color:#4d7c60;"><span>+ ${formatCurrency(cgstEach)}</span></td>
+                      <td class="right numeric-cell" style="color:#4d7c60;"><span>—</span></td>
+                      <td class="right numeric-cell" style="color:#4d7c60;"><span>+ ${formatCurrency(cgstEach)}</span></td>
+                    </tr>
+                    ` : `
+                    <tr class="total-row" style="background:#f0fdf4;">
+                      <td colspan="5" class="right" style="color:#4d7c60;font-size:8.5px;letter-spacing:0.04em;">IGST @ 18%</td>
                       <td class="right numeric-cell" style="color:#4d7c60;"><span>+ ${formatCurrency(gstAmount)}</span></td>
                       <td class="right numeric-cell" style="color:#4d7c60;"><span>—</span></td>
                       <td class="right numeric-cell" style="color:#4d7c60;"><span>+ ${formatCurrency(gstAmount)}</span></td>
                     </tr>
+                    `}
                     <tr class="total-row" style="background:#f0fdf4;border-top:1.5px solid #bbf7d0;">
                       <td colspan="3" class="right" style="font-size:9.5px;">Grand Total (incl. GST)</td>
                       <td></td>

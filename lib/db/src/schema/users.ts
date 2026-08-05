@@ -12,6 +12,7 @@ export interface ClientBillingInfo {
   phone?: string;
   email?: string;
   website?: string;
+  gstin?: string;
 }
 
 export const usersTable = pgTable(

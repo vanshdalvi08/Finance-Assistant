@@ -115,6 +115,7 @@ export interface PreApprovalPartyInfoRecord {
   phone?: string;
   email?: string;
   website?: string;
+  gstin?: string;
 }
 
 export interface PreApprovalProjectInfoRecord {
@@ -128,6 +129,9 @@ export interface PreApprovalProjectInfoRecord {
   retainageAmount?: number;
   previouslyBilledAmount?: number;
   includeGst?: boolean;
+  placeOfSupply?: string;
+  sacCode?: string;
+  taxType?: "igst" | "cgst_sgst";
 }
 
 export interface CompanySettingsRecord extends PreApprovalPartyInfoRecord {
