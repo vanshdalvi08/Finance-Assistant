@@ -4,7 +4,7 @@ import { TrendingDown, TrendingUp } from "lucide-react";
 
 interface DashboardCardProps {
   label: string;
-  value: string;
+  value: React.ReactNode;
   trend?: number;
   trendLabel?: string;
   icon?: React.ReactNode;

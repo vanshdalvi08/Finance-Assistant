@@ -8,8 +8,23 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowDownRight, ArrowUpRight, IndianRupee, Wallet, Receipt } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, Eye, EyeOff, IndianRupee, Wallet, Receipt } from "lucide-react";
 import { format } from "date-fns";
+
+function maskDigits(value: string) {
+  const prefix = value.match(/^[^\d]*/)?.[0] ?? "";
+  const digitCount = (value.match(/\d/g) ?? []).length;
+  return prefix + "●".repeat(digitCount);
+}
+
+function MaskableAmount({ value, hidden }: { value: string; hidden: boolean }) {
+  if (!hidden) return <span>{value}</span>;
+  return (
+    <span aria-label="Amount hidden" className="tracking-wide">
+      <span aria-hidden="true">{maskDigits(value)}</span>
+    </span>
+  );
+}
 
 function formatK(value: number) {
   if (value >= 100_000) return `₹${(value / 100_000).toFixed(1).replace(/\.0$/, "")}L`;
@@ -175,6 +190,7 @@ export default function Dashboard() {
   const { data: overview } = useQuery({ queryKey: ["adminOverview"], queryFn: api.getAdminOverview });
   const { data: timesheets = [] } = useQuery({ queryKey: ["timesheets"], queryFn: () => api.getTimesheets() });
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
+  const [amountsVisible, setAmountsVisible] = useState(false);
   const [selectedPeriod, setSelectedPeriod] = useState("all");
   const [selectedBalanceView, setSelectedBalanceView] = useState("");
   const [workView, setWorkView] = useState<"weekly" | "daily">("weekly");
@@ -449,21 +465,33 @@ export default function Dashboard() {
             <h1 className="text-2xl font-bold tracking-tight">Overview</h1>
             <p className="text-muted-foreground text-sm mt-1">Your institutional financial summary.</p>
           </div>
-          <div className="w-full max-w-[220px] space-y-1">
-            <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Period</p>
-            <Select value={selectedPeriod} onValueChange={setSelectedPeriod}>
-              <SelectTrigger className="rounded-xl border-border/60 bg-card/70">
-                <SelectValue placeholder="Select period" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Time</SelectItem>
-                {monthOptions.map((month) => (
-                  <SelectItem key={month} value={month}>
-                    {formatMonthLabel(month)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <div className="flex items-end gap-3">
+            <button
+              type="button"
+              onClick={() => setAmountsVisible((visible) => !visible)}
+              title={amountsVisible ? "Hide amounts" : "Show amounts"}
+              aria-label={amountsVisible ? "Hide amounts" : "Show amounts"}
+              aria-pressed={amountsVisible}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-border/60 bg-card/70 text-muted-foreground shadow-sm backdrop-blur-sm transition-colors hover:bg-card hover:text-foreground hover:border-border"
+            >
+              {amountsVisible ? <Eye className="h-5 w-5" /> : <EyeOff className="h-5 w-5" />}
+            </button>
+            <div className="w-full max-w-[220px] space-y-1">
+              <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Period</p>
+              <Select value={selectedPeriod} onValueChange={setSelectedPeriod}>
+                <SelectTrigger className="rounded-xl border-border/60 bg-card/70">
+                  <SelectValue placeholder="Select period" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Time</SelectItem>
+                  {monthOptions.map((month) => (
+                    <SelectItem key={month} value={month}>
+                      {formatMonthLabel(month)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </div>
 
@@ -478,7 +506,10 @@ export default function Dashboard() {
                     <p className="text-sm font-medium text-muted-foreground">Available Funds</p>
                   </div>
                   <p className="text-3xl font-bold tracking-tight">
-                    {availableFunds.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
+                    <MaskableAmount
+                      hidden={!amountsVisible}
+                      value={availableFunds.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
+                    />
                   </p>
                   <Select value={selectedBalanceView} onValueChange={setSelectedBalanceView}>
                     <SelectTrigger className="h-8 w-[170px] rounded-full border-emerald-500/15 bg-emerald-500/6 px-3 text-xs">
@@ -502,21 +533,36 @@ export default function Dashboard() {
           </Card>
           <DashboardCard
             label={selectedMonth ? "Funds Added" : "Total Funds Added"}
-            value={totalFunds.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
+            value={
+              <MaskableAmount
+                hidden={!amountsVisible}
+                value={totalFunds.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
+              />
+            }
             trend={fundsTrend}
             trendLabel="vs last month"
             icon={<Wallet className="w-5 h-5" />}
           />
           <DashboardCard
             label={selectedMonth ? "Miscellaneous Expenditure" : "Miscellaneous Expenditure"}
-            value={totalExpenses.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
+            value={
+              <MaskableAmount
+                hidden={!amountsVisible}
+                value={totalExpenses.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
+              />
+            }
             trend={expensesTrend}
             trendLabel="vs last month"
             icon={<IndianRupee className="w-5 h-5" />}
           />
           <DashboardCard
             label={selectedMonth ? "Salary Paid" : "Total Salary Paid"}
-            value={totalSalaryPaid.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
+            value={
+              <MaskableAmount
+                hidden={!amountsVisible}
+                value={totalSalaryPaid.toLocaleString("en-IN", { style: "currency", currency: "INR" })}
+              />
+            }
             trend={salaryTrend}
             trendLabel="vs last month"
             icon={<IndianRupee className="w-5 h-5" />}
