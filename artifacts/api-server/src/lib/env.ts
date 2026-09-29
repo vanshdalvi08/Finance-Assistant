@@ -180,5 +180,6 @@ export function getSupabaseStorageConfig() {
       optionalEnv("SUPABASE_STORAGE_SALARY_SLIPS_BUCKET")
       ?? optionalEnv("SUPABASE_STORAGE_EXPENSE_ATTACHMENTS_BUCKET")
       ?? "yojak-expense-attachments",
+    resumesBucket: optionalEnv("SUPABASE_STORAGE_RESUMES_BUCKET") ?? "yojak-resumes",
   };
 }

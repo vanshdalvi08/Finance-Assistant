@@ -39,6 +39,7 @@ export const usersTable = pgTable(
     pfNumber: text("pf_number"),
     esiNumber: text("esi_number"),
     profilePhotoUrl: text("profile_photo_url"),
+    resumePath: text("resume_path"),
     clientInfo: jsonb("client_info").$type<ClientBillingInfo>().notNull().default({}),
     hashedPassword: text("hashed_password").notNull(),
     status: userStatusEnum("status").notNull().default("active"),

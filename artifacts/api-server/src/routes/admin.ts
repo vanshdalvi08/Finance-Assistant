@@ -16,6 +16,7 @@ import {
   updateAdminAccount,
   updateClientAccount,
   updateEmployeeAccount,
+  type PublicUser,
 } from "../lib/auth-service";
 import { createId, invalidateBusinessStoreCache, readStore, DAY_KEYS } from "../lib/business-store";
 import type { UserProfile } from "../lib/business-store";
@@ -24,6 +25,7 @@ import { exportDayToSheets, buildTaskDescriptionLookup } from "../integrations/g
 import { isGoogleSheetsEnabledForTenant } from "../integrations/googleSheets/sheets.service";
 import { notifyAdmins, notifyEmployee, notifyUsersByIds } from "../lib/notifications";
 import { hashSha256 } from "../lib/security";
+import { resolveResumeUrl } from "../lib/storage";
 import { logger } from "../lib/logger";
 import { recordPlatformEventSafe } from "../lib/platform";
 import { requireAuth, requireTenantRole } from "../middlewares/auth";
@@ -54,6 +56,7 @@ const createEmployeeSchema = z.object({
   pfNumber: z.string().trim().max(60).nullable().optional(),
   esiNumber: z.string().trim().max(60).nullable().optional(),
   profilePhotoUrl: z.string().trim().max(2_500_000).nullable().optional(),
+  resumePath: z.string().trim().max(500).nullable().optional(),
   department: z.string().trim().min(2).optional(),
   status: z.enum(["active", "inactive"]).optional(),
 });
@@ -294,6 +297,7 @@ function requestHashForEmployeeCreate(input: z.infer<typeof createEmployeeSchema
       pfNumber: input.pfNumber?.trim() ?? null,
       esiNumber: input.esiNumber?.trim() ?? null,
       profilePhotoUrl: input.profilePhotoUrl?.trim() ?? null,
+      resumePath: input.resumePath?.trim() ?? null,
       department: input.department?.trim() ?? null,
       status: input.status ?? "active",
     }),
@@ -347,6 +351,7 @@ function requestHashForEmployeeUpdate(input: z.infer<typeof updateEmployeeSchema
       pfNumber: input.pfNumber?.trim() ?? null,
       esiNumber: input.esiNumber?.trim() ?? null,
       profilePhotoUrl: input.profilePhotoUrl?.trim() ?? null,
+      resumePath: input.resumePath?.trim() ?? null,
       department: input.department?.trim() ?? null,
       status: input.status ?? "active",
     }),
@@ -461,6 +466,13 @@ async function clearAdminIdempotency(id: string) {
   await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, id));
 }
 
+async function withResumeUrl(user: PublicUser | null): Promise<(PublicUser & { resumeUrl?: string }) | null> {
+  if (!user) {
+    return null;
+  }
+  return { ...user, resumeUrl: await resolveResumeUrl(user.resumePath) };
+}
+
 async function findEmployeeById(tenantId?: string, userId?: string | null) {
   if (!tenantId || !userId) {
     return null;
@@ -496,7 +508,8 @@ router.use((request, response, next) => {
 
 router.get("/employees", async (request, response) => {
   const employees = await listEmployees(request.auth?.user.tenantId);
-  response.json({ employees });
+  const withResumeUrls = await Promise.all(employees.map(withResumeUrl));
+  response.json({ employees: withResumeUrls });
 });
 
 router.get("/admins", async (request, response) => {
@@ -607,7 +620,9 @@ router.post("/employees", async (request, response) => {
 
   if (idempotencyClaim && !idempotencyClaim.created) {
     if (idempotencyClaim.row.status === "completed") {
-      const user = await findEmployeeById(request.auth?.user.tenantId, idempotencyClaim.row.responseEntityId);
+      const user = await withResumeUrl(
+        await findEmployeeById(request.auth?.user.tenantId, idempotencyClaim.row.responseEntityId),
+      );
       response.status(200).json({
         user,
         employeeId: user?.employeeId ?? null,
@@ -681,7 +696,7 @@ router.post("/employees", async (request, response) => {
     }
     await recordEmployeeAudit(request, "created", result.user, null);
     response.status(201).json({
-      user: result.user,
+      user: await withResumeUrl(result.user),
       employeeId: result.user.employeeId,
       onboardingEmailSent: result.onboardingEmailSent,
       duplicate: false,
@@ -877,7 +892,9 @@ router.patch("/employees/:id", async (request, response) => {
 
   if (idempotencyClaim && !idempotencyClaim.created) {
     if (idempotencyClaim.row.status === "completed") {
-      const user = await findEmployeeById(request.auth?.user.tenantId, idempotencyClaim.row.responseEntityId);
+      const user = await withResumeUrl(
+        await findEmployeeById(request.auth?.user.tenantId, idempotencyClaim.row.responseEntityId),
+      );
       response.json({ user, duplicate: true });
       return;
     }
@@ -930,7 +947,7 @@ router.patch("/employees/:id", async (request, response) => {
     }
     await recordEmployeeAudit(request, "updated", result.user, before);
     response.json({
-      user: result.user,
+      user: await withResumeUrl(result.user),
       duplicate: false,
     });
   } catch (error) {

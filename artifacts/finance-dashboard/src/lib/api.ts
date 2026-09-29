@@ -33,6 +33,8 @@ export interface Employee {
   phone?: string;
   employeeId?: string;
   profilePhotoUrl?: string | null;
+  resumePath?: string | null;
+  resumeUrl?: string | null;
   role: string;
   department: string;
   salary: number;
@@ -500,6 +502,7 @@ interface AddEmployeeInput {
   phone?: string;
   employeeId?: string;
   profilePhotoUrl?: string | null;
+  resumePath?: string | null;
   role: string;
   department: string;
   salary: number;
@@ -985,6 +988,8 @@ function mapAuthUserToEmployee(user: AuthUser): Employee {
     phone: user.phone ?? "",
     employeeId: user.employeeId ?? undefined,
     profilePhotoUrl: user.profilePhotoUrl ?? null,
+    resumePath: user.resumePath ?? null,
+    resumeUrl: user.resumeUrl ?? null,
     role: user.position ?? "Employee",
     department: user.department ?? "General",
     salary: Number(user.salary ?? 0),
@@ -1567,6 +1572,9 @@ export const api = {
   uploadExpenseAttachment: async (file: File) =>
     uploadBinary<{ fileName: string; path: string; url: string }>("/uploads/expense-attachment", file),
 
+  uploadResume: async (file: File) =>
+    uploadBinary<{ fileName: string; path: string; url: string }>("/uploads/resume", file),
+
   getEmployees: async () => {
     const result = await listEmployeeAccounts();
     return result.employees
@@ -1766,6 +1774,7 @@ export const api = {
       pfNumber: input.pfNumber,
       esiNumber: input.esiNumber,
       profilePhotoUrl: input.profilePhotoUrl,
+      resumePath: input.resumePath,
       department: input.department,
       status: input.status === "Inactive" ? "inactive" : "active",
     });
@@ -1799,6 +1808,7 @@ export const api = {
         pfNumber: input.pfNumber,
         esiNumber: input.esiNumber,
         profilePhotoUrl: input.profilePhotoUrl ?? me.profilePhotoUrl,
+        resumePath: input.resumePath ?? me.resumePath,
       });
     }
 
@@ -1820,6 +1830,7 @@ export const api = {
       pfNumber: input.pfNumber,
       esiNumber: input.esiNumber,
       profilePhotoUrl: input.profilePhotoUrl,
+      resumePath: input.resumePath,
       department: input.department,
       status: input.status === "Inactive" ? "inactive" : "active",
     });

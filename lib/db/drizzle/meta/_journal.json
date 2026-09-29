@@ -309,6 +309,13 @@
       "when": 1782890542474,
       "tag": "0043_shiny_glorian",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1790412986403,
+      "tag": "0044_sad_sauron",
+      "breakpoints": true
     }
   ]
 }

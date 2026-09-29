@@ -22,12 +22,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
-import { Plus, Search, MoreHorizontal, Edit, Trash2, ImagePlus, X, LockKeyhole, ShieldCheck } from "lucide-react";
+import { Plus, Search, MoreHorizontal, Edit, Trash2, ImagePlus, X, LockKeyhole, ShieldCheck, FileText, Download } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { createEmployeeAccount, listEmployeeAccounts } from "@/auth/auth-service";
 import { EmployeeAvatar } from "@/components/employee-avatar";
-import { uploadProfilePhoto } from "@/lib/uploads";
+import { uploadProfilePhoto, uploadResume } from "@/lib/uploads";
 
 function formatCurrency(value: number) {
   return value.toLocaleString("en-IN", {
@@ -39,6 +39,7 @@ function formatCurrency(value: number) {
 
 type PayType = "monthly" | "hourly";
 const MAX_PROFILE_PHOTO_SIZE = 4 * 1024 * 1024;
+const MAX_RESUME_SIZE = 5 * 1024 * 1024;
 
 const employeeSchema = z
   .object({
@@ -84,9 +85,11 @@ type EmployeeRecord = z.infer<typeof employeeSchema> & {
   payType?: PayType;
   hourlyRate?: number;
   profilePhotoUrl?: string | null;
+  resumePath?: string | null;
+  resumeUrl?: string | null;
 };
 type EmployeeFormValues = z.infer<typeof employeeSchema>;
-type EmployeeMutationInput = EmployeeFormValues & { profilePhotoUrl?: string | null };
+type EmployeeMutationInput = EmployeeFormValues & { profilePhotoUrl?: string | null; resumePath?: string | null };
 
 const HOURS_PER_YEAR = 2080;
 const EMPLOYEES_SECTION_UNLOCK_KEY = "reforix:employees-section-unlocked";
@@ -102,6 +105,11 @@ export default function Employees() {
   const [profilePhotoName, setProfilePhotoName] = useState<string>("");
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const [photoInputKey, setPhotoInputKey] = useState(0);
+  const [resumePath, setResumePath] = useState<string | null>(null);
+  const [resumeUrl, setResumeUrl] = useState<string | null>(null);
+  const [resumeFileName, setResumeFileName] = useState<string>("");
+  const [isUploadingResume, setIsUploadingResume] = useState(false);
+  const [resumeInputKey, setResumeInputKey] = useState(0);
   const [isEmployeesUnlocked, setIsEmployeesUnlocked] = useState(
     () => sessionStorage.getItem(EMPLOYEES_SECTION_UNLOCK_KEY) === "true"
   );
@@ -180,6 +188,7 @@ export default function Employees() {
         pfNumber: payload.pfNumber || null,
         esiNumber: payload.esiNumber || null,
         profilePhotoUrl: payload.profilePhotoUrl ?? undefined,
+        resumePath: payload.resumePath ?? undefined,
         department: payload.department,
         status: payload.status === "Active" ? "active" : "inactive",
       });
@@ -254,6 +263,11 @@ export default function Employees() {
     setProfilePhotoName("");
     setIsUploadingPhoto(false);
     setPhotoInputKey((value) => value + 1);
+    setResumePath(null);
+    setResumeUrl(null);
+    setResumeFileName("");
+    setIsUploadingResume(false);
+    setResumeInputKey((value) => value + 1);
     form.reset({
       name: "",
       email: "",
@@ -281,6 +295,11 @@ export default function Employees() {
     setProfilePhotoName("");
     setIsUploadingPhoto(false);
     setPhotoInputKey((value) => value + 1);
+    setResumePath(null);
+    setResumeUrl(null);
+    setResumeFileName("");
+    setIsUploadingResume(false);
+    setResumeInputKey((value) => value + 1);
     form.reset({
       name: "",
       email: "",
@@ -309,6 +328,11 @@ export default function Employees() {
     setProfilePhotoName(employee.profilePhotoUrl ? "Uploaded profile photo" : "");
     setIsUploadingPhoto(false);
     setPhotoInputKey((value) => value + 1);
+    setResumePath(employee.resumePath ?? null);
+    setResumeUrl(employee.resumeUrl ?? null);
+    setResumeFileName(employee.resumePath ? "Uploaded resume" : "");
+    setIsUploadingResume(false);
+    setResumeInputKey((value) => value + 1);
     form.reset({
       name: employee.name,
       email: employee.email,
@@ -338,6 +362,7 @@ export default function Employees() {
       hourlyRate: isHourly ? Number(data.hourlyRate || 0) : 0,
       salary: isHourly ? Math.round(Number(data.hourlyRate || 0) * HOURS_PER_YEAR) : Number(data.salary || 0),
       profilePhotoUrl,
+      resumePath,
     };
 
     if (editingEmployeeId) {
@@ -397,6 +422,57 @@ export default function Employees() {
     setProfilePhotoUrl(null);
     setProfilePhotoName("");
     setPhotoInputKey((value) => value + 1);
+  }
+
+  async function handleResumeChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    if (file.type !== "application/pdf") {
+      toast({
+        title: "Invalid file",
+        description: "Please upload a PDF resume.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (file.size > MAX_RESUME_SIZE) {
+      toast({
+        title: "File too large",
+        description: "Please use a resume under 5 MB.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      setIsUploadingResume(true);
+      const uploaded = await uploadResume(file);
+      setResumePath(uploaded.path || null);
+      setResumeUrl(uploaded.url || null);
+      setResumeFileName(uploaded.fileName);
+    } catch (error) {
+      toast({
+        title: "Could not upload resume",
+        description: error instanceof Error ? error.message : "Please try another file.",
+        variant: "destructive",
+      });
+      setResumePath(null);
+      setResumeUrl(null);
+      setResumeFileName("");
+    } finally {
+      setIsUploadingResume(false);
+    }
+  }
+
+  function clearResume() {
+    setResumePath(null);
+    setResumeUrl(null);
+    setResumeFileName("");
+    setResumeInputKey((value) => value + 1);
   }
 
   const filteredEmployees = employees.filter(
@@ -555,6 +631,63 @@ export default function Employees() {
                             <div className="inline-flex items-center gap-2 rounded-xl border border-border/60 px-3 py-2 text-xs text-muted-foreground">
                               <ImagePlus className="h-4 w-4" />
                               {isUploadingPhoto ? "Uploading..." : "Upload photo"}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-border/60 bg-secondary/10 p-4">
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+                      <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg bg-secondary/40 text-muted-foreground">
+                        <FileText className="h-6 w-6" />
+                      </div>
+                      <div className="space-y-3">
+                        <div>
+                          <p className="text-sm font-medium text-foreground">Resume</p>
+                          <p className="text-xs text-muted-foreground">
+                            {isUploadingResume
+                              ? "Uploading to secure storage..."
+                              : resumeFileName
+                                ? `Stored securely in Supabase Storage as ${resumeFileName}.`
+                                : "Optional. Upload the employee's resume as a PDF."}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Input
+                            key={resumeInputKey}
+                            type="file"
+                            accept="application/pdf"
+                            className="max-w-[260px] cursor-pointer"
+                            onChange={(event) => void handleResumeChange(event)}
+                            disabled={isUploadingResume}
+                          />
+                          {resumePath ? (
+                            <>
+                              {resumeUrl ? (
+                                <Button type="button" variant="outline" size="sm" className="rounded-xl" asChild>
+                                  <a href={resumeUrl} target="_blank" rel="noreferrer">
+                                    <Download className="mr-2 h-4 w-4" />
+                                    View
+                                  </a>
+                                </Button>
+                              ) : null}
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="rounded-xl"
+                                onClick={clearResume}
+                                disabled={isUploadingResume}
+                              >
+                                <X className="mr-2 h-4 w-4" />
+                                Remove
+                              </Button>
+                            </>
+                          ) : (
+                            <div className="inline-flex items-center gap-2 rounded-xl border border-border/60 px-3 py-2 text-xs text-muted-foreground">
+                              <FileText className="h-4 w-4" />
+                              {isUploadingResume ? "Uploading..." : "Upload resume"}
                             </div>
                           )}
                         </div>
@@ -965,6 +1098,14 @@ export default function Employees() {
                           >
                             <Edit className="w-4 h-4 mr-2" /> Edit
                           </DropdownMenuItem>
+                          {employee.resumeUrl ? (
+                            <DropdownMenuItem
+                              className="cursor-pointer"
+                              onSelect={() => window.open(employee.resumeUrl!, "_blank", "noreferrer")}
+                            >
+                              <FileText className="w-4 h-4 mr-2" /> View Resume
+                            </DropdownMenuItem>
+                          ) : null}
                           <DropdownMenuItem
                             className="cursor-pointer text-destructive focus:text-destructive"
                             onSelect={() => setEmployeeToDelete(employee)}

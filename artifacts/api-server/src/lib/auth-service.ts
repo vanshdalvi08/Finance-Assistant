@@ -27,7 +27,7 @@ import { sendMail, type MailPayload } from "./mailer";
 import { clientPortalEmailTemplate, onboardingEmailTemplate, passwordResetEmailTemplate, tenantOwnerEmailTemplate } from "./email-templates";
 import { createWelcomeNotification } from "./notifications";
 import { logger } from "./logger";
-import { uploadProfilePhotoDataUrl } from "./storage";
+import { deleteResumeObject, uploadProfilePhotoDataUrl } from "./storage";
 import { authenticator } from "otplib";
 
 const MFA_ISSUER = optionalEnv("MFA_ISSUER_NAME")?.trim() || "Reforix Payroll";
@@ -70,6 +70,7 @@ export interface PublicUser {
   pfNumber: string | null;
   esiNumber: string | null;
   profilePhotoUrl: string | null;
+  resumePath: string | null;
   clientInfo: ClientBillingInfo;
   status: "active" | "inactive";
   mfaEnabled: boolean;
@@ -113,6 +114,7 @@ export interface CreateEmployeeInput {
   pfNumber?: string | null;
   esiNumber?: string | null;
   profilePhotoUrl?: string | null;
+  resumePath?: string | null;
   department?: string | null;
   status?: "active" | "inactive";
 }
@@ -136,6 +138,7 @@ export interface UpdateEmployeeInput {
   pfNumber?: string | null;
   esiNumber?: string | null;
   profilePhotoUrl?: string | null;
+  resumePath?: string | null;
   department?: string | null;
   status?: "active" | "inactive";
 }
@@ -244,6 +247,7 @@ function publicUser(user: User): PublicUser {
     pfNumber: user.pfNumber ?? null,
     esiNumber: user.esiNumber ?? null,
     profilePhotoUrl: user.profilePhotoUrl ?? null,
+    resumePath: user.resumePath ?? null,
     clientInfo: user.clientInfo ?? {},
     status: user.status,
     mfaEnabled: Boolean(user.mfaEnabled),
@@ -748,6 +752,7 @@ export async function createEmployeeAccount(input: CreateEmployeeInput): Promise
         pfNumber: input.pfNumber?.trim() || null,
         esiNumber: input.esiNumber?.trim() || null,
         profilePhotoUrl,
+        resumePath: input.resumePath?.trim() || null,
         hashedPassword,
         status: input.status ?? "active",
         createdAt: now,
@@ -1024,6 +1029,8 @@ export async function updateEmployeeAccount(input: UpdateEmployeeInput): Promise
   }
 
   let rows: User[];
+  const nextResumePath: string | null =
+    input.resumePath === undefined ? existing.resumePath : input.resumePath?.trim() || null;
   try {
     const profilePhotoUrl =
       input.profilePhotoUrl === undefined
@@ -1058,6 +1065,7 @@ export async function updateEmployeeAccount(input: UpdateEmployeeInput): Promise
         pfNumber: input.pfNumber === undefined ? existing.pfNumber : input.pfNumber?.trim() || null,
         esiNumber: input.esiNumber === undefined ? existing.esiNumber : input.esiNumber?.trim() || null,
         profilePhotoUrl,
+        resumePath: nextResumePath,
         status: input.status ?? "active",
         updatedAt: now,
       })
@@ -1074,6 +1082,10 @@ export async function updateEmployeeAccount(input: UpdateEmployeeInput): Promise
   const user = rows[0];
   if (!user) {
     throw new Error("Employee not found");
+  }
+
+  if (existing.resumePath && existing.resumePath !== nextResumePath) {
+    runAuthSideEffect(deleteResumeObject(existing.resumePath), "delete superseded employee resume");
   }
 
   return { user: publicUser(user) };
@@ -1147,6 +1159,10 @@ export async function deactivateEmployeeAccount(id: string, tenantId = DEFAULT_T
   const user = rows[0];
   if (!user) {
     throw new Error("Employee not found");
+  }
+
+  if (user.resumePath) {
+    runAuthSideEffect(deleteResumeObject(user.resumePath), "delete removed employee's resume");
   }
 
   return { user: publicUser(user) };

@@ -74,6 +74,7 @@ async function loadUser(userId: string): Promise<PublicUser | null> {
     pfNumber: user.pfNumber ?? null,
     esiNumber: user.esiNumber ?? null,
     profilePhotoUrl: user.profilePhotoUrl ?? null,
+    resumePath: user.resumePath ?? null,
     clientInfo: user.clientInfo ?? {},
     mfaEnabled: Boolean(user.mfaEnabled),
     status: user.status,

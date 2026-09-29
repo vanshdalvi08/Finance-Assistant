@@ -8,12 +8,13 @@ export interface UploadedAsset {
   size?: number;
 }
 
-type UploadKind = "profile-photo" | "expense-attachment" | "fund-receipt";
+type UploadKind = "profile-photo" | "expense-attachment" | "fund-receipt" | "resume";
 
 const DEFAULT_UPLOAD_PATHS: Record<UploadKind, string> = {
   "profile-photo": "/uploads/profile-photo",
   "expense-attachment": "/uploads/expense-attachment",
   "fund-receipt": "/uploads/fund-receipt",
+  resume: "/uploads/resume",
 };
 
 function toUploadPath(kind: UploadKind) {
@@ -22,7 +23,9 @@ function toUploadPath(kind: UploadKind) {
       ? "VITE_UPLOAD_PROFILE_PHOTO_PATH"
       : kind === "expense-attachment"
         ? "VITE_UPLOAD_EXPENSE_ATTACHMENT_PATH"
-        : "VITE_UPLOAD_FUND_RECEIPT_PATH";
+        : kind === "fund-receipt"
+          ? "VITE_UPLOAD_FUND_RECEIPT_PATH"
+          : "VITE_UPLOAD_RESUME_PATH";
   const env = import.meta.env as Record<string, string | undefined>;
   return env[key]?.trim() || DEFAULT_UPLOAD_PATHS[kind];
 }
@@ -91,4 +94,8 @@ export async function uploadExpenseAttachment(file: File): Promise<UploadedAsset
 
 export async function uploadFundReceipt(file: File): Promise<UploadedAsset> {
   return uploadFile("fund-receipt", file);
+}
+
+export async function uploadResume(file: File): Promise<UploadedAsset> {
+  return uploadFile("resume", file);
 }

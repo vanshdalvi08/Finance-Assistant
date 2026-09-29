@@ -138,6 +138,33 @@ async function uploadObject(
   }
 }
 
+async function deleteObject(bucket: string, objectPath: string) {
+  const config = requireStorageConfig();
+  const response = await fetch(
+    `${config.url}/storage/v1/object/${encodeURIComponent(bucket)}/${encodeObjectPath(objectPath)}`,
+    {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${config.serviceRoleKey}`,
+        apikey: config.serviceRoleKey,
+      },
+    },
+  );
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Supabase Storage delete failed (${response.status}): ${detail || "Unknown error"}`);
+  }
+}
+
+export async function deleteResumeObject(objectPath: string) {
+  const config = getSupabaseStorageConfig();
+  if (!config) {
+    return;
+  }
+  await deleteObject(config.resumesBucket, objectPath);
+}
+
 function publicObjectUrl(bucket: string, objectPath: string) {
   const config = requireStorageConfig();
   return `${config.url}/storage/v1/object/public/${encodeURIComponent(bucket)}/${encodeObjectPath(objectPath)}`;
@@ -250,6 +277,23 @@ export async function uploadFundReceipt(input: {
   };
 }
 
+export async function uploadResume(input: {
+  fileName: string;
+  contentType: string;
+  body: Uint8Array;
+  actorId: string;
+}) : Promise<UploadedFileRef> {
+  const config = requireStorageConfig();
+  const objectPath = buildObjectPath(`resumes/${input.actorId}`, input.fileName);
+  await uploadObject(config.resumesBucket, objectPath, input.body, input.contentType);
+
+  return {
+    fileName: sanitizeFileName(input.fileName),
+    path: objectPath,
+    url: await signedObjectUrl(config.resumesBucket, objectPath),
+  };
+}
+
 export async function uploadSalarySlip(input: {
   fileName: string;
   body: Uint8Array;
@@ -308,6 +352,23 @@ export async function resolveFundReceiptUrl(objectPath?: string | null) {
 
   try {
     return await signedObjectUrl(config.fundReceiptsBucket, objectPath);
+  } catch {
+    return undefined;
+  }
+}
+
+export async function resolveResumeUrl(objectPath?: string | null) {
+  if (!objectPath) {
+    return undefined;
+  }
+
+  const config = getSupabaseStorageConfig();
+  if (!config) {
+    return undefined;
+  }
+
+  try {
+    return await signedObjectUrl(config.resumesBucket, objectPath);
   } catch {
     return undefined;
   }

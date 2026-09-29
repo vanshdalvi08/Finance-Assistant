@@ -22,6 +22,8 @@ export interface AuthUser {
   pfNumber?: string | null;
   esiNumber?: string | null;
   profilePhotoUrl?: string | null;
+  resumePath?: string | null;
+  resumeUrl?: string | null;
   clientInfo?: {
     companyName?: string;
     address?: string;
@@ -93,6 +95,7 @@ export interface CreateEmployeeAccountPayload {
   pfNumber?: string | null;
   esiNumber?: string | null;
   profilePhotoUrl?: string | null;
+  resumePath?: string | null;
   department?: string;
   status?: "active" | "inactive";
 }
@@ -128,6 +131,7 @@ export interface UpdateEmployeeAccountPayload {
   pfNumber?: string | null;
   esiNumber?: string | null;
   profilePhotoUrl?: string | null;
+  resumePath?: string | null;
   department?: string;
   status?: "active" | "inactive";
 }
