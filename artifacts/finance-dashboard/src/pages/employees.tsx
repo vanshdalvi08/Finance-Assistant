@@ -1,4 +1,4 @@
-import { useEffect, useState, type ChangeEvent } from "react";
+import { Fragment, useEffect, useState, type ChangeEvent, type MouseEvent, type ReactNode } from "react";
 import { DashboardLayout } from "@/components/layout/dashboard-layout";
 import { api } from "@/lib/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -22,7 +22,19 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
-import { Plus, Search, MoreHorizontal, Edit, Trash2, ImagePlus, X, LockKeyhole, ShieldCheck, FileText, Download } from "lucide-react";
+import {
+  Plus,
+  Search,
+  MoreHorizontal,
+  Edit,
+  Trash2,
+  ImagePlus,
+  X,
+  LockKeyhole,
+  ShieldCheck,
+  FileText,
+  Download,
+} from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { createEmployeeAccount, listEmployeeAccounts } from "@/auth/auth-service";
@@ -40,6 +52,8 @@ function formatCurrency(value: number) {
 type PayType = "monthly" | "hourly";
 const MAX_PROFILE_PHOTO_SIZE = 4 * 1024 * 1024;
 const MAX_RESUME_SIZE = 5 * 1024 * 1024;
+// Resume URLs are signed server-side for 1 hour; refresh before using any older than this.
+const RESUME_LINK_MAX_AGE_MS = 50 * 60 * 1000;
 
 const employeeSchema = z
   .object({
@@ -96,11 +110,104 @@ const EMPLOYEES_SECTION_UNLOCK_KEY = "reforix:employees-section-unlocked";
 const EMPLOYEES_SECTION_PASSCODE = "1234";
 const EMPLOYEES_SECTION_PASSCODE_LENGTH = 4;
 
+function formatJoiningDate(value?: string | null) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+}
+
+function maskAccountNumber(value?: string | null) {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  if (trimmed.length <= 4) return trimmed;
+  return `•••• ${trimmed.slice(-4)}`;
+}
+
+function DetailColumn({ title, lead, children }: { title: string; lead?: ReactNode; children: ReactNode }) {
+  return (
+    <section className="min-w-0 xl:px-7 xl:first:pl-0 xl:last:pr-0">
+      <h4 className="mb-5 text-[15px] font-semibold tracking-tight text-foreground">{title}</h4>
+      {lead}
+      <dl className="space-y-4">{children}</dl>
+    </section>
+  );
+}
+
+function DetailField({ label, value }: { label: string; value?: ReactNode }) {
+  const isEmpty = value === null || value === undefined || value === "";
+  return (
+    <div className="min-w-0">
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd
+        className={`mt-1 truncate text-sm tabular-nums ${
+          isEmpty ? "text-muted-foreground/50" : "font-medium text-foreground"
+        }`}
+        title={typeof value === "string" ? value : undefined}
+      >
+        {isEmpty ? "Not added" : value}
+      </dd>
+    </div>
+  );
+}
+
+function EmployeeDetailsPanel({ employee }: { employee: EmployeeRecord }) {
+  const isHourly = employee.payType === "hourly";
+  const hourlyRate = employee.hourlyRate ?? 0;
+  const annual = isHourly ? Math.round(hourlyRate * HOURS_PER_YEAR) : employee.salary;
+  const headlineAmount = isHourly ? hourlyRate : Math.round(annual / 12);
+
+  return (
+    <div className="animate-in fade-in slide-in-from-top-1 duration-200 border-t border-border/30 bg-gradient-to-b from-secondary/[0.12] to-transparent px-6 py-6 sm:px-8">
+      <div className="grid gap-x-10 gap-y-8 sm:grid-cols-2 xl:grid-cols-4 xl:gap-0 xl:divide-x xl:divide-border/40">
+        <DetailColumn title="Contact">
+          <DetailField label="Email" value={employee.email} />
+          <DetailField label="Phone" value={employee.phone} />
+          <DetailField label="Employee ID" value={employee.employeeId} />
+          <DetailField label="Joined" value={formatJoiningDate(employee.joiningDate)} />
+        </DetailColumn>
+
+        <DetailColumn
+          title="Compensation"
+          lead={
+            <div className="mb-5">
+              <p className="flex items-baseline gap-1.5">
+                <span className="text-[28px] font-bold leading-none tracking-tight tabular-nums text-foreground">
+                  {formatCurrency(headlineAmount)}
+                </span>
+                <span className="text-sm text-muted-foreground">{isHourly ? "per hour" : "per month"}</span>
+              </p>
+              <p className="mt-2 text-xs tabular-nums text-muted-foreground">{formatCurrency(annual)} a year</p>
+            </div>
+          }
+        >
+          <DetailField label="Pay type" value={isHourly ? "Hourly" : "Monthly"} />
+          <DetailField label="Department" value={employee.department} />
+        </DetailColumn>
+
+        <DetailColumn title="Banking">
+          <DetailField label="Bank" value={employee.bankName} />
+          <DetailField label="Account" value={maskAccountNumber(employee.bankAccountNumber)} />
+          <DetailField label="IFSC" value={employee.ifscCode} />
+          <DetailField label="Branch" value={employee.bankBranch} />
+        </DetailColumn>
+
+        <DetailColumn title="Statutory">
+          <DetailField label="UAN" value={employee.uan} />
+          <DetailField label="PF number" value={employee.pfNumber} />
+          <DetailField label="ESI number" value={employee.esiNumber} />
+        </DetailColumn>
+      </div>
+    </div>
+  );
+}
+
 export default function Employees() {
   const [search, setSearch] = useState("");
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingEmployeeId, setEditingEmployeeId] = useState<string | null>(null);
   const [employeeToDelete, setEmployeeToDelete] = useState<EmployeeRecord | null>(null);
+  const [expandedEmployeeId, setExpandedEmployeeId] = useState<string | null>(null);
   const [profilePhotoUrl, setProfilePhotoUrl] = useState<string | null>(null);
   const [profilePhotoName, setProfilePhotoName] = useState<string>("");
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
@@ -118,7 +225,12 @@ export default function Employees() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const { data: employeeData = [], isLoading } = useQuery({
+  const {
+    data: employeeData = [],
+    isLoading,
+    dataUpdatedAt: employeesUpdatedAt,
+    refetch: refetchEmployees,
+  } = useQuery({
     queryKey: ["employees"],
     queryFn: async () => {
       try {
@@ -130,6 +242,35 @@ export default function Employees() {
     },
   });
   const employees = employeeData as EmployeeRecord[];
+
+  async function openEmployeeResume(event: MouseEvent<HTMLAnchorElement>, employeeId: string) {
+    if (Date.now() - employeesUpdatedAt < RESUME_LINK_MAX_AGE_MS) {
+      return;
+    }
+
+    // Opened synchronously so the new tab counts as user-initiated and isn't popup-blocked after the await.
+    event.preventDefault();
+    const tab = window.open("", "_blank");
+    const result = await refetchEmployees();
+    const freshUrl = result.isError
+      ? undefined
+      : (result.data as EmployeeRecord[] | undefined)?.find((item) => item.id === employeeId)?.resumeUrl;
+
+    if (freshUrl && tab) {
+      tab.opener = null;
+      tab.location.href = freshUrl;
+      return;
+    }
+
+    tab?.close();
+    toast({
+      title: freshUrl ? "Resume link refreshed" : "Resume unavailable",
+      description: freshUrl
+        ? "Your browser blocked the new tab. Click Resume again to open it."
+        : "Couldn't get a fresh link to this resume. Please try again.",
+      variant: freshUrl ? "default" : "destructive",
+    });
+  }
 
   const form = useForm<EmployeeFormValues>({
     resolver: zodResolver(employeeSchema),
@@ -239,11 +380,12 @@ export default function Employees() {
 
   const deleteMutation = useMutation({
     mutationFn: api.deleteEmployee,
-    onSuccess: () => {
+    onSuccess: (_result, deletedId) => {
       void Promise.all([
         queryClient.invalidateQueries({ queryKey: ["employees"] }),
         queryClient.invalidateQueries({ queryKey: ["adminOverview"] }),
       ]);
+      setExpandedEmployeeId((current) => (current === deletedId ? null : current));
       setEmployeeToDelete(null);
       toast({ title: "Employee deleted successfully" });
     },
@@ -666,7 +808,17 @@ export default function Employees() {
                             <>
                               {resumeUrl ? (
                                 <Button type="button" variant="outline" size="sm" className="rounded-xl" asChild>
-                                  <a href={resumeUrl} target="_blank" rel="noreferrer">
+                                  <a
+                                    href={resumeUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={(event) => {
+                                      const savedPath = employees.find((item) => item.id === editingEmployeeId)?.resumePath;
+                                      if (editingEmployeeId && savedPath && savedPath === resumePath) {
+                                        void openEmployeeResume(event, editingEmployeeId);
+                                      }
+                                    }}
+                                  >
                                     <Download className="mr-2 h-4 w-4" />
                                     View
                                   </a>
@@ -1012,7 +1164,7 @@ export default function Employees() {
                 <TableHead>Department</TableHead>
                 <TableHead>Pay</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead className="w-[50px]" />
+                <TableHead className="w-[140px]" />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -1029,94 +1181,143 @@ export default function Employees() {
                   </TableCell>
                 </TableRow>
               ) : (
-                filteredEmployees.map((employee) => (
-                  <TableRow
-                    key={employee.id}
-                    className="border-border/50 hover:bg-secondary/10 transition-colors"
-                  >
-                    <TableCell>
-                      <div className="flex items-center gap-3">
-                        <EmployeeAvatar
-                          name={employee.name}
-                          src={employee.profilePhotoUrl}
-                          className="h-9 w-9"
-                        />
-                        <div className="leading-tight">
-                          <p className="font-medium text-sm text-foreground">{employee.name}</p>
-                          <p className="text-xs text-muted-foreground mt-0.5">{employee.email}</p>
-                          {employee.employeeId ? (
-                            <p className="text-[11px] text-muted-foreground/80 mt-1">{employee.employeeId}</p>
-                          ) : null}
-                        </div>
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-muted-foreground text-sm">
-                      {employee.role}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className="font-normal text-xs">
-                        {employee.department}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <div className="space-y-1">
-                        <Badge variant="outline" className="font-normal text-xs">
-                          {getPayLabel(employee)}
-                        </Badge>
-                        <p className="text-sm font-medium tabular-nums">
-                          {getPaySummary(employee)}
-                        </p>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-1.5">
-                        <span
-                          className={`w-1.5 h-1.5 rounded-full ${
-                            employee.status === "Active" ? "bg-emerald-400" : "bg-muted-foreground/40"
-                          }`}
-                        />
-                        <span
-                          className={`text-xs font-medium ${
-                            employee.status === "Active" ? "text-emerald-400" : "text-muted-foreground"
-                          }`}
-                        >
-                          {employee.status}
-                        </span>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" className="h-8 w-8">
-                            <MoreHorizontal className="w-4 h-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            className="cursor-pointer"
-                            onSelect={() => openEditDialog(employee)}
-                          >
-                            <Edit className="w-4 h-4 mr-2" /> Edit
-                          </DropdownMenuItem>
-                          {employee.resumeUrl ? (
-                            <DropdownMenuItem
-                              className="cursor-pointer"
-                              onSelect={() => window.open(employee.resumeUrl!, "_blank", "noreferrer")}
+                filteredEmployees.map((employee) => {
+                  const isExpanded = expandedEmployeeId === employee.id;
+                  const toggleExpanded = () => setExpandedEmployeeId(isExpanded ? null : employee.id);
+                  return (
+                    <Fragment key={employee.id}>
+                      <TableRow
+                        className={`cursor-pointer border-border/50 outline-none transition-colors hover:bg-secondary/10 focus-visible:bg-secondary/15 ${
+                          isExpanded ? "bg-secondary/10 border-b-0" : ""
+                        }`}
+                        onClick={() => {
+                          if (window.getSelection()?.toString()) return;
+                          toggleExpanded();
+                        }}
+                        aria-expanded={isExpanded}
+                        onKeyDown={(event) => {
+                          if (event.target !== event.currentTarget) return;
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            toggleExpanded();
+                          }
+                        }}
+                        tabIndex={0}
+                        title={isExpanded ? "Hide details" : "Show details"}
+                      >
+                        <TableCell>
+                          <div className="flex items-center gap-3">
+                            <EmployeeAvatar
+                              name={employee.name}
+                              src={employee.profilePhotoUrl}
+                              className="h-9 w-9"
+                            />
+                            <div className="leading-tight">
+                              <p className="font-medium text-sm text-foreground">{employee.name}</p>
+                              <p className="text-xs text-muted-foreground mt-0.5">{employee.email}</p>
+                              {employee.employeeId ? (
+                                <p className="text-[11px] text-muted-foreground/80 mt-1">{employee.employeeId}</p>
+                              ) : null}
+                            </div>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-sm">
+                          {employee.role}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="outline" className="font-normal text-xs">
+                            {employee.department}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <div className="space-y-1">
+                            <Badge variant="outline" className="font-normal text-xs">
+                              {getPayLabel(employee)}
+                            </Badge>
+                            <p className="text-sm font-medium tabular-nums">
+                              {getPaySummary(employee)}
+                            </p>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`w-1.5 h-1.5 rounded-full ${
+                                employee.status === "Active" ? "bg-emerald-400" : "bg-muted-foreground/40"
+                              }`}
+                            />
+                            <span
+                              className={`text-xs font-medium ${
+                                employee.status === "Active" ? "text-emerald-400" : "text-muted-foreground"
+                              }`}
                             >
-                              <FileText className="w-4 h-4 mr-2" /> View Resume
-                            </DropdownMenuItem>
-                          ) : null}
-                          <DropdownMenuItem
-                            className="cursor-pointer text-destructive focus:text-destructive"
-                            onSelect={() => setEmployeeToDelete(employee)}
-                          >
-                            <Trash2 className="w-4 h-4 mr-2" /> Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </TableCell>
-                  </TableRow>
-                ))
+                              {employee.status}
+                            </span>
+                          </div>
+                        </TableCell>
+                        <TableCell onClick={(event) => event.stopPropagation()} className="cursor-default">
+                          <div className="flex items-center justify-end gap-1.5">
+                            {employee.resumeUrl ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-8 rounded-lg border-border/60 px-2.5 text-xs font-medium"
+                                asChild
+                              >
+                                <a
+                                  href={employee.resumeUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  aria-label={`View ${employee.name}'s resume`}
+                                  onClick={(event) => void openEmployeeResume(event, employee.id)}
+                                >
+                                  <FileText className="mr-1.5 h-3.5 w-3.5" />
+                                  Resume
+                                </a>
+                              </Button>
+                            ) : (
+                              <span
+                                className="inline-flex h-8 items-center rounded-lg border border-dashed border-border/40 px-2.5 text-xs text-muted-foreground/50"
+                                title="No resume uploaded"
+                              >
+                                <FileText className="mr-1.5 h-3.5 w-3.5" />
+                                Resume
+                              </span>
+                            )}
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Actions for ${employee.name}`}>
+                                  <MoreHorizontal className="w-4 h-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem
+                                  className="cursor-pointer"
+                                  onSelect={() => openEditDialog(employee)}
+                                >
+                                  <Edit className="w-4 h-4 mr-2" /> Edit
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  className="cursor-pointer text-destructive focus:text-destructive"
+                                  onSelect={() => setEmployeeToDelete(employee)}
+                                >
+                                  <Trash2 className="w-4 h-4 mr-2" /> Delete
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                      {isExpanded ? (
+                        <TableRow className="border-border/50 hover:bg-transparent">
+                          <TableCell colSpan={6} className="p-0">
+                            <EmployeeDetailsPanel employee={employee} />
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
+                    </Fragment>
+                  );
+                })
               )}
             </TableBody>
           </Table>
