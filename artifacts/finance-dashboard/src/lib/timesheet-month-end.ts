@@ -42,6 +42,26 @@ export function locksWithMonthEnd(
   };
 }
 
+// The week isn't approved yet, but its month-end block is (so that block is being paid).
+export function isMonthEndOnlyApproved(entry: Pick<TimesheetEntry, "status" | "partialSubmission">) {
+  return entry.status !== "approved" && entry.partialSubmission?.status === "approved";
+}
+
+// Mirrors the server's payable view: an approved month-end-only week counts just its month-end days.
+export function payableTimesheetView(entry: TimesheetEntry): TimesheetEntry {
+  if (!isMonthEndOnlyApproved(entry) || !entry.partialSubmission) return entry;
+  const payableDays = new Set(dayKeysThrough(entry.weekStart, entry.partialSubmission.throughDate));
+  return {
+    ...entry,
+    lines: entry.lines.map((line) => ({
+      ...line,
+      hours: Object.fromEntries(
+        WEEK_DAYS.map((day) => [day, payableDays.has(day) ? Number(line.hours[day] ?? 0) : 0]),
+      ) as typeof line.hours,
+    })),
+  };
+}
+
 export function formatMonthEndDate(isoDate: string) {
   return new Date(`${isoDate}T00:00:00Z`).toLocaleDateString("en-IN", { day: "numeric", month: "short", timeZone: "UTC" });
 }

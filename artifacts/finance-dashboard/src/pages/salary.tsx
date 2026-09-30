@@ -20,6 +20,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { SalarySlipDialog } from "@/components/salary-slip-dialog";
 import type { SalarySlipDraft } from "@/lib/api";
+import { formatMonthEndRange, isMonthEndOnlyApproved, payableTimesheetView } from "@/lib/timesheet-month-end";
 
 type PayrollStatus = "pending" | "paid";
 type SalaryEntryMode = "pending_record" | "historical_paid";
@@ -368,7 +369,14 @@ export default function Salary() {
           approvedTimesheets: group.employeeId
             ? timesheetEntries
                 .filter((timesheet) => {
-                  if (!(timesheet.employeeId === group.employeeId && timesheet.status === "approved")) return false;
+                  if (timesheet.employeeId !== group.employeeId) return false;
+                  if (isMonthEndOnlyApproved(timesheet)) {
+                    // Only the approved month-end days are paid, so it belongs to that month's group alone,
+                    // and (like full weeks) hourly groups only list it while its salary is still pending.
+                    const inGroupMonth = timesheet.partialSubmission!.throughDate.slice(0, 7) === group.monthKey;
+                    return inGroupMonth && (isMonthlyGroup || pendingTimesheetIds.has(timesheet.id));
+                  }
+                  if (timesheet.status !== "approved") return false;
                   if (pendingTimesheetIds.has(timesheet.id)) return true;
                   if (isMonthlyGroup) {
                     // Include any timesheet whose week overlaps with the group's month
@@ -1011,14 +1019,17 @@ export default function Salary() {
                           : group.records.length;
                         const worklogEntries: PayrollWorklogEntry[] =
                           group.approvedTimesheets.length > 0
-                            ? group.approvedTimesheets.map((timesheet) => ({
-                                key: timesheet.id,
-                                source: "timesheet",
-                                weekStart: timesheet.weekStart,
-                                date: timesheet.weekStart,
-                                hours: timesheetTotalHours(timesheet),
-                                timesheet,
-                              }))
+                            ? group.approvedTimesheets.map((timesheet) => {
+                                const payable = payableTimesheetView(timesheet);
+                                return {
+                                  key: timesheet.id,
+                                  source: "timesheet",
+                                  weekStart: timesheet.weekStart,
+                                  date: timesheet.weekStart,
+                                  hours: timesheetTotalHours(payable),
+                                  timesheet: payable,
+                                };
+                              })
                             : group.records.map((record) => ({
                                 key: record.id,
                                 source: record.source ?? "manual",
@@ -1340,9 +1351,18 @@ export default function Salary() {
                                                         }}
                                                       />
                                                       <div className="flex-1 text-sm">
-                                                        <span className="font-medium">
-                                                          Week of {format(new Date(timesheet.weekStart), "dd MMM yyyy")}
-                                                        </span>
+                                                        {isMonthEndOnlyApproved(timesheet) && timesheet.partialSubmission ? (
+                                                          <>
+                                                            <span className="font-medium">
+                                                              {formatMonthEndRange(timesheet.weekStart, timesheet.partialSubmission.throughDate)}
+                                                            </span>
+                                                            <span className="ml-1.5 text-muted-foreground">month-end days</span>
+                                                          </>
+                                                        ) : (
+                                                          <span className="font-medium">
+                                                            Week of {format(new Date(timesheet.weekStart), "dd MMM yyyy")}
+                                                          </span>
+                                                        )}
                                                       </div>
                                                     </label>
                                                   ))}

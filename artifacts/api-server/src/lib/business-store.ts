@@ -2641,9 +2641,10 @@ async function persistTargetedTimesheetUnsafe(input: {
   deleteTimesheetId?: string | null;
   salary?: SalaryRecord | null;
   deleteSalaryId?: string | null;
+  deleteSalaryIds?: string[];
   auditEntry?: AuditTrailEntry | null;
 }): Promise<void> {
-  const { currentStore, nextStore, entry, deleteTimesheetId, salary, deleteSalaryId, auditEntry } = input;
+  const { currentStore, nextStore, entry, deleteTimesheetId, salary, deleteSalaryId, deleteSalaryIds, auditEntry } = input;
   const projectTasks = nextStore.projectBudgets.flatMap((budget) => budget.tasks ?? []);
   const validProjectIds = new Set(nextStore.projectBudgets.map((budget) => budget.id));
   const validTaskIds = new Set(projectTasks.map((task) => task.id));
@@ -2689,6 +2690,10 @@ async function persistTargetedTimesheetUnsafe(input: {
 
     if (deleteSalaryId) {
       await tx.delete(salariesTable).where(eq(salariesTable.id, deleteSalaryId));
+    }
+
+    if (deleteSalaryIds && deleteSalaryIds.length > 0) {
+      await tx.delete(salariesTable).where(inArray(salariesTable.id, deleteSalaryIds));
     }
 
     if (auditEntry) {
@@ -3733,7 +3738,7 @@ export async function recallTimesheetForCorrection(input: {
   tenantId: string;
   actorName: string;
   requestId?: string;
-}): Promise<{ timesheet: TimesheetEntry }> {
+}): Promise<{ timesheet: TimesheetEntry; scope: "week" | "month_end" }> {
   await ensureSchema();
   return withStoreWriteLock(async () => {
     storeReadPromise = null;
@@ -3743,87 +3748,98 @@ export async function recallTimesheetForCorrection(input: {
     if (!existing) {
       throw new Error("Timesheet not found");
     }
-    if (existing.status !== "approved") {
-      throw new Error("Only approved timesheets can be recalled for correction");
+
+    // An approved week is recalled as a whole; otherwise an approved month-end block
+    // (e.g. 28–30 Sep of a week still open for October) can be recalled on its own.
+    const scope: "week" | "month_end" | null =
+      existing.status === "approved"
+        ? "week"
+        : existing.partialSubmission?.status === "approved"
+          ? "month_end"
+          : null;
+    if (!scope) {
+      throw new Error("Only approved timesheets or approved month-end days can be recalled for correction");
     }
 
-    // Determine which calendar months this timesheet spans
+    // Calendar months whose pay comes from the part being recalled.
+    const payableBeforeRecall = payableTimesheetView(existing);
     const affectedMonthKeys = new Set(
-      timesheetMonthBreakdowns(existing).map((b) => b.monthKey),
+      (payableBeforeRecall ? timesheetMonthBreakdowns(payableBeforeRecall) : []).map((b) => b.monthKey),
     );
-    affectedMonthKeys.add(payrollMonthKey(existing.weekStart));
+    if (scope === "week") {
+      affectedMonthKeys.add(payrollMonthKey(existing.weekStart));
+    }
 
-    // Safety: block recall if any linked salary has been paid
-    const hasPaidSalary = current.salaries.some((s) => {
-      if ((s.tenantId ?? DEFAULT_TENANT_ID) !== input.tenantId) return false;
-      if (s.employeeId !== existing.employeeId) return false;
-      if (s.source !== "timesheet") return false;
-      if (s.status !== "paid") return false;
-      // Hourly: salary.timesheetId starts with the timesheet id
-      if (s.rate != null) {
-        return s.timesheetId === existing.id || s.timesheetId?.startsWith(existing.id + ":");
-      }
-      // Monthly: salary covers the same month
-      return affectedMonthKeys.has(payrollMonthKey(s.weekStart ?? s.date));
-    });
-    if (hasPaidSalary) {
-      throw new Error("Cannot recall a timesheet whose salary has already been paid");
+    const isLinkedHourlySalary = (s: SalaryRecord) =>
+      s.rate != null && (s.timesheetId === existing.id || Boolean(s.timesheetId?.startsWith(existing.id + ":")));
+    const salaryMonth = (s: SalaryRecord) =>
+      s.timesheetId?.match(/:(\d{4}-\d{2})$/)?.[1] ?? payrollMonthKey(s.weekStart ?? s.date);
+    const isAffectedSalary = (s: SalaryRecord) =>
+      (s.tenantId ?? DEFAULT_TENANT_ID) === input.tenantId &&
+      s.employeeId === existing.employeeId &&
+      s.source === "timesheet" &&
+      affectedMonthKeys.has(salaryMonth(s)) &&
+      (s.rate != null ? isLinkedHourlySalary(s) : true);
+
+    // Safety: block recall if any affected salary has been paid
+    if (current.salaries.some((s) => isAffectedSalary(s) && s.status === "paid")) {
+      throw new Error(
+        scope === "week"
+          ? "Cannot recall a timesheet whose salary has already been paid"
+          : "Cannot recall these month-end days because their salary has already been paid",
+      );
     }
 
     const now = nowIso();
     const recalledEntry = normalizeStore({
-      timesheets: [{
-        ...existing,
-        status: "submitted",
-        updatedAt: now,
-      }],
+      timesheets: [
+        scope === "week"
+          ? {
+              ...existing,
+              status: "submitted" as const,
+              // A month-end block inside the week goes back under review with the rest of the week.
+              partialSubmission: undefined,
+              updatedAt: now,
+            }
+          : {
+              ...existing,
+              partialSubmission: {
+                ...existing.partialSubmission!,
+                status: "submitted" as const,
+                reviewedAt: undefined,
+                reviewedBy: undefined,
+                reviewNotes: undefined,
+              },
+              updatedAt: now,
+            },
+      ],
     }).timesheets[0]!;
 
-    // Hourly: delete the specific pending salary record tied to this timesheet.
-    const pendingHourlySalaryId = current.salaries.find(
-      (s) =>
-        (s.tenantId ?? DEFAULT_TENANT_ID) === input.tenantId &&
-        s.employeeId === existing.employeeId &&
-        s.source === "timesheet" &&
-        s.rate != null &&
-        s.status === "pending" &&
-        (s.timesheetId === existing.id || s.timesheetId?.startsWith(existing.id + ":")),
-    )?.id ?? null;
+    // Hourly: delete every pending salary record tied to the recalled part (one per calendar month).
+    const deleteSalaryIds = current.salaries
+      .filter((s) => isAffectedSalary(s) && s.rate != null && s.status === "pending")
+      .map((s) => s.id);
 
-    // Monthly: if this is the LAST approved timesheet for an affected month (after this recall),
-    // delete the monthly salary record. The reconciler only processes months that still have
-    // approved timesheets, so without this cleanup the record would linger with the old amount.
-    let pendingMonthlySalaryId: string | null = null;
+    // Monthly: if nothing still payable covers an affected month after this recall, delete that
+    // month's pending salary. The reconciler only processes months that still have payable
+    // timesheets, so without this cleanup the record would linger with the old amount.
     for (const monthKey of affectedMonthKeys) {
-      // Counts the recalled week's own approved month-end block, which stays payable after recall.
-      const hasOtherApprovedForMonth = current.timesheets.some((t) => {
+      const stillCovered = current.timesheets.some((t) => {
         if (t.employeeId !== existing.employeeId) return false;
         const payable = payableTimesheetView(t.id === existing.id ? recalledEntry : t);
         return payable ? timesheetMonthBreakdowns(payable).some((b) => b.monthKey === monthKey) : false;
       });
-      if (!hasOtherApprovedForMonth) {
-        const orphan = current.salaries.find((s) =>
-          (s.tenantId ?? DEFAULT_TENANT_ID) === input.tenantId &&
-          s.employeeId === existing.employeeId &&
-          s.source === "timesheet" &&
-          s.rate == null &&
-          s.status === "pending" &&
-          (
-            payrollMonthKey(s.weekStart ?? s.date) === monthKey ||
-            s.timesheetId?.match(/:(\d{4}-\d{2})$/)?.[1] === monthKey
-          ),
-        );
-        if (orphan) {
-          pendingMonthlySalaryId = orphan.id;
-          break;
+      if (stillCovered) {
+        continue;
+      }
+      for (const s of current.salaries) {
+        if (isAffectedSalary(s) && s.rate == null && s.status === "pending" && salaryMonth(s) === monthKey) {
+          deleteSalaryIds.push(s.id);
         }
       }
     }
 
-    // Exactly one of these will be non-null: hourly employees have per-timesheet salary records,
-    // monthly employees have per-month salary records. An employee cannot be both.
-    const deleteSalaryId = pendingHourlySalaryId ?? pendingMonthlySalaryId;
-
+    const throughLabel = existing.partialSubmission ? formatIsoDateLabel(existing.partialSubmission.throughDate) : "";
     const auditEntry = createAuditEntry({
       tenantId: input.tenantId,
       actorName: input.actorName,
@@ -3831,24 +3847,26 @@ export async function recallTimesheetForCorrection(input: {
       action: "reverted",
       entityType: "timesheet",
       entityId: existing.id,
-      summary: `Recalled timesheet for ${existing.employeeNameSnapshot} for correction.`,
+      summary:
+        scope === "week"
+          ? `Recalled timesheet for ${existing.employeeNameSnapshot} for correction.`
+          : `Recalled ${existing.employeeNameSnapshot}'s timesheet days through ${throughLabel} for correction.`,
       requestId: input.requestId,
       details: {
         entityLabel: existing.employeeNameSnapshot,
         requestId: input.requestId,
-        changedFields: ["status"],
+        changedFields: scope === "week" ? ["status", "partialSubmission"] : ["partialSubmission"],
         before: summarizeTimesheetAudit(existing),
         after: summarizeTimesheetAudit(recalledEntry),
-        context: { operation: "timesheet_recall" },
+        context: { operation: scope === "week" ? "timesheet_recall" : "timesheet_partial_recall", deletedSalaryIds: deleteSalaryIds },
       },
     });
 
+    const deleted = new Set(deleteSalaryIds);
     const nextStore = normalizeStore({
       ...current,
       timesheets: current.timesheets.map((t) => (t.id === existing.id ? recalledEntry : t)),
-      salaries: deleteSalaryId
-        ? current.salaries.filter((s) => s.id !== deleteSalaryId)
-        : current.salaries,
+      salaries: current.salaries.filter((s) => !deleted.has(s.id)),
       auditTrail: [auditEntry, ...current.auditTrail].slice(0, 250),
     });
 
@@ -3856,11 +3874,11 @@ export async function recallTimesheetForCorrection(input: {
       currentStore: current,
       nextStore,
       entry: recalledEntry,
-      deleteSalaryId,
+      deleteSalaryIds,
       auditEntry,
     });
     cacheStore(nextStore);
-    return { timesheet: structuredClone(recalledEntry) };
+    return { timesheet: structuredClone(recalledEntry), scope };
   });
 }
 

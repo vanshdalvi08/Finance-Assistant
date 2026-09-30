@@ -983,6 +983,250 @@ test("a pending month-end block is folded into the week when daily review auto-s
   }
 });
 
+async function timesheetSalaries(adminToken, employeeId, timesheetId) {
+  const response = await api(`/business/salaries?employeeId=${encodeURIComponent(employeeId)}`, { token: adminToken });
+  assert.equal(response.status, 200, JSON.stringify(response.json));
+  return response.json.salaries.filter((s) => salaryBelongsToTimesheetMonth(s, timesheetId));
+}
+
+async function cleanupTimesheetTest(adminToken, { salaryIds = [], timesheetId, fundId, employeeId }) {
+  for (const id of salaryIds) {
+    await api(`/business/salaries/${id}`, { method: "DELETE", token: adminToken });
+  }
+  if (timesheetId) {
+    await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
+  }
+  if (fundId) {
+    await api(`/business/funds/${fundId}`, { method: "DELETE", token: adminToken });
+  }
+  await api(`/admin/employees/${employeeId}`, { method: "DELETE", token: adminToken });
+}
+
+async function payTestSalary(adminToken, salaryId, amount) {
+  const accountId = await getTestFinancialAccountId(adminToken);
+  const fund = await api("/business/funds", {
+    method: "POST",
+    token: adminToken,
+    body: { accountId, source: `Recall fund ${randomSuffix("fund")}`, amount, date: "2026-09-30", note: "recall test" },
+  });
+  assert.equal(fund.status, 201, JSON.stringify(fund.json));
+  const pay = await api(`/business/salaries/${salaryId}/pay`, {
+    method: "POST",
+    token: adminToken,
+    body: { note: "paid", accountId },
+  });
+  assert.equal(pay.status, 200, JSON.stringify(pay.json));
+  return fund.json.fund.id;
+}
+
+test("recalling an approved split-month week returns it to review and removes every pending month's salary", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const employee = (await createEmployee(adminToken, randomSuffix("phase2-recall-week"))).user;
+  let timesheetId = null;
+  const salaryIds = [];
+
+  try {
+    const created = await api("/business/timesheets", {
+      method: "POST",
+      token: adminToken,
+      body: { employeeId: employee.id, weekStart: "2026-04-27", lines: [{ project: "Recall", task: "Split", hours: { mon: 2, fri: 3 } }] },
+    });
+    timesheetId = created.json.timesheet.id;
+    await api(`/business/timesheets/${timesheetId}/submit`, { method: "POST", token: adminToken, body: {} });
+    await api(`/business/timesheets/${timesheetId}/approve`, { method: "POST", token: adminToken, body: {} });
+    const before = await timesheetSalaries(adminToken, employee.id, timesheetId);
+    assert.equal(before.length, 2, JSON.stringify(before));
+
+    const recall = await api(`/business/timesheets/${timesheetId}/recall`, { method: "POST", token: adminToken, body: {} });
+    assert.equal(recall.status, 200, JSON.stringify(recall.json));
+    assert.equal(recall.json.scope, "week");
+    assert.equal(recall.json.timesheet.status, "submitted");
+    const after = await timesheetSalaries(adminToken, employee.id, timesheetId);
+    assert.equal(after.length, 0, `Both April and May pending salaries should be removed: ${JSON.stringify(after)}`);
+
+    const reapprove = await api(`/business/timesheets/${timesheetId}/approve`, { method: "POST", token: adminToken, body: {} });
+    assert.equal(reapprove.status, 200, JSON.stringify(reapprove.json));
+    const recreated = await timesheetSalaries(adminToken, employee.id, timesheetId);
+    salaryIds.push(...recreated.map((s) => s.id));
+    assert.equal(recreated.length, 2, JSON.stringify(recreated));
+  } finally {
+    await cleanupTimesheetTest(adminToken, { salaryIds, timesheetId, employeeId: employee.id });
+  }
+});
+
+test("approved month-end days can be recalled, returned, and re-approved", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const createdEmployee = await createEmployee(adminToken, randomSuffix("phase2-recall-month-end"));
+  const employee = createdEmployee.user;
+  const employeeToken = await login(employee.email, createdEmployee.temporaryPassword);
+  const weekStart = "2026-09-28";
+  const lines = (tue) => [{ project: "Recall", task: "Month end", hours: { mon: 8, tue, wed: 8, thu: 8 } }];
+  let timesheetId = null;
+  const salaryIds = [];
+
+  try {
+    const partial = await api("/business/timesheets/submit-month-end", {
+      method: "POST",
+      token: employeeToken,
+      body: { employeeId: employee.id, weekStart, lines: lines(8) },
+    });
+    assert.equal(partial.status, 201, JSON.stringify(partial.json));
+    timesheetId = partial.json.timesheet.id;
+    await api(`/business/timesheets/${timesheetId}/month-end/approve`, { method: "POST", token: adminToken, body: {} });
+    const approved = await timesheetSalaries(adminToken, employee.id, timesheetId);
+    assert.equal(approved.length, 1, JSON.stringify(approved));
+    assert.equal(approved[0].amount, 2400);
+
+    const recall = await api(`/business/timesheets/${timesheetId}/recall`, { method: "POST", token: adminToken, body: {} });
+    assert.equal(recall.status, 200, JSON.stringify(recall.json));
+    assert.equal(recall.json.scope, "month_end");
+    assert.equal(recall.json.timesheet.status, "draft", "The rest of the week is untouched");
+    assert.equal(recall.json.timesheet.partialSubmission.status, "submitted", "Recalled days go back to pending review");
+    assert.equal((await timesheetSalaries(adminToken, employee.id, timesheetId)).length, 0, "September's pending salary is removed");
+
+    const stillLocked = await api(`/business/timesheets/${timesheetId}`, {
+      method: "PATCH",
+      token: employeeToken,
+      body: { employeeId: employee.id, weekStart, lines: lines(6) },
+    });
+    assert.equal(stillLocked.status, 409, "Recalled days stay locked until the admin returns them");
+
+    const returned = await api(`/business/timesheets/${timesheetId}/month-end/reject`, {
+      method: "POST",
+      token: adminToken,
+      body: { note: "Tuesday should be 6 hours" },
+    });
+    assert.equal(returned.status, 200, JSON.stringify(returned.json));
+
+    const fixed = await api("/business/timesheets/submit-month-end", {
+      method: "POST",
+      token: employeeToken,
+      body: { id: timesheetId, employeeId: employee.id, weekStart, lines: lines(6) },
+    });
+    assert.equal(fixed.status, 200, JSON.stringify(fixed.json));
+    await api(`/business/timesheets/${timesheetId}/month-end/approve`, { method: "POST", token: adminToken, body: {} });
+
+    const corrected = await timesheetSalaries(adminToken, employee.id, timesheetId);
+    salaryIds.push(...corrected.map((s) => s.id));
+    assert.equal(corrected.length, 1, JSON.stringify(corrected));
+    assert.equal(corrected[0].hours, 22);
+    assert.equal(corrected[0].amount, 2200);
+  } finally {
+    await cleanupTimesheetTest(adminToken, { salaryIds, timesheetId, employeeId: employee.id });
+  }
+});
+
+test("month-end days can't be recalled once their salary is paid", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const employee = (await createEmployee(adminToken, randomSuffix("phase2-recall-paid"))).user;
+  let timesheetId = null;
+  let fundId = null;
+  const salaryIds = [];
+
+  try {
+    const partial = await api("/business/timesheets/submit-month-end", {
+      method: "POST",
+      token: adminToken,
+      body: { employeeId: employee.id, weekStart: "2026-09-28", lines: [{ project: "Recall", task: "Paid", hours: { mon: 2, thu: 2 } }] },
+    });
+    timesheetId = partial.json.timesheet.id;
+    await api(`/business/timesheets/${timesheetId}/month-end/approve`, { method: "POST", token: adminToken, body: {} });
+    const [september] = await timesheetSalaries(adminToken, employee.id, timesheetId);
+    salaryIds.push(september.id);
+    fundId = await payTestSalary(adminToken, september.id, 1000);
+
+    const recall = await api(`/business/timesheets/${timesheetId}/recall`, { method: "POST", token: adminToken, body: {} });
+    assert.equal(recall.status, 409, JSON.stringify(recall.json));
+    assert.match(String(recall.json.message), /already been paid/i);
+    const after = await timesheetSalaries(adminToken, employee.id, timesheetId);
+    assert.equal(after.find((s) => s.id === september.id)?.status, "paid");
+  } finally {
+    await cleanupTimesheetTest(adminToken, { salaryIds, timesheetId, fundId, employeeId: employee.id });
+  }
+});
+
+test("recalling a full week also sends its approved month-end block back into review", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const employee = (await createEmployee(adminToken, randomSuffix("phase2-recall-fold"))).user;
+  let timesheetId = null;
+  const salaryIds = [];
+
+  try {
+    const partial = await api("/business/timesheets/submit-month-end", {
+      method: "POST",
+      token: adminToken,
+      body: { employeeId: employee.id, weekStart: "2026-09-28", lines: [{ project: "Recall", task: "Fold", hours: { mon: 2, thu: 3 } }] },
+    });
+    timesheetId = partial.json.timesheet.id;
+    await api(`/business/timesheets/${timesheetId}/month-end/approve`, { method: "POST", token: adminToken, body: {} });
+    await api(`/business/timesheets/${timesheetId}/submit`, { method: "POST", token: adminToken, body: {} });
+    await api(`/business/timesheets/${timesheetId}/approve`, { method: "POST", token: adminToken, body: {} });
+    assert.equal((await timesheetSalaries(adminToken, employee.id, timesheetId)).length, 2);
+
+    const recall = await api(`/business/timesheets/${timesheetId}/recall`, { method: "POST", token: adminToken, body: {} });
+    assert.equal(recall.status, 200, JSON.stringify(recall.json));
+    assert.equal(recall.json.scope, "week");
+    assert.equal(recall.json.timesheet.status, "submitted");
+    assert.equal(recall.json.timesheet.partialSubmission ?? null, null);
+    const after = await timesheetSalaries(adminToken, employee.id, timesheetId);
+    assert.equal(after.length, 0, `September must not stay payable while the week is under correction: ${JSON.stringify(after)}`);
+  } finally {
+    await cleanupTimesheetTest(adminToken, { salaryIds, timesheetId, employeeId: employee.id });
+  }
+});
+
+test("recalling a monthly employee's month-end days removes that month's pending salary", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const employee = (await createMonthlyEmployee(adminToken, randomSuffix("phase2-recall-monthly"), 360000)).user;
+  let timesheetId = null;
+  const salaryIds = [];
+  const monthlyRecords = async () => {
+    const response = await api(`/business/salaries?employeeId=${encodeURIComponent(employee.id)}`, { token: adminToken });
+    return response.json.salaries.filter((s) => s.source === "timesheet" && s.employeeId === employee.id);
+  };
+
+  try {
+    const partial = await api("/business/timesheets/submit-month-end", {
+      method: "POST",
+      token: adminToken,
+      body: { employeeId: employee.id, weekStart: "2026-09-28", lines: [{ project: "Recall", task: "Monthly", hours: { mon: 8, tue: 8, thu: 8 } }] },
+    });
+    timesheetId = partial.json.timesheet.id;
+    await api(`/business/timesheets/${timesheetId}/month-end/approve`, { method: "POST", token: adminToken, body: {} });
+    const before = await monthlyRecords();
+    assert.equal(before.length, 1, JSON.stringify(before));
+    assert.equal(before[0].days, 2);
+
+    const recall = await api(`/business/timesheets/${timesheetId}/recall`, { method: "POST", token: adminToken, body: {} });
+    assert.equal(recall.status, 200, JSON.stringify(recall.json));
+    assert.equal(recall.json.scope, "month_end");
+    const after = await monthlyRecords();
+    salaryIds.push(...after.map((s) => s.id));
+    assert.equal(after.length, 0, `September's pending monthly salary should be removed: ${JSON.stringify(after)}`);
+  } finally {
+    await cleanupTimesheetTest(adminToken, { salaryIds, timesheetId, employeeId: employee.id });
+  }
+});
+
+test("a draft week with nothing approved can't be recalled", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const employee = (await createEmployee(adminToken, randomSuffix("phase2-recall-draft"))).user;
+  let timesheetId = null;
+
+  try {
+    const created = await api("/business/timesheets", {
+      method: "POST",
+      token: adminToken,
+      body: { employeeId: employee.id, weekStart: "2026-09-28", lines: [{ project: "Recall", task: "Draft", hours: { mon: 2 } }] },
+    });
+    timesheetId = created.json.timesheet.id;
+    const recall = await api(`/business/timesheets/${timesheetId}/recall`, { method: "POST", token: adminToken, body: {} });
+    assert.equal(recall.status, 409, JSON.stringify(recall.json));
+  } finally {
+    await cleanupTimesheetTest(adminToken, { timesheetId, employeeId: employee.id });
+  }
+});
+
 test("month-end submission is rejected for weeks that stay within one month", { concurrency: false }, async () => {
   const adminToken = await login("admin@yojak.in", "yojak123");
   const suffix = randomSuffix("phase2-month-end-single");

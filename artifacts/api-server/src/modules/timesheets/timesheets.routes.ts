@@ -2314,7 +2314,7 @@ router.post("/timesheets/:id/recall", requireTenantRole("admin"), timesheetRevie
     return;
   }
 
-  let recallResult: { timesheet: TimesheetEntry };
+  let recallResult: { timesheet: TimesheetEntry; scope: "week" | "month_end" };
   try {
     recallResult = await recallTimesheetForCorrection({
       id: String(request.params.id),
@@ -2335,18 +2335,22 @@ router.post("/timesheets/:id/recall", requireTenantRole("admin"), timesheetRevie
   }
 
   const actor = notificationActor(request);
+  const recalledThrough = existing.partialSubmission?.throughDate;
   await deliverNotification(
     notifyEmployee(
       existing.employeeId,
       actor,
       {
         type: "timesheet_reverted",
-        title: "Timesheet recalled for correction",
-        body: `Your timesheet for the week of ${new Date(existing.weekStart).toLocaleDateString("en-IN", {
-          day: "2-digit",
-          month: "short",
-          year: "numeric",
-        })} was recalled by your admin for review and correction.`,
+        title: recallResult.scope === "month_end" ? "Month-end days recalled for correction" : "Timesheet recalled for correction",
+        body:
+          recallResult.scope === "month_end" && recalledThrough
+            ? `Your timesheet days through ${formatThroughDateLabel(recalledThrough)} were recalled by your admin for review and correction.`
+            : `Your timesheet for the week of ${new Date(existing.weekStart).toLocaleDateString("en-IN", {
+                day: "2-digit",
+                month: "short",
+                year: "numeric",
+              })} was recalled by your admin for review and correction.`,
         link: "/employee/timesheet",
         email: true,
         metadata: { timesheetId: existing.id, employeeId: existing.employeeId },
@@ -2354,7 +2358,7 @@ router.post("/timesheets/:id/recall", requireTenantRole("admin"), timesheetRevie
     ),
   );
 
-  response.json({ timesheet: recallResult.timesheet });
+  response.json({ timesheet: recallResult.timesheet, scope: recallResult.scope });
 });
 
 router.delete("/timesheets/:id", requireTenantRole("admin", "employee"), async (request, response) => {
