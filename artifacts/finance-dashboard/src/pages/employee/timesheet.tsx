@@ -2,9 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addDays, format } from "date-fns";
 import {
-  CalendarCheck,
   CalendarDays,
-  CalendarRange,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -30,7 +28,8 @@ import {
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
@@ -43,6 +42,7 @@ import {
   formatMonthEndDate,
   formatMonthEndRange,
   formatRemainingDays,
+  formatWeekSpan,
   locksWithMonthEnd,
   monthEndLockedDays,
   timesheetMonthEndCutoff,
@@ -177,6 +177,36 @@ function isTaskWindowDay(task: { startDate?: string; endDate?: string } | undefi
   return dayIso >= task.startDate && dayIso <= task.endDate;
 }
 
+
+function SubmitChoiceOption({
+  label,
+  range,
+  disabled,
+  title,
+  onSelect,
+}: {
+  label: string;
+  range: string;
+  disabled?: boolean;
+  title?: string;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      title={title}
+      onClick={onSelect}
+      className="group flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left outline-none transition-colors hover:bg-secondary/60 focus-visible:bg-secondary/60 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent"
+    >
+      <span className="min-w-0 flex-1">
+        <span className="block text-[13px] font-medium leading-5 text-foreground">{label}</span>
+        <span className="block text-[11px] leading-4 tabular-nums text-muted-foreground">{range}</span>
+      </span>
+      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 transition-all duration-150 group-hover:translate-x-0.5 group-hover:opacity-100 group-focus-visible:opacity-100 group-disabled:hidden" />
+    </button>
+  );
+}
 
 function toDateInputValue(weekStart: string) {
   return format(new Date(weekStart), "yyyy-MM-dd");
@@ -1641,22 +1671,52 @@ export default function EmployeeTimesheetPage() {
             <Save className="mr-2 h-4 w-4" />
             Save Draft
           </Button>
-          <Button
-            size="sm"
-            className="h-9 rounded-xl border border-sky-400/20 bg-sky-500 text-white shadow-sm hover:bg-sky-500/90"
-            disabled={!draft || readOnly || draftHours <= 0 || submitPending}
-            onClick={() => {
-              if (!draft) return;
-              if (canSubmitMonthEnd) {
-                setSubmitChoiceOpen(true);
-                return;
-              }
-              submitMutation.mutate(draft);
+          <Popover
+            open={submitChoiceOpen && canSubmitMonthEnd}
+            onOpenChange={(open) => {
+              if (!submitPending) setSubmitChoiceOpen(open && canSubmitMonthEnd);
             }}
           >
-            {isRejected ? <FilePenLine className="mr-2 h-4 w-4" /> : <ClipboardCheck className="mr-2 h-4 w-4" />}
-            {submitButtonLabel}
-          </Button>
+            <PopoverTrigger asChild>
+              <Button
+                size="sm"
+                className="h-9 rounded-xl border border-sky-400/20 bg-sky-500 text-white shadow-sm hover:bg-sky-500/90"
+                disabled={!draft || readOnly || draftHours <= 0 || submitPending}
+                onClick={() => {
+                  // On a week that runs into a new month the popover handles the choice instead.
+                  if (draft && !canSubmitMonthEnd) submitMutation.mutate(draft);
+                }}
+              >
+                {isRejected ? <FilePenLine className="mr-2 h-4 w-4" /> : <ClipboardCheck className="mr-2 h-4 w-4" />}
+                {submitButtonLabel}
+              </Button>
+            </PopoverTrigger>
+            {draft && monthEndCutoff ? (
+              <PopoverContent
+                side="top"
+                align="end"
+                sideOffset={12}
+                className="w-[224px] rounded-2xl border-border/50 bg-card p-1.5 shadow-2xl shadow-black/30"
+              >
+                <SubmitChoiceOption
+                  label="Submit full week"
+                  range={formatWeekSpan(draft.weekStart)}
+                  disabled={submitPending}
+                  onSelect={() => {
+                    setSubmitChoiceOpen(false);
+                    submitMutation.mutate(draft);
+                  }}
+                />
+                <SubmitChoiceOption
+                  label="Submit till month end"
+                  range={formatMonthEndRange(draft.weekStart, monthEndCutoff)}
+                  disabled={submitPending || monthEndHours <= 0}
+                  title={monthEndHours <= 0 ? `Log hours through ${formatMonthEndDate(monthEndCutoff)} first` : undefined}
+                  onSelect={() => monthEndMutation.mutate(draft)}
+                />
+              </PopoverContent>
+            ) : null}
+          </Popover>
         </div>
 
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_260px]">
@@ -1830,63 +1890,6 @@ export default function EmployeeTimesheetPage() {
               </Button>
             </DialogFooter>
           </div>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={submitChoiceOpen} onOpenChange={(open) => !submitPending && setSubmitChoiceOpen(open)}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>This week runs into a new month</DialogTitle>
-            <DialogDescription>Choose what you'd like to send for review now.</DialogDescription>
-          </DialogHeader>
-          {draft && monthEndCutoff ? (
-            <div className="space-y-3">
-              <button
-                type="button"
-                disabled={submitPending || monthEndHours <= 0}
-                onClick={() => monthEndMutation.mutate(draft)}
-                className="group flex w-full items-start gap-3 rounded-xl border border-border/60 bg-secondary/10 p-4 text-left transition-colors hover:border-sky-400/40 hover:bg-sky-500/5 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sky-500/10 text-sky-400">
-                  <CalendarCheck className="h-4 w-4" />
-                </span>
-                <span className="space-y-1">
-                  <span className="block text-sm font-semibold text-foreground">
-                    Submit through {formatMonthEndDate(monthEndCutoff)}
-                  </span>
-                  <span className="block text-xs leading-relaxed text-muted-foreground">
-                    {monthEndHours > 0
-                      ? `Only ${formatMonthEndRange(draft.weekStart, monthEndCutoff)} goes for review now, so this month's payroll isn't held up. ${formatRemainingDays(draft.weekStart, monthEndCutoff)} stays open for you to finish.`
-                      : `Log hours for ${formatMonthEndRange(draft.weekStart, monthEndCutoff)} first to submit them separately.`}
-                  </span>
-                </span>
-              </button>
-              <button
-                type="button"
-                disabled={submitPending}
-                onClick={() => {
-                  setSubmitChoiceOpen(false);
-                  submitMutation.mutate(draft);
-                }}
-                className="group flex w-full items-start gap-3 rounded-xl border border-border/60 bg-secondary/10 p-4 text-left transition-colors hover:border-border hover:bg-secondary/20 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-secondary/60 text-muted-foreground">
-                  <CalendarRange className="h-4 w-4" />
-                </span>
-                <span className="space-y-1">
-                  <span className="block text-sm font-semibold text-foreground">Submit the whole week</span>
-                  <span className="block text-xs leading-relaxed text-muted-foreground">
-                    Send every day of this week for review. You won't be able to edit it afterwards.
-                  </span>
-                </span>
-              </button>
-            </div>
-          ) : null}
-          <DialogFooter>
-            <Button variant="ghost" size="sm" className="rounded-xl" disabled={submitPending} onClick={() => setSubmitChoiceOpen(false)}>
-              Cancel
-            </Button>
-          </DialogFooter>
         </DialogContent>
       </Dialog>
     </DashboardLayout>

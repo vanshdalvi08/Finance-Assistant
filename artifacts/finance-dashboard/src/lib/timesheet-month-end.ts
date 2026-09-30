@@ -76,6 +76,16 @@ export function formatMonthEndRange(weekStart: string, throughDate: string) {
     : `${start.getUTCDate()}–${end.getUTCDate()} ${month}`;
 }
 
+// "26 Oct–1 Nov" (or "5–11 Oct"): the whole week.
+export function formatWeekSpan(weekStart: string) {
+  const start = new Date(`${weekDateIso(weekStart, 0)}T00:00:00Z`);
+  const end = new Date(`${weekDateIso(weekStart, 6)}T00:00:00Z`);
+  const month = (date: Date) => date.toLocaleDateString("en-IN", { month: "short", timeZone: "UTC" });
+  return month(start) === month(end)
+    ? `${start.getUTCDate()}–${end.getUTCDate()} ${month(end)}`
+    : `${start.getUTCDate()} ${month(start)}–${end.getUTCDate()} ${month(end)}`;
+}
+
 // "1–4 Oct": the part of the week after the month-end cutoff.
 export function formatRemainingDays(weekStart: string, throughDate: string) {
   const firstRemaining = weekDateIso(throughDate, 1);
