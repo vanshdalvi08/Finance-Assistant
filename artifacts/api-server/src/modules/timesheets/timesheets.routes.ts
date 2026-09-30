@@ -16,7 +16,9 @@ import {
   type TimesheetEntry,
   blankHours,
   createId,
+  employeeProtectedLocks,
   findChangedProtectedDays,
+  partialSubmissionLockedDays,
   loadEmployeeProfile,
   loadEmployees,
   normalizeDate,
@@ -26,9 +28,11 @@ import {
   reconcileDailyReviewState,
   readStore,
   recallTimesheetForCorrection,
+  reviewPartialTimesheetFast,
   reviewTimesheetFast,
   saveTimesheetFast,
   setTimesheetDayReviewStatusFast,
+  submitPartialTimesheetFast,
   submitTimesheetEntryFast,
   submitTimesheetFast,
   sumTimesheetHours,
@@ -44,6 +48,7 @@ import { hashSha256 } from "../../lib/security";
 import { WorkflowStateError } from "../../lib/workflow-state";
 import { appEvents } from "../../lib/events";
 import { rateLimit } from "../../middlewares/rate-limit";
+import { syncTimesheetPayroll } from "../payroll/payroll.service";
 
 const router: IRouter = Router();
 const timesheetReviewLimiter = rateLimit({
@@ -248,7 +253,14 @@ function requestHashForTimesheetReview(input: { timesheetId: string; status: "ap
 
 async function claimTimesheetReviewIdempotency(
   actor: { tenantId: string; userId?: string },
-  scope: "timesheet_review" | "timesheet_submit" | "timesheet_create" | "timesheet_update" | "timesheet_delete",
+  scope:
+    | "timesheet_review"
+    | "timesheet_submit"
+    | "timesheet_create"
+    | "timesheet_update"
+    | "timesheet_delete"
+    | "timesheet_partial_submit"
+    | "timesheet_partial_review",
   key: string,
   requestHash: string,
 ) {
@@ -830,6 +842,7 @@ router.get("/timesheets/summary", requireTenantRole("admin", "employee"), async 
 
   response.json({
     pending: timesheets.filter((entry) => entry.status === "submitted").length,
+    pendingMonthEnd: timesheets.filter((entry) => entry.partialSubmission?.status === "submitted").length,
     approved: timesheets.filter((entry) => entry.status === "approved").length,
     rejected: timesheets.filter((entry) => entry.status === "rejected").length,
     totalHours: timesheets.reduce((sum, entry) => sum + sumTimesheetHours(entry), 0),
@@ -983,7 +996,7 @@ router.post("/timesheets", requireTenantRole("admin", "employee"), async (reques
   }));
   const lockedProtectedDays =
     request.auth?.user.role === "employee" && existing
-      ? findChangedProtectedDays(existing.dailyReviewStatus, existing.dailyReviewHolidays, existing.dailyReviewLocks, existing.lines, lines)
+      ? findChangedProtectedDays(existing.dailyReviewStatus, existing.dailyReviewHolidays, employeeProtectedLocks(existing), existing.lines, lines)
       : [];
   if (lockedProtectedDays.length > 0) {
     respondProtectedDaysLocked(response, lockedProtectedDays);
@@ -1013,6 +1026,7 @@ router.post("/timesheets", requireTenantRole("admin", "employee"), async (reques
     dailyReviewNotes: dailyReviewState.notes,
     dailyReviewHolidays: existing?.dailyReviewHolidays,
     dailyReviewLocks: existing?.dailyReviewLocks,
+    partialSubmission: existing?.partialSubmission,
     reviewShell: existing?.reviewShell ?? parsed.data.reviewShell ?? false,
     lines,
     createdAt: existing?.createdAt ?? nowIso(),
@@ -1184,7 +1198,7 @@ router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (r
   }));
   const lockedProtectedDays =
     request.auth?.user.role === "employee"
-      ? findChangedProtectedDays(existing.dailyReviewStatus, existing.dailyReviewHolidays, existing.dailyReviewLocks, existing.lines, lines)
+      ? findChangedProtectedDays(existing.dailyReviewStatus, existing.dailyReviewHolidays, employeeProtectedLocks(existing), existing.lines, lines)
       : [];
   if (lockedProtectedDays.length > 0) {
     respondProtectedDaysLocked(response, lockedProtectedDays);
@@ -1214,6 +1228,7 @@ router.patch("/timesheets/:id", requireTenantRole("admin", "employee"), async (r
     dailyReviewNotes: dailyReviewState.notes,
     dailyReviewHolidays: existing.dailyReviewHolidays,
     dailyReviewLocks: existing.dailyReviewLocks,
+    partialSubmission: existing.partialSubmission,
     reviewShell: existing.reviewShell ?? false,
     lines,
     updatedAt: nowIso(),
@@ -1444,7 +1459,7 @@ router.post("/timesheets/submit", requireTenantRole("admin", "employee"), async 
   }));
   const lockedProtectedDays =
     request.auth?.user.role === "employee" && existing
-      ? findChangedProtectedDays(existing.dailyReviewStatus, existing.dailyReviewHolidays, existing.dailyReviewLocks, existing.lines, lines)
+      ? findChangedProtectedDays(existing.dailyReviewStatus, existing.dailyReviewHolidays, employeeProtectedLocks(existing), existing.lines, lines)
       : [];
   if (lockedProtectedDays.length > 0) {
     respondProtectedDaysLocked(response, lockedProtectedDays);
@@ -1469,6 +1484,7 @@ router.post("/timesheets/submit", requireTenantRole("admin", "employee"), async 
     dailyReviewNotes: dailyReviewState.notes,
     dailyReviewHolidays: existing?.dailyReviewHolidays,
     dailyReviewLocks: existing?.dailyReviewLocks,
+    partialSubmission: existing?.partialSubmission,
     reviewShell: existing?.reviewShell ?? false,
     lines,
     createdAt: existing?.createdAt ?? nowIso(),
@@ -1677,6 +1693,331 @@ router.post("/timesheets/:id/submit", requireTenantRole("admin", "employee"), as
     );
   }
   response.json({ timesheet: submittedEntry ?? existing, duplicate: false });
+});
+
+function formatThroughDateLabel(value: string) {
+  return new Date(`${value}T00:00:00Z`).toLocaleDateString("en-IN", { day: "numeric", month: "short", timeZone: "UTC" });
+}
+
+router.post("/timesheets/submit-month-end", requireTenantRole("admin", "employee"), async (request, response) => {
+  const parsed = timesheetSchema.safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ message: "Invalid timesheet payload" });
+    return;
+  }
+
+  const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const employeeId = request.auth?.user.role === "employee" ? request.auth.user.id : parsed.data.employeeId;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey
+    ? requestHashForTimesheetSubmit({ employeeId, weekStart: parsed.data.weekStart, lines: parsed.data.lines })
+    : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimTimesheetReviewIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimTimesheetReviewIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "timesheet_partial_submit",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleTimesheetIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const latestStore = await readStore();
+      const existingById = idempotencyClaim.row.responseEntityId
+        ? latestStore.timesheets.find((entry) => entry.id === idempotencyClaim.row.responseEntityId)
+        : null;
+      response.json({ timesheet: existingById ?? null, duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This month-end submission is already being processed. Please retry shortly." });
+    return;
+  }
+
+  const releaseIdempotency = async () => {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+  };
+
+  const employee =
+    request.auth?.user.role === "employee"
+      ? { id: request.auth.user.id, name: request.auth.user.name ?? "Employee" }
+      : await loadEmployeeProfile(employeeId, tenantId);
+
+  if (!employee) {
+    await releaseIdempotency();
+    respondNotFound(response, "Employee not found");
+    return;
+  }
+
+  const existing = parsed.data.id
+    ? store.timesheets.find((entry) => entry.id === parsed.data.id)
+    : store.timesheets.find(
+        (entry) =>
+          entry.employeeId === employeeId && normalizeWeekStart(entry.weekStart) === normalizeWeekStart(parsed.data.weekStart),
+      );
+
+  if (existing && existing.employeeId !== employeeId) {
+    await releaseIdempotency();
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
+  const lines = parsed.data.lines.map((line) => ({
+    id: line.id ?? createId("line"),
+    project: line.project?.trim() || "",
+    task: line.task?.trim() || "",
+    projectBudgetId: line.projectBudgetId?.trim() || undefined,
+    projectTaskId: line.projectTaskId?.trim() || undefined,
+    subTask: line.subTask?.trim() || undefined,
+    notes: line.notes?.trim() || undefined,
+    workNotes: Object.fromEntries(
+      DAY_KEYS.map((day) => [day, line.workNotes?.[day]?.trim() ?? ""]).filter(([, value]) => value.length > 0),
+    ),
+    hours: { ...blankHours(), ...line.hours },
+  }));
+  const lockedProtectedDays =
+    request.auth?.user.role === "employee" && existing
+      ? findChangedProtectedDays(existing.dailyReviewStatus, existing.dailyReviewHolidays, employeeProtectedLocks(existing), existing.lines, lines)
+      : [];
+  if (lockedProtectedDays.length > 0) {
+    await releaseIdempotency();
+    respondProtectedDaysLocked(response, lockedProtectedDays);
+    return;
+  }
+  const dailyReviewState = reconcileDailyReviewState(existing?.dailyReviewStatus, existing?.dailyReviewNotes, existing?.lines ?? [], lines);
+
+  const entry: TimesheetEntry = {
+    id: existing?.id ?? parsed.data.id ?? createId("ts"),
+    employeeId,
+    employeeNameSnapshot:
+      request.auth?.user.role === "employee"
+        ? request.auth.user.name
+        : parsed.data.employeeNameSnapshot?.trim() || employee.name,
+    weekStart: normalizeWeekStart(parsed.data.weekStart),
+    status: existing?.status ?? "draft",
+    submittedAt: existing?.submittedAt,
+    reviewedAt: existing?.reviewedAt,
+    reviewedBy: existing?.reviewedBy,
+    reviewNotes: existing?.reviewNotes,
+    dailyReviewStatus: dailyReviewState.status,
+    dailyReviewNotes: dailyReviewState.notes,
+    dailyReviewHolidays: existing?.dailyReviewHolidays,
+    dailyReviewLocks: existing?.dailyReviewLocks,
+    partialSubmission: existing?.partialSubmission,
+    reviewShell: existing?.reviewShell ?? false,
+    lines,
+    createdAt: existing?.createdAt ?? nowIso(),
+    updatedAt: nowIso(),
+  };
+
+  let submittedEntry: TimesheetEntry;
+  try {
+    submittedEntry = await submitPartialTimesheetFast({
+      entry,
+      tenantId,
+      actorName: request.auth?.user.name ?? "System",
+      actorRole: request.auth?.user.role ?? "system",
+      requestId: String(request.id),
+    });
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({ status: "completed", responseEntityId: submittedEntry.id, updatedAt: new Date() })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+  } catch (error) {
+    await releaseIdempotency();
+    // Both handlers rethrow errors they don't recognise, so check the workflow error first.
+    if (error instanceof WorkflowStateError && handleWorkflowStateError(error, response)) {
+      return;
+    }
+    if (handleTaskHourLimitError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  const throughLabel = formatThroughDateLabel(submittedEntry.partialSubmission?.throughDate ?? "");
+  if (request.auth?.user.role === "employee") {
+    const actor = notificationActor(request);
+    await deliverNotification(
+      notifyUsersByIds(actor.id ? [actor.id] : [], actor, {
+        type: "timesheet_submitted",
+        title: "Month-end days submitted",
+        body: `Your timesheet days through ${throughLabel} are waiting for review. The rest of the week stays open.`,
+        link: "/employee/timesheet",
+        email: false,
+        metadata: { timesheetId: submittedEntry.id, weekStart: submittedEntry.weekStart },
+      }),
+    );
+    await deliverNotification(
+      notifyAdmins(
+        actor,
+        {
+          type: "timesheet_submitted",
+          title: "Month-end timesheet submitted",
+          body: `${submittedEntry.employeeNameSnapshot} submitted timesheet days through ${throughLabel} for month-end payroll.`,
+          link: "/timesheets",
+          email: true,
+          metadata: { timesheetId: submittedEntry.id, weekStart: submittedEntry.weekStart, employeeId: submittedEntry.employeeId },
+        },
+        actor.id ? [actor.id] : [],
+      ),
+    );
+  }
+
+  response.status(existing ? 200 : 201).json({ timesheet: submittedEntry, duplicate: false });
+});
+
+async function handleMonthEndReview(request: Request, response: Response, status: "approved" | "rejected") {
+  const parsed = z
+    .object({ note: status === "rejected" ? z.string().trim().min(1) : z.string().trim().optional() })
+    .safeParse(request.body);
+  if (!parsed.success) {
+    response.status(400).json({ message: status === "rejected" ? "Add a note explaining what to change." : "Invalid approval payload" });
+    return;
+  }
+
+  const store = await readStore();
+  const tenantId = request.auth?.user.tenantId ?? DEFAULT_TENANT_ID;
+  const tenantEmployees = await loadEmployees(tenantId);
+  const tenantEmployeeIds = new Set(tenantEmployees.map((employee) => employee.id));
+  const existing = store.timesheets.find((entry) => entry.id === request.params.id);
+  if (!existing) {
+    respondNotFound(response, "Timesheet not found");
+    return;
+  }
+
+  try {
+    assertTenantEmployeeAccess(existing.employeeId, tenantEmployeeIds, request.auth?.user.role, request.auth?.user.id, () => new Error("Forbidden"));
+  } catch {
+    response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
+  const note = parsed.data.note?.trim() || undefined;
+  const idempotencyKey = idempotencyKeyFrom(request);
+  const requestHash = idempotencyKey
+    ? hashSha256(JSON.stringify({ timesheetId: String(request.params.id), status, note: note ?? "", scope: "month_end" }))
+    : null;
+  let idempotencyClaim:
+    | Awaited<ReturnType<typeof claimTimesheetReviewIdempotency>>
+    | null = null;
+  try {
+    idempotencyClaim =
+      idempotencyKey && requestHash
+        ? await claimTimesheetReviewIdempotency(
+            { tenantId, userId: request.auth?.user.id },
+            "timesheet_partial_review",
+            idempotencyKey,
+            requestHash,
+          )
+        : null;
+  } catch (error) {
+    if (handleTimesheetIdempotencyError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (idempotencyClaim && !idempotencyClaim.created) {
+    if (idempotencyClaim.row.status === "completed") {
+      const latestStore = await readStore();
+      const latestTimesheet = latestStore.timesheets.find((entry) => entry.id === request.params.id);
+      response.json({ timesheet: latestTimesheet ?? existing, duplicate: true });
+      return;
+    }
+    response.status(409).json({ message: "This review is already being processed. Please retry shortly." });
+    return;
+  }
+
+  let reviewedEntry: TimesheetEntry;
+  try {
+    reviewedEntry = await reviewPartialTimesheetFast({
+      id: String(request.params.id),
+      tenantId,
+      status,
+      actorName: request.auth?.user.name ?? "Admin",
+      requestId: String(request.id),
+      note,
+    });
+    if (idempotencyClaim?.created) {
+      await db
+        .update(idempotencyKeysTable)
+        .set({ status: "completed", responseEntityId: String(request.params.id), updatedAt: new Date() })
+        .where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+  } catch (error) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    if (handleWorkflowStateError(error, response)) {
+      return;
+    }
+    throw error;
+  }
+
+  if (status === "approved") {
+    // The Salary page reconciles on load anyway; syncing here just makes the salary appear immediately.
+    try {
+      await syncTimesheetPayroll(tenantId, existing.employeeId);
+    } catch (error) {
+      logger.warn({ err: error, timesheetId: existing.id }, "Failed to sync payroll after month-end approval");
+    }
+  }
+
+  const throughLabel = formatThroughDateLabel(reviewedEntry.partialSubmission?.throughDate ?? "");
+  const actor = notificationActor(request);
+  await deliverNotification(
+    notifyUsersByIds(actor.id ? [actor.id] : [], actor, {
+      type: status === "approved" ? "timesheet_approved" : "timesheet_reverted",
+      title: status === "approved" ? "Month-end days approved" : "Month-end days returned",
+      body:
+        status === "approved"
+          ? `Approved ${existing.employeeNameSnapshot}'s timesheet days through ${throughLabel}.`
+          : `Returned ${existing.employeeNameSnapshot}'s timesheet days through ${throughLabel}.`,
+      link: "/timesheets",
+      email: false,
+      metadata: { timesheetId: existing.id, employeeId: existing.employeeId },
+    }),
+  );
+  await deliverNotification(
+    notifyEmployee(existing.employeeId, actor, {
+      type: status === "approved" ? "timesheet_approved" : "timesheet_reverted",
+      title: status === "approved" ? "Month-end days approved" : "Month-end days returned for changes",
+      body:
+        status === "approved"
+          ? `Your timesheet days through ${throughLabel} were approved${note ? `: ${note}` : "."}`
+          : `Your timesheet days through ${throughLabel} were returned${note ? `: ${note}` : "."}`,
+      link: "/employee/timesheet",
+      email: true,
+      metadata: { timesheetId: existing.id, employeeId: existing.employeeId, ...(note ? { reviewNote: note } : {}) },
+    }),
+  );
+
+  response.json({ timesheet: reviewedEntry, duplicate: false });
+}
+
+router.post("/timesheets/:id/month-end/approve", requireTenantRole("admin"), timesheetReviewLimiter, async (request, response) => {
+  await handleMonthEndReview(request, response, "approved");
+});
+
+router.post("/timesheets/:id/month-end/reject", requireTenantRole("admin"), timesheetReviewLimiter, async (request, response) => {
+  await handleMonthEndReview(request, response, "rejected");
 });
 
 router.post("/timesheets/:id/approve", requireTenantRole("admin"), timesheetReviewLimiter, async (request, response) => {
@@ -2062,6 +2403,16 @@ router.delete("/timesheets/:id", requireTenantRole("admin", "employee"), async (
     assertTenantEmployeeAccess(existing.employeeId, tenantEmployeeIds, request.auth?.user.role, request.auth?.user.id, () => new Error("Forbidden"));
   } catch {
     response.status(403).json({ message: "Forbidden" });
+    return;
+  }
+
+  if (request.auth?.user.role === "employee" && partialSubmissionLockedDays(existing).length > 0) {
+    if (idempotencyClaim?.created) {
+      await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
+    }
+    response.status(409).json({
+      message: "This week has month-end days that are submitted or approved, so it can't be deleted. Ask an admin if it needs to be removed.",
+    });
     return;
   }
 

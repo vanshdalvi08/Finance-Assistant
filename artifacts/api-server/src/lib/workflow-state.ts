@@ -21,6 +21,13 @@ const WORKFLOW_TRANSITIONS = {
   timesheetReview: {
     submitted: ["approved", "rejected"],
   },
+  timesheetPartialSubmission: {
+    none: ["submitted"],
+    rejected: ["submitted"],
+  },
+  timesheetPartialReview: {
+    submitted: ["approved", "rejected"],
+  },
 } satisfies Record<string, WorkflowDefinition>;
 
 export type WorkflowName = keyof typeof WORKFLOW_TRANSITIONS;

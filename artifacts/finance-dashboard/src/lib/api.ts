@@ -250,7 +250,17 @@ export interface TimesheetEntry {
   dailyReviewLocks?: TimesheetDailyReviewLocks;
   dailyReviewNotes?: TimesheetDailyReviewNotes;
   reviewShell?: boolean;
+  partialSubmission?: TimesheetPartialSubmission;
   lines: TimesheetTaskLine[];
+}
+
+export interface TimesheetPartialSubmission {
+  throughDate: string;
+  status: "submitted" | "approved" | "rejected";
+  submittedAt: string;
+  reviewedAt?: string;
+  reviewedBy?: string;
+  reviewNotes?: string;
 }
 
 export interface Holiday {
@@ -2031,6 +2041,21 @@ export const api = {
   submitTimesheet: async (id: string) =>
     normalizeTimesheet((await businessPost<{ timesheet: TimesheetEntry }>(`/timesheets/${id}/submit`, {})).timesheet),
 
+  submitTimesheetMonthEnd: async (entry: TimesheetEntry) =>
+    normalizeTimesheet(
+      (await businessPost<{ timesheet: TimesheetEntry }>("/timesheets/submit-month-end", normalizeTimesheet(entry))).timesheet,
+    ),
+
+  approveTimesheetMonthEnd: async (id: string, note?: string) =>
+    normalizeTimesheet(
+      (await businessPost<{ timesheet: TimesheetEntry }>(`/timesheets/${id}/month-end/approve`, { note })).timesheet,
+    ),
+
+  rejectTimesheetMonthEnd: async (id: string, note: string) =>
+    normalizeTimesheet(
+      (await businessPost<{ timesheet: TimesheetEntry }>(`/timesheets/${id}/month-end/reject`, { note })).timesheet,
+    ),
+
   approveTimesheet: async (id: string, _reviewer: string, note?: string) =>
     normalizeTimesheet((await businessPost<{ timesheet: TimesheetEntry }>(`/timesheets/${id}/approve`, { note })).timesheet),
 
@@ -2044,6 +2069,7 @@ export const api = {
     const path = withQuery("/timesheets/summary", { employeeId: scope?.employeeId });
     return businessGet<{
       pending: number;
+      pendingMonthEnd?: number;
       approved: number;
       rejected: number;
       totalHours: number;

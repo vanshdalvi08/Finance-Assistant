@@ -18,7 +18,7 @@ import {
   updateEmployeeAccount,
   type PublicUser,
 } from "../lib/auth-service";
-import { createId, invalidateBusinessStoreCache, readStore, DAY_KEYS } from "../lib/business-store";
+import { createId, invalidateBusinessStoreCache, partialSubmissionLockedDays, readStore, DAY_KEYS } from "../lib/business-store";
 import type { UserProfile } from "../lib/business-store";
 import type { TimesheetDayReviewedEvent } from "../lib/events";
 import { exportDayToSheets, buildTaskDescriptionLookup } from "../integrations/googleSheets/sheets.listener";
@@ -1275,14 +1275,17 @@ router.post("/backfill-timesheet-sheets", async (request, response) => {
   //   (b) the whole week was approved (ts.status === "approved") — covers employees whose
   //       timesheets were batch-approved rather than day-reviewed one by one, OR
   //   (c) the whole week was submitted (ts.status === "submitted") — the admin may have
-  //       reviewed individual days without doing the final week-level approval yet.
+  //       reviewed individual days without doing the final week-level approval yet, OR
+  //   (d) the day is part of a pending or approved month-end submission (e.g. 28–30 Sep of a
+  //       week that runs into October), which is submitted separately from the rest of the week.
   // Idempotency keys are keyed on (tsId, day, weekDate) so all paths produce the same key —
   // running this on an already-synced day is always a no-op.
   function isDayEligible(ts: (typeof timesheets)[number], day: (typeof DAY_KEYS)[number]): boolean {
     return (
       ts.dailyReviewStatus?.[day] === "reviewed" ||
       ts.status === "approved" ||
-      ts.status === "submitted"
+      ts.status === "submitted" ||
+      partialSubmissionLockedDays(ts).includes(day)
     );
   }
 

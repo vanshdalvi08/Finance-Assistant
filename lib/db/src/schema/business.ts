@@ -11,6 +11,17 @@ export type TimesheetDailyReviewNotes = Partial<Record<DayKey, string>>;
 export type TimesheetDailyReviewHolidays = Partial<Record<DayKey, true>>;
 export type TimesheetDailyReviewLocks = Partial<Record<DayKey, true>>;
 export type ApprovalStatus = "draft" | "submitted" | "approved" | "rejected";
+
+// Month-end submission of the days of a week that fall in the earlier month (e.g. 28–30 Sep of a
+// 28 Sep – 4 Oct week), reviewed as one block independently of the rest of the week.
+export interface TimesheetPartialSubmission {
+  throughDate: string;
+  status: "submitted" | "approved" | "rejected";
+  submittedAt: string;
+  reviewedAt?: string;
+  reviewedBy?: string;
+  reviewNotes?: string;
+}
 export type SalaryStatus = "pending" | "paid";
 export type ExpenseGroup = "personal" | "office";
 export type FinancialAccountType = "operational" | "personal" | "mixed_use" | "reserve" | "cash";
@@ -491,6 +502,7 @@ export const timesheetsTable = pgTable(
     dailyReviewNotes: jsonb("daily_review_notes").$type<TimesheetDailyReviewNotes>().notNull().default({}),
     dailyReviewHolidays: jsonb("daily_review_holidays").$type<TimesheetDailyReviewHolidays>().notNull().default({}),
     dailyReviewLocks: jsonb("daily_review_locks").$type<TimesheetDailyReviewLocks>().notNull().default({}),
+    partialSubmission: jsonb("partial_submission").$type<TimesheetPartialSubmission>(),
     lines: jsonb("lines").$type<TimesheetLineRecord[]>().notNull().default(sql`'[]'::jsonb`),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

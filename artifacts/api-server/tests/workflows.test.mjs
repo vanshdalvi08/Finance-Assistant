@@ -633,6 +633,383 @@ test("split-month week with hours only in the non-weekStart month creates no pha
   }
 });
 
+test("month-end submission locks the earlier month, pays it on approval, and full approval adds only the new month", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-month-end");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+  const employeeToken = await login(employee.email, createdEmployee.temporaryPassword);
+  // Week of Mon 28 Sep – Sun 4 Oct 2026: Mon–Wed are September, Thu–Sun are October.
+  const weekStart = "2026-09-28";
+  const salaryIds = [];
+  let timesheetId = null;
+  const linesWith = (hours) => [{ project: "Month End", task: "Split week", hours }];
+
+  try {
+    const createResponse = await api("/business/timesheets", {
+      method: "POST",
+      token: employeeToken,
+      body: { employeeId: employee.id, weekStart, lines: linesWith({ mon: 8, tue: 8, wed: 8, thu: 8 }) },
+    });
+    assert.ok([200, 201].includes(createResponse.status), JSON.stringify(createResponse.json));
+    timesheetId = createResponse.json.timesheet.id;
+
+    const partialSubmit = await api("/business/timesheets/submit-month-end", {
+      method: "POST",
+      token: employeeToken,
+      body: { id: timesheetId, employeeId: employee.id, weekStart, lines: linesWith({ mon: 8, tue: 8, wed: 8, thu: 8 }) },
+    });
+    assert.equal(partialSubmit.status, 200, JSON.stringify(partialSubmit.json));
+    assert.equal(partialSubmit.json.timesheet.status, "draft");
+    assert.equal(partialSubmit.json.timesheet.partialSubmission.status, "submitted");
+    assert.equal(partialSubmit.json.timesheet.partialSubmission.throughDate, "2026-09-30");
+
+    const editSeptember = await api(`/business/timesheets/${timesheetId}`, {
+      method: "PATCH",
+      token: employeeToken,
+      body: { employeeId: employee.id, weekStart, lines: linesWith({ mon: 8, tue: 5, wed: 8, thu: 8 }) },
+    });
+    assert.equal(editSeptember.status, 409, JSON.stringify(editSeptember.json));
+    assert.match(String(editSeptember.json.message), /protected day/i);
+
+    const editOctober = await api(`/business/timesheets/${timesheetId}`, {
+      method: "PATCH",
+      token: employeeToken,
+      body: { employeeId: employee.id, weekStart, lines: linesWith({ mon: 8, tue: 8, wed: 8, thu: 8, fri: 8 }) },
+    });
+    assert.equal(editOctober.status, 200, JSON.stringify(editOctober.json));
+    assert.equal(editOctober.json.timesheet.partialSubmission.status, "submitted", "A regular save must not clear the month-end submission");
+
+    const duplicatePartial = await api("/business/timesheets/submit-month-end", {
+      method: "POST",
+      token: employeeToken,
+      body: { id: timesheetId, employeeId: employee.id, weekStart, lines: linesWith({ mon: 8, tue: 8, wed: 8, thu: 8, fri: 8 }) },
+    });
+    assert.equal(duplicatePartial.status, 409, JSON.stringify(duplicatePartial.json));
+
+    const rejectWithoutNote = await api(`/business/timesheets/${timesheetId}/month-end/reject`, {
+      method: "POST",
+      token: adminToken,
+      body: {},
+    });
+    assert.equal(rejectWithoutNote.status, 400, JSON.stringify(rejectWithoutNote.json));
+
+    const rejectPartial = await api(`/business/timesheets/${timesheetId}/month-end/reject`, {
+      method: "POST",
+      token: adminToken,
+      body: { note: "Tuesday should be 6 hours" },
+    });
+    assert.equal(rejectPartial.status, 200, JSON.stringify(rejectPartial.json));
+    assert.equal(rejectPartial.json.timesheet.partialSubmission.status, "rejected");
+
+    const fixTuesday = await api(`/business/timesheets/${timesheetId}`, {
+      method: "PATCH",
+      token: employeeToken,
+      body: { employeeId: employee.id, weekStart, lines: linesWith({ mon: 8, tue: 6, wed: 8, thu: 8, fri: 8 }) },
+    });
+    assert.equal(fixTuesday.status, 200, `Returned days should be editable again: ${JSON.stringify(fixTuesday.json)}`);
+
+    const resubmitPartial = await api("/business/timesheets/submit-month-end", {
+      method: "POST",
+      token: employeeToken,
+      body: { id: timesheetId, employeeId: employee.id, weekStart, lines: linesWith({ mon: 8, tue: 6, wed: 8, thu: 8, fri: 8 }) },
+    });
+    assert.equal(resubmitPartial.status, 200, JSON.stringify(resubmitPartial.json));
+    assert.equal(resubmitPartial.json.timesheet.partialSubmission.status, "submitted");
+
+    const approvePartial = await api(`/business/timesheets/${timesheetId}/month-end/approve`, {
+      method: "POST",
+      token: adminToken,
+      body: { note: "September closed" },
+    });
+    assert.equal(approvePartial.status, 200, JSON.stringify(approvePartial.json));
+    assert.equal(approvePartial.json.timesheet.partialSubmission.status, "approved");
+    assert.equal(approvePartial.json.timesheet.status, "draft", "The rest of the week stays open");
+
+    const approveAgain = await api(`/business/timesheets/${timesheetId}/month-end/approve`, {
+      method: "POST",
+      token: adminToken,
+      body: {},
+    });
+    assert.equal(approveAgain.status, 409, JSON.stringify(approveAgain.json));
+
+    const afterPartial = await api(`/business/salaries?employeeId=${encodeURIComponent(employee.id)}`, { token: adminToken });
+    assert.equal(afterPartial.status, 200, JSON.stringify(afterPartial.json));
+    const septemberOnly = afterPartial.json.salaries.filter((s) => salaryBelongsToTimesheetMonth(s, timesheetId));
+    salaryIds.push(...septemberOnly.map((s) => s.id));
+    assert.equal(septemberOnly.length, 1, JSON.stringify(septemberOnly));
+    const september = septemberOnly[0];
+    assert.equal(september.timesheetId, `${timesheetId}:2026-09`);
+    assert.equal(september.hours, 22);
+    assert.equal(september.amount, 2200);
+
+    const employeeDelete = await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: employeeToken });
+    assert.equal(employeeDelete.status, 409, JSON.stringify(employeeDelete.json));
+
+    const submitWeek = await api(`/business/timesheets/${timesheetId}/submit`, { method: "POST", token: employeeToken, body: {} });
+    assert.equal(submitWeek.status, 200, JSON.stringify(submitWeek.json));
+    assert.equal(submitWeek.json.timesheet.partialSubmission.status, "approved", "Approved month-end days stay approved");
+
+    const approveWeek = await api(`/business/timesheets/${timesheetId}/approve`, {
+      method: "POST",
+      token: adminToken,
+      body: { note: "week approved" },
+    });
+    assert.equal(approveWeek.status, 200, JSON.stringify(approveWeek.json));
+
+    const afterFull = await api(`/business/salaries?employeeId=${encodeURIComponent(employee.id)}`, { token: adminToken });
+    const weekSalaries = afterFull.json.salaries.filter((s) => salaryBelongsToTimesheetMonth(s, timesheetId));
+    salaryIds.push(...weekSalaries.map((s) => s.id).filter((id) => !salaryIds.includes(id)));
+    assert.equal(weekSalaries.length, 2, JSON.stringify(weekSalaries));
+    const byMonth = new Map(weekSalaries.map((s) => [payrollMonthKey(s), s]));
+    assert.equal(byMonth.get("2026-09").id, september.id, "September's record is reused, not duplicated");
+    assert.equal(byMonth.get("2026-09").amount, 2200);
+    assert.equal(byMonth.get("2026-10").hours, 16);
+    assert.equal(byMonth.get("2026-10").amount, 1600);
+  } finally {
+    for (const id of salaryIds) {
+      await api(`/business/salaries/${id}`, { method: "DELETE", token: adminToken });
+    }
+    if (timesheetId) {
+      await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
+    }
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("approving the full week never modifies an already-paid month-end salary", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-month-end-paid");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+  const weekStart = "2026-09-28";
+  const lines = [{ project: "Month End", task: "Paid block", hours: { mon: 4, tue: 4, wed: 4, thu: 4 } }];
+  const salaryIds = [];
+  let timesheetId = null;
+  let fundId = null;
+
+  try {
+    const partialSubmit = await api("/business/timesheets/submit-month-end", {
+      method: "POST",
+      token: adminToken,
+      body: { employeeId: employee.id, weekStart, lines },
+    });
+    assert.equal(partialSubmit.status, 201, JSON.stringify(partialSubmit.json));
+    timesheetId = partialSubmit.json.timesheet.id;
+
+    const approvePartial = await api(`/business/timesheets/${timesheetId}/month-end/approve`, {
+      method: "POST",
+      token: adminToken,
+      body: {},
+    });
+    assert.equal(approvePartial.status, 200, JSON.stringify(approvePartial.json));
+
+    const salaries = await api(`/business/salaries?employeeId=${encodeURIComponent(employee.id)}`, { token: adminToken });
+    const september = salaries.json.salaries.find((s) => s.timesheetId === `${timesheetId}:2026-09`);
+    assert.ok(september, JSON.stringify(salaries.json.salaries));
+    salaryIds.push(september.id);
+    assert.equal(september.amount, 1200);
+
+    const accountId = await getTestFinancialAccountId(adminToken);
+    const fund = await api("/business/funds", {
+      method: "POST",
+      token: adminToken,
+      body: { accountId, source: `Month-end fund ${randomSuffix("fund")}`, amount: 5000, date: "2026-09-30", note: "month-end" },
+    });
+    assert.equal(fund.status, 201, JSON.stringify(fund.json));
+    fundId = fund.json.fund.id;
+
+    const pay = await api(`/business/salaries/${september.id}/pay`, {
+      method: "POST",
+      token: adminToken,
+      body: { note: "September payroll", accountId },
+    });
+    assert.equal(pay.status, 200, JSON.stringify(pay.json));
+
+    const beforeFull = await api(`/business/salaries?employeeId=${encodeURIComponent(employee.id)}`, { token: adminToken });
+    const paidSeptember = beforeFull.json.salaries.find((s) => s.id === september.id);
+    assert.equal(paidSeptember.status, "paid");
+
+    const submitWeek = await api(`/business/timesheets/${timesheetId}/submit`, { method: "POST", token: adminToken, body: {} });
+    assert.equal(submitWeek.status, 200, JSON.stringify(submitWeek.json));
+    const approveWeek = await api(`/business/timesheets/${timesheetId}/approve`, {
+      method: "POST",
+      token: adminToken,
+      body: { note: "October approved" },
+    });
+    assert.equal(approveWeek.status, 200, JSON.stringify(approveWeek.json));
+
+    const afterFull = await api(`/business/salaries?employeeId=${encodeURIComponent(employee.id)}`, { token: adminToken });
+    const weekSalaries = afterFull.json.salaries.filter((s) => salaryBelongsToTimesheetMonth(s, timesheetId));
+    salaryIds.push(...weekSalaries.map((s) => s.id).filter((id) => !salaryIds.includes(id)));
+    assert.equal(weekSalaries.length, 2, JSON.stringify(weekSalaries));
+
+    const septemberAfter = weekSalaries.find((s) => s.id === september.id);
+    assert.equal(septemberAfter.status, "paid");
+    assert.equal(septemberAfter.amount, paidSeptember.amount);
+    assert.equal(septemberAfter.date, paidSeptember.date);
+    assert.equal(septemberAfter.paidAt, paidSeptember.paidAt);
+    assert.equal(septemberAfter.note, paidSeptember.note);
+
+    const october = weekSalaries.find((s) => payrollMonthKey(s) === "2026-10");
+    assert.equal(october.status, "pending");
+    assert.equal(october.hours, 4);
+    assert.equal(october.amount, 400);
+  } finally {
+    for (const id of salaryIds) {
+      await api(`/business/salaries/${id}`, { method: "DELETE", token: adminToken });
+    }
+    if (timesheetId) {
+      await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
+    }
+    if (fundId) {
+      await api(`/business/funds/${fundId}`, { method: "DELETE", token: adminToken });
+    }
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("month-end approval prorates a monthly employee's earlier month, and full approval adds the new month", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-month-end-monthly");
+  // 360000 a year -> 30000 a month. September has 30 days (1000/day), October 31.
+  const createdEmployee = await createMonthlyEmployee(adminToken, suffix, 360000);
+  const employee = createdEmployee.user;
+  const weekStart = "2026-09-28";
+  const lines = [{ project: "Month End", task: "Monthly split", hours: { mon: 8, tue: 8, wed: 8, thu: 8, fri: 8 } }];
+  const salaryIds = [];
+  let timesheetId = null;
+
+  try {
+    const partialSubmit = await api("/business/timesheets/submit-month-end", {
+      method: "POST",
+      token: adminToken,
+      body: { employeeId: employee.id, weekStart, lines },
+    });
+    assert.equal(partialSubmit.status, 201, JSON.stringify(partialSubmit.json));
+    timesheetId = partialSubmit.json.timesheet.id;
+
+    const approvePartial = await api(`/business/timesheets/${timesheetId}/month-end/approve`, {
+      method: "POST",
+      token: adminToken,
+      body: {},
+    });
+    assert.equal(approvePartial.status, 200, JSON.stringify(approvePartial.json));
+
+    const afterPartial = await api(`/business/salaries?employeeId=${encodeURIComponent(employee.id)}`, { token: adminToken });
+    const partialRecords = afterPartial.json.salaries.filter((s) => s.source === "timesheet" && s.employeeId === employee.id);
+    salaryIds.push(...partialRecords.map((s) => s.id));
+    assert.equal(partialRecords.length, 1, JSON.stringify(partialRecords));
+    assert.equal(payrollMonthKey(partialRecords[0]), "2026-09");
+    assert.equal(partialRecords[0].days, 3, JSON.stringify(partialRecords[0]));
+    assert.equal(partialRecords[0].amount, 3000, JSON.stringify(partialRecords[0]));
+
+    await api(`/business/timesheets/${timesheetId}/submit`, { method: "POST", token: adminToken, body: {} });
+    const approveWeek = await api(`/business/timesheets/${timesheetId}/approve`, { method: "POST", token: adminToken, body: {} });
+    assert.equal(approveWeek.status, 200, JSON.stringify(approveWeek.json));
+
+    const afterFull = await api(`/business/salaries?employeeId=${encodeURIComponent(employee.id)}`, { token: adminToken });
+    const records = afterFull.json.salaries.filter((s) => s.source === "timesheet" && s.employeeId === employee.id);
+    salaryIds.push(...records.map((s) => s.id).filter((id) => !salaryIds.includes(id)));
+    assert.equal(records.length, 2, JSON.stringify(records));
+    const byMonth = new Map(records.map((s) => [payrollMonthKey(s), s]));
+    assert.equal(byMonth.get("2026-09").days, 3);
+    assert.equal(byMonth.get("2026-09").amount, 3000);
+    assert.equal(byMonth.get("2026-10").days, 2);
+    assert.equal(byMonth.get("2026-10").amount, Math.round((30000 / 31) * 2));
+  } finally {
+    for (const id of salaryIds) {
+      await api(`/business/salaries/${id}`, { method: "DELETE", token: adminToken });
+    }
+    if (timesheetId) {
+      await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
+    }
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("a pending month-end block is folded into the week when daily review auto-submits it", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-month-end-autosubmit");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+  const weekStart = "2026-09-28";
+  const salaryIds = [];
+  let timesheetId = null;
+
+  try {
+    const partialSubmit = await api("/business/timesheets/submit-month-end", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        employeeId: employee.id,
+        weekStart,
+        lines: [{ project: "Month End", task: "Auto submit", hours: { mon: 1, tue: 1, wed: 1, thu: 1, fri: 1, sat: 1, sun: 1 } }],
+      },
+    });
+    assert.equal(partialSubmit.status, 201, JSON.stringify(partialSubmit.json));
+    timesheetId = partialSubmit.json.timesheet.id;
+
+    let lastReview = null;
+    for (const day of ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]) {
+      lastReview = await api(`/business/timesheets/${timesheetId}/daily-review/${day}`, {
+        method: "PATCH",
+        token: adminToken,
+        body: { reviewed: true },
+      });
+      assert.equal(lastReview.status, 200, JSON.stringify(lastReview.json));
+    }
+    assert.equal(lastReview.json.timesheet.status, "submitted");
+    assert.equal(lastReview.json.timesheet.partialSubmission ?? null, null, "The pending block is folded into the full-week review");
+
+    const approveWeek = await api(`/business/timesheets/${timesheetId}/approve`, { method: "POST", token: adminToken, body: {} });
+    assert.equal(approveWeek.status, 200, JSON.stringify(approveWeek.json));
+
+    const salaries = await api(`/business/salaries?employeeId=${encodeURIComponent(employee.id)}`, { token: adminToken });
+    const weekSalaries = salaries.json.salaries.filter((s) => salaryBelongsToTimesheetMonth(s, timesheetId));
+    salaryIds.push(...weekSalaries.map((s) => s.id));
+    assert.equal(weekSalaries.length, 2, JSON.stringify(weekSalaries));
+    const byMonth = new Map(weekSalaries.map((s) => [payrollMonthKey(s), s]));
+    assert.equal(byMonth.get("2026-09").hours, 3);
+    assert.equal(byMonth.get("2026-10").hours, 4);
+  } finally {
+    for (const id of salaryIds) {
+      await api(`/business/salaries/${id}`, { method: "DELETE", token: adminToken });
+    }
+    if (timesheetId) {
+      await api(`/business/timesheets/${timesheetId}`, { method: "DELETE", token: adminToken });
+    }
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
+test("month-end submission is rejected for weeks that stay within one month", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const suffix = randomSuffix("phase2-month-end-single");
+  const createdEmployee = await createEmployee(adminToken, suffix);
+  const employee = createdEmployee.user;
+
+  try {
+    const response = await api("/business/timesheets/submit-month-end", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        employeeId: employee.id,
+        weekStart: "2026-09-14",
+        lines: [{ project: "Month End", task: "Single month", hours: { mon: 8 } }],
+      },
+    });
+    assert.equal(response.status, 409, JSON.stringify(response.json));
+    assert.match(String(response.json.message), /doesn't cross into a new month/i);
+  } finally {
+    const leftover = await api(`/business/timesheets?employeeId=${encodeURIComponent(employee.id)}`, { token: adminToken });
+    for (const entry of leftover.json?.timesheets ?? []) {
+      await api(`/business/timesheets/${entry.id}`, { method: "DELETE", token: adminToken });
+    }
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
 test("approved monthly-employee timesheet creates prorated payroll based on days worked", { concurrency: false }, async () => {
   const adminToken = await login("admin@yojak.in", "yojak123");
   const suffix = randomSuffix("phase2-monthly-prorate");

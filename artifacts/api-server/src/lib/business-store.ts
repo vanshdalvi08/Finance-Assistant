@@ -31,11 +31,12 @@ import {
   type TimesheetDailyReviewLocks,
   type TimesheetDailyReviewStatus,
   type TimesheetDailyReviewNotes,
+  type TimesheetPartialSubmission,
   type Timesheet as DbTimesheet,
   type TimesheetLine as DbTimesheetLine,
 } from "@workspace/db/schema";
 import { DEFAULT_TENANT_ID } from "./tenants";
-import { assertWorkflowTransition } from "./workflow-state";
+import { assertWorkflowTransition, isAllowedWorkflowTransition, WorkflowStateError } from "./workflow-state";
 
 export type ApprovalStatus = "draft" | "submitted" | "approved" | "rejected";
 export type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
@@ -234,10 +235,13 @@ export interface TimesheetEntry {
   dailyReviewNotes?: TimesheetDailyReviewNotes;
   dailyReviewHolidays?: TimesheetDailyReviewHolidays;
   dailyReviewLocks?: TimesheetDailyReviewLocks;
+  partialSubmission?: TimesheetPartialSubmission;
   lines: TimesheetTaskLine[];
   createdAt: string;
   updatedAt: string;
 }
+
+export type { TimesheetPartialSubmission };
 
 export interface ProjectBudgetTask {
   id: string;
@@ -665,6 +669,99 @@ function normalizeDailyReviewLocks(input?: Partial<Record<DayKey, boolean>> | nu
   ) as TimesheetDailyReviewLocks;
 
   return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+const PARTIAL_SUBMISSION_STATUSES = new Set<string>(["submitted", "approved", "rejected"]);
+const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+function normalizePartialSubmission(input: unknown): TimesheetPartialSubmission | undefined {
+  if (!input || typeof input !== "object") {
+    return undefined;
+  }
+
+  const record = input as Record<string, unknown>;
+  const throughDate = typeof record.throughDate === "string" ? record.throughDate.slice(0, 10) : "";
+  const status = typeof record.status === "string" ? record.status : "";
+  if (!ISO_DATE_PATTERN.test(throughDate) || !PARTIAL_SUBMISSION_STATUSES.has(status)) {
+    return undefined;
+  }
+
+  const optionalText = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : undefined);
+  return {
+    throughDate,
+    status: status as TimesheetPartialSubmission["status"],
+    submittedAt: optionalText(record.submittedAt) ?? new Date().toISOString(),
+    reviewedAt: optionalText(record.reviewedAt),
+    reviewedBy: optionalText(record.reviewedBy),
+    reviewNotes: optionalText(record.reviewNotes),
+  };
+}
+
+// Last calendar day of the week's first month, when the week runs into a second month.
+export function timesheetMonthEndCutoff(weekStart: string): string | null {
+  const firstDate = weekDateIso(weekStart, "mon");
+  const lastDate = weekDateIso(weekStart, "sun");
+  if (firstDate.slice(0, 7) === lastDate.slice(0, 7)) {
+    return null;
+  }
+
+  const [year, month] = firstDate.split("-").map(Number);
+  const lastDayOfMonth = new Date(Date.UTC(year!, month!, 0)).getUTCDate();
+  return `${firstDate.slice(0, 7)}-${String(lastDayOfMonth).padStart(2, "0")}`;
+}
+
+export function timesheetDaysThrough(weekStart: string, throughDate: string): DayKey[] {
+  return DAY_KEYS.filter((day) => weekDateIso(weekStart, day) <= throughDate);
+}
+
+export function partialSubmissionLockedDays(entry: Pick<TimesheetEntry, "weekStart" | "partialSubmission">): DayKey[] {
+  const partial = entry.partialSubmission;
+  if (!partial || partial.status === "rejected") {
+    return [];
+  }
+  return timesheetDaysThrough(entry.weekStart, partial.throughDate);
+}
+
+export function employeeProtectedLocks(
+  entry: Pick<TimesheetEntry, "weekStart" | "partialSubmission" | "dailyReviewLocks">,
+): TimesheetDailyReviewLocks | undefined {
+  const partialDays = partialSubmissionLockedDays(entry);
+  if (partialDays.length === 0) {
+    return entry.dailyReviewLocks;
+  }
+  return {
+    ...(entry.dailyReviewLocks ?? {}),
+    ...Object.fromEntries(partialDays.map((day) => [day, true as const])),
+  };
+}
+
+// Submitting the whole week folds a pending or returned month-end block into the full review;
+// an already-approved block stays approved (its days may already be paid).
+function partialSubmissionAfterFullSubmit(partial?: TimesheetPartialSubmission): TimesheetPartialSubmission | undefined {
+  return partial?.status === "approved" ? partial : undefined;
+}
+
+// What payroll may pay from a timesheet: the whole week once approved, or only the approved
+// month-end block while the rest of the week is still open. Never persist the returned view.
+export function payableTimesheetView(entry: TimesheetEntry): TimesheetEntry | null {
+  if (entry.status === "approved") {
+    return entry;
+  }
+  if (entry.partialSubmission?.status !== "approved") {
+    return null;
+  }
+
+  const payableDays = new Set(timesheetDaysThrough(entry.weekStart, entry.partialSubmission.throughDate));
+  return {
+    ...entry,
+    status: "approved",
+    lines: entry.lines.map((line) => ({
+      ...line,
+      hours: Object.fromEntries(
+        DAY_KEYS.map((day) => [day, payableDays.has(day) ? Number(line.hours[day] ?? 0) : 0]),
+      ) as TimesheetTaskLine["hours"],
+    })),
+  };
 }
 
 function dayContentSignature(lines: TimesheetTaskLine[], day: DayKey) {
@@ -1349,6 +1446,7 @@ function timesheetFromRow(row: DbTimesheet): TimesheetEntry {
     dailyReviewNotes: normalizeDailyReviewNotes(row.dailyReviewNotes),
     dailyReviewHolidays: normalizeDailyReviewHolidays(row.dailyReviewHolidays),
     dailyReviewLocks: normalizeDailyReviewLocks(row.dailyReviewLocks),
+    partialSubmission: normalizePartialSubmission(row.partialSubmission),
     lines: Array.isArray(row.lines) && row.lines.length > 0
       ? row.lines.map((line) => ({
           id: line.id ?? createId("line"),
@@ -1394,6 +1492,7 @@ function timesheetFromNormalizedRow(
     dailyReviewNotes: normalizeDailyReviewNotes(row.dailyReviewNotes),
     dailyReviewHolidays: normalizeDailyReviewHolidays(row.dailyReviewHolidays),
     dailyReviewLocks: normalizeDailyReviewLocks(row.dailyReviewLocks),
+    partialSubmission: normalizePartialSubmission(row.partialSubmission),
     lines: lines
       .filter((line) => line.timesheetId === row.id)
       .sort((left, right) => {
@@ -1481,6 +1580,7 @@ function timesheetToRow(entry: TimesheetEntry) {
     dailyReviewNotes: normalizeDailyReviewNotes(entry.dailyReviewNotes) ?? {},
     dailyReviewHolidays: normalizeDailyReviewHolidays(entry.dailyReviewHolidays) ?? {},
     dailyReviewLocks: normalizeDailyReviewLocks(entry.dailyReviewLocks) ?? {},
+    partialSubmission: normalizePartialSubmission(entry.partialSubmission) ?? null,
     lines: (entry.lines ?? []).map((line) => ({
       id: line.id ?? createId("line"),
       project: line.project?.trim() || "",
@@ -1880,6 +1980,7 @@ export function normalizeStore(input?: Partial<BusinessStore> | null): BusinessS
     dailyReviewNotes: normalizeDailyReviewNotes(entry.dailyReviewNotes),
     dailyReviewHolidays: normalizeDailyReviewHolidays(entry.dailyReviewHolidays),
     dailyReviewLocks: normalizeDailyReviewLocks(entry.dailyReviewLocks),
+    partialSubmission: normalizePartialSubmission(entry.partialSubmission),
       lines: Array.isArray(entry.lines) && entry.lines.length > 0 ? entry.lines.map((line) => ({
         id: line.id ?? createId("line"),
         project: String(line.project ?? "").trim(),
@@ -2508,6 +2609,7 @@ function summarizeTimesheetAudit(entry: TimesheetEntry) {
     reviewedAt: entry.reviewedAt ?? null,
     reviewedBy: entry.reviewedBy ?? null,
     reviewNotes: entry.reviewNotes ?? null,
+    partialSubmission: entry.partialSubmission ?? null,
   };
 }
 
@@ -2804,11 +2906,21 @@ export async function saveTimesheetFast(input: {
     const isReviewShell = Boolean(normalizedEntry.reviewShell);
     assertTaskHourLimits(normalizedEntry, current.projectBudgets, current.timesheets);
     const existing = findExistingTimesheetByIdentity(current.timesheets, normalizedEntry);
-    const effectiveEntry = existing && existing.id !== normalizedEntry.id
-      ? { ...normalizedEntry, id: existing.id, createdAt: existing.createdAt ?? normalizedEntry.createdAt }
-      : normalizedEntry;
+    const effectiveEntry: TimesheetEntry = {
+      ...(existing && existing.id !== normalizedEntry.id
+        ? { ...normalizedEntry, id: existing.id, createdAt: existing.createdAt ?? normalizedEntry.createdAt }
+        : normalizedEntry),
+      // Only the month-end submission functions may change this; a regular save never overwrites it.
+      partialSubmission: existing?.partialSubmission,
+    };
+    const hasActivePartialSubmission = partialSubmissionLockedDays(effectiveEntry).length > 0;
 
-    if (effectiveEntry.status === "draft" && !hasPersistedTimesheetContent(effectiveEntry) && !isReviewShell) {
+    if (
+      effectiveEntry.status === "draft" &&
+      !hasPersistedTimesheetContent(effectiveEntry) &&
+      !isReviewShell &&
+      !hasActivePartialSubmission
+    ) {
       if (!existing) {
         return null;
       }
@@ -2964,6 +3076,9 @@ export async function setTimesheetDayReviewStatusFast(input: {
           reviewedAt: shouldAutoSubmit ? undefined : existing.reviewedAt,
           reviewedBy: shouldAutoSubmit ? undefined : existing.reviewedBy,
           reviewNotes: shouldAutoSubmit ? undefined : existing.reviewNotes,
+          partialSubmission: shouldAutoSubmit
+            ? partialSubmissionAfterFullSubmit(existing.partialSubmission)
+            : existing.partialSubmission,
           dailyReviewStatus: nextDailyReviewStatus,
           dailyReviewNotes: nextDailyReviewNotes,
           dailyReviewHolidays: nextDailyReviewHolidays,
@@ -3091,6 +3206,7 @@ export async function submitTimesheetFast(input: {
           reviewedAt: undefined,
           reviewedBy: undefined,
           reviewNotes: undefined,
+          partialSubmission: partialSubmissionAfterFullSubmit(existing.partialSubmission),
           updatedAt: nowIso(),
         },
       ],
@@ -3159,6 +3275,7 @@ export async function submitTimesheetEntryFast(input: {
           reviewedAt: undefined,
           reviewedBy: undefined,
           reviewNotes: undefined,
+          partialSubmission: partialSubmissionAfterFullSubmit(existing?.partialSubmission),
           status: "submitted" as const,
           updatedAt: nowIso(),
           createdAt: existing?.createdAt ?? normalizedEntry.createdAt,
@@ -3204,6 +3321,220 @@ export async function submitTimesheetEntryFast(input: {
   });
 }
 
+function formatIsoDateLabel(value: string) {
+  return new Date(`${value}T00:00:00Z`).toLocaleDateString("en-IN", { day: "numeric", month: "short", timeZone: "UTC" });
+}
+
+export async function submitPartialTimesheetFast(input: {
+  entry: TimesheetEntry;
+  tenantId: string;
+  actorName: string;
+  actorRole: ActorRole;
+  requestId?: string;
+}): Promise<TimesheetEntry> {
+  await ensureSchema();
+  return withStoreWriteLock(async () => {
+    storeReadPromise = null;
+    const current = storeCache ?? await readStore({ fresh: true });
+    const normalizedEntry = normalizeStore({ timesheets: [input.entry] }).timesheets[0];
+    assertTaskHourLimits(normalizedEntry, current.projectBudgets, current.timesheets);
+    const existing = findExistingTimesheetByIdentity(current.timesheets, normalizedEntry);
+
+    const weekStatus = existing?.status ?? "draft";
+    if (weekStatus !== "draft" && weekStatus !== "rejected") {
+      throw new WorkflowStateError(
+        "timesheetPartialSubmission",
+        weekStatus,
+        "submitted",
+        "This week has already been submitted, so the month-end days can't be submitted separately.",
+      );
+    }
+
+    const throughDate = timesheetMonthEndCutoff(normalizedEntry.weekStart);
+    if (!throughDate) {
+      throw new WorkflowStateError(
+        "timesheetPartialSubmission",
+        "none",
+        "submitted",
+        "This week doesn't cross into a new month. Submit the whole week instead.",
+      );
+    }
+
+    const partialState = existing?.partialSubmission?.status ?? "none";
+    if (!isAllowedWorkflowTransition("timesheetPartialSubmission", partialState, "submitted")) {
+      throw new WorkflowStateError(
+        "timesheetPartialSubmission",
+        partialState,
+        "submitted",
+        partialState === "approved"
+          ? `Days through ${formatIsoDateLabel(throughDate)} are already approved.`
+          : `Days through ${formatIsoDateLabel(throughDate)} are already waiting for review.`,
+      );
+    }
+
+    const partialDays = timesheetDaysThrough(normalizedEntry.weekStart, throughDate);
+    const hasPartialContent = normalizedEntry.lines.some((line) =>
+      partialDays.some((day) => Number(line.hours[day] ?? 0) > 0 || Boolean(line.workNotes?.[day]?.trim())),
+    );
+    if (!hasPartialContent) {
+      throw new WorkflowStateError(
+        "timesheetPartialSubmission",
+        partialState,
+        "submitted",
+        `Log hours for at least one day through ${formatIsoDateLabel(throughDate)} before submitting them.`,
+      );
+    }
+
+    const now = nowIso();
+    const baseEntry = existing && existing.id !== normalizedEntry.id
+      ? { ...normalizedEntry, id: existing.id, createdAt: existing.createdAt ?? normalizedEntry.createdAt }
+      : normalizedEntry;
+    const updatedEntry = normalizeStore({
+      timesheets: [
+        {
+          ...baseEntry,
+          status: weekStatus,
+          submittedAt: existing?.submittedAt,
+          reviewedAt: existing?.reviewedAt,
+          reviewedBy: existing?.reviewedBy,
+          reviewNotes: existing?.reviewNotes,
+          partialSubmission: { throughDate, status: "submitted", submittedAt: now },
+          createdAt: existing?.createdAt ?? normalizedEntry.createdAt,
+          updatedAt: now,
+        },
+      ],
+    }).timesheets[0];
+
+    const auditEntry = createAuditEntry({
+      tenantId: input.tenantId,
+      actorName: input.actorName,
+      actorRole: input.actorRole,
+      action: "submitted",
+      entityType: "timesheet",
+      entityId: updatedEntry.id,
+      summary: `Submitted timesheet days through ${formatIsoDateLabel(throughDate)} for month-end review.`,
+      requestId: input.requestId,
+      details: {
+        entityLabel: updatedEntry.employeeNameSnapshot,
+        requestId: input.requestId,
+        changedFields: ["partialSubmission", "lines"],
+        before: existing ? summarizeTimesheetAudit(existing) : null,
+        after: summarizeTimesheetAudit(updatedEntry),
+        context: { operation: "timesheet_partial_submit", throughDate },
+      },
+    });
+
+    const nextStore = normalizeStore({
+      ...current,
+      timesheets: existing
+        ? current.timesheets.map((timesheet) => (timesheet.id === updatedEntry.id ? updatedEntry : timesheet))
+        : [updatedEntry, ...current.timesheets],
+      auditTrail: [auditEntry, ...current.auditTrail].slice(0, 250),
+    });
+
+    await persistTargetedTimesheetUnsafe({
+      currentStore: current,
+      nextStore,
+      entry: updatedEntry,
+      auditEntry,
+    });
+    cacheStore(nextStore);
+    return structuredClone(updatedEntry);
+  });
+}
+
+export async function reviewPartialTimesheetFast(input: {
+  id: string;
+  tenantId: string;
+  status: "approved" | "rejected";
+  actorName: string;
+  requestId?: string;
+  note?: string;
+}): Promise<TimesheetEntry> {
+  await ensureSchema();
+  return withStoreWriteLock(async () => {
+    storeReadPromise = null;
+    const current = storeCache ?? await readStore({ fresh: true });
+    const existing = current.timesheets.find((timesheet) => timesheet.id === input.id);
+    if (!existing) {
+      throw new Error("Timesheet not found");
+    }
+
+    const partial = existing.partialSubmission;
+    const partialState = partial?.status ?? "none";
+    if (!partial || !isAllowedWorkflowTransition("timesheetPartialReview", partialState, input.status)) {
+      throw new WorkflowStateError(
+        "timesheetPartialReview",
+        partialState,
+        input.status,
+        partialState === "approved"
+          ? "These month-end days were already approved."
+          : partialState === "rejected"
+            ? "These month-end days were already returned to the employee."
+            : "There are no month-end days waiting for review on this timesheet.",
+      );
+    }
+
+    const now = nowIso();
+    const reviewedEntry = normalizeStore({
+      timesheets: [
+        {
+          ...existing,
+          partialSubmission: {
+            ...partial,
+            status: input.status,
+            reviewedAt: now,
+            reviewedBy: input.actorName,
+            reviewNotes: input.note?.trim() || undefined,
+          },
+          updatedAt: now,
+        },
+      ],
+    }).timesheets[0];
+
+    const throughLabel = formatIsoDateLabel(partial.throughDate);
+    const auditEntry = createAuditEntry({
+      tenantId: input.tenantId,
+      actorName: input.actorName,
+      actorRole: "admin",
+      action: input.status === "approved" ? "approved" : "reverted",
+      entityType: "timesheet",
+      entityId: existing.id,
+      summary:
+        input.status === "approved"
+          ? `Approved ${existing.employeeNameSnapshot}'s timesheet days through ${throughLabel}.`
+          : `Returned ${existing.employeeNameSnapshot}'s timesheet days through ${throughLabel} for changes.`,
+      requestId: input.requestId,
+      details: {
+        entityLabel: existing.employeeNameSnapshot,
+        requestId: input.requestId,
+        changedFields: ["partialSubmission"],
+        before: summarizeTimesheetAudit(existing),
+        after: summarizeTimesheetAudit(reviewedEntry),
+        context: {
+          operation: input.status === "approved" ? "timesheet_partial_approve" : "timesheet_partial_reject",
+          throughDate: partial.throughDate,
+        },
+      },
+    });
+
+    const nextStore = normalizeStore({
+      ...current,
+      timesheets: current.timesheets.map((timesheet) => (timesheet.id === existing.id ? reviewedEntry : timesheet)),
+      auditTrail: [auditEntry, ...current.auditTrail].slice(0, 250),
+    });
+
+    await persistTargetedTimesheetUnsafe({
+      currentStore: current,
+      nextStore,
+      entry: reviewedEntry,
+      auditEntry,
+    });
+    cacheStore(nextStore);
+    return structuredClone(reviewedEntry);
+  });
+}
+
 export async function reviewTimesheetFast(input: {
   id: string;
   tenantId: string;
@@ -3226,6 +3557,14 @@ export async function reviewTimesheetFast(input: {
     assertWorkflowTransition("timesheetReview", existing.status, input.status);
 
     const now = nowIso();
+    // A month-end block still pending here (e.g. the week auto-submitted after every day was reviewed)
+    // is settled by the full-week decision: approved along with the week, or dropped when it's returned.
+    const settledPartial =
+      existing.partialSubmission?.status === "submitted"
+        ? input.status === "approved"
+          ? { ...existing.partialSubmission, status: "approved" as const, reviewedAt: now, reviewedBy: input.actorName }
+          : undefined
+        : existing.partialSubmission;
     const reviewedEntry = normalizeStore({
       timesheets: [
         {
@@ -3234,60 +3573,81 @@ export async function reviewTimesheetFast(input: {
           reviewedAt: now,
           reviewedBy: input.actorName,
           reviewNotes: input.note?.trim() || undefined,
+          partialSubmission: settledPartial,
           updatedAt: now,
         },
       ],
     }).timesheets[0];
 
+    // A month that's already paid (e.g. from an approved month-end block) is never modified
+    // here. The payroll reconciler also skips paid records, and creates any remaining month's salary.
+    const isHourlyMonthPaid = (monthKey: string) =>
+      current.salaries.some((item) => item.status === "paid" && salaryMatchesTimesheetMonth(item, existing.id, monthKey));
+    const isMonthlyMonthPaid = (employeeId: string, monthKey: string) =>
+      current.salaries.some(
+        (item) =>
+          (item.tenantId ?? DEFAULT_TENANT_ID) === input.tenantId &&
+          item.source === "timesheet" &&
+          item.employeeId === employeeId &&
+          item.rate == null &&
+          item.status === "paid" &&
+          (payrollMonthKey(item.weekStart ?? item.date) === monthKey ||
+            item.timesheetId?.match(/:(\d{4}-\d{2})$/)?.[1] === monthKey),
+      );
+
     let salary: SalaryRecord | undefined;
     if (input.status === "approved" && input.employee) {
       if (input.employee.payType === "hourly" && effectiveHourlyRate(input.employee) > 0) {
-        const approvedMonth = timesheetMonthBreakdowns(reviewedEntry).find((breakdown) => breakdown.hours > 0);
-        const salaryMonthKey = approvedMonth?.monthKey ?? payrollMonthKey(existing.weekStart);
-        const existingPayroll = current.salaries.find((item) => salaryMatchesTimesheetMonth(item, existing.id, salaryMonthKey));
-        const hours = approvedMonth?.hours ?? 0;
-        const rate = effectiveHourlyRate(input.employee);
-        salary = {
-          id: existingPayroll?.id ?? createId("sal"),
-          tenantId: input.employee.tenantId ?? input.tenantId ?? DEFAULT_TENANT_ID,
-          employeeId: input.employee.id,
-          employeeNameSnapshot: input.employee.name,
-          amount: Math.round(hours * rate),
-          date: now,
-          note: input.note?.trim() || `Timesheet payout for week of ${existing.weekStart}`,
-          status: existingPayroll?.status === "paid" ? "paid" : "pending",
-          source: "timesheet",
-          paidAt: existingPayroll?.status === "paid" ? existingPayroll.paidAt ?? existingPayroll.date : undefined,
-          weekStart: approvedMonth?.firstWorkDate ?? existing.weekStart,
-          hours,
-          rate,
-          timesheetId: existingPayroll?.timesheetId ?? monthScopedTimesheetId(existing.id, salaryMonthKey),
-          createdAt: existingPayroll?.createdAt ?? now,
-          updatedAt: now,
-        };
+        const workedMonths = timesheetMonthBreakdowns(reviewedEntry).filter((breakdown) => breakdown.hours > 0);
+        const approvedMonth = workedMonths.find((breakdown) => !isHourlyMonthPaid(breakdown.monthKey));
+        const everyWorkedMonthPaid = workedMonths.length > 0 && !approvedMonth;
+        if (!everyWorkedMonthPaid) {
+          const salaryMonthKey = approvedMonth?.monthKey ?? payrollMonthKey(existing.weekStart);
+          const existingPayroll = current.salaries.find((item) => salaryMatchesTimesheetMonth(item, existing.id, salaryMonthKey));
+          const hours = approvedMonth?.hours ?? 0;
+          const rate = effectiveHourlyRate(input.employee);
+          salary = {
+            id: existingPayroll?.id ?? createId("sal"),
+            tenantId: input.employee.tenantId ?? input.tenantId ?? DEFAULT_TENANT_ID,
+            employeeId: input.employee.id,
+            employeeNameSnapshot: input.employee.name,
+            amount: Math.round(hours * rate),
+            date: now,
+            note: input.note?.trim() || `Timesheet payout for week of ${existing.weekStart}`,
+            status: existingPayroll?.status === "paid" ? "paid" : "pending",
+            source: "timesheet",
+            paidAt: existingPayroll?.status === "paid" ? existingPayroll.paidAt ?? existingPayroll.date : undefined,
+            weekStart: approvedMonth?.firstWorkDate ?? existing.weekStart,
+            hours,
+            rate,
+            timesheetId: existingPayroll?.timesheetId ?? monthScopedTimesheetId(existing.id, salaryMonthKey),
+            createdAt: existingPayroll?.createdAt ?? now,
+            updatedAt: now,
+          };
+        }
       } else {
         const monthlyAmount = effectiveMonthlySalary(input.employee);
-        if (monthlyAmount > 0) {
-          const reviewedBreakdown = timesheetMonthBreakdowns(reviewedEntry).find((b) => b.days > 0);
+        const employeeId = input.employee.id;
+        const workedMonths = timesheetMonthBreakdowns(reviewedEntry).filter((b) => b.days > 0);
+        const reviewedBreakdown = workedMonths.find((b) => !isMonthlyMonthPaid(employeeId, b.monthKey));
+        const everyWorkedMonthPaid = workedMonths.length > 0 && !reviewedBreakdown;
+        if (monthlyAmount > 0 && !everyWorkedMonthPaid) {
           const monthKey = reviewedBreakdown?.monthKey ?? payrollMonthKey(existing.weekStart);
           const existingPayroll = current.salaries.find(
             (item) =>
               (item.tenantId ?? DEFAULT_TENANT_ID) === input.tenantId &&
               item.source === "timesheet" &&
-              item.employeeId === input.employee!.id &&
+              item.employeeId === employeeId &&
               item.rate == null &&
               salaryMatchesTimesheetMonth(item, existing.id, monthKey),
           );
-          const allApprovedTimesheets = current.timesheets
-            .map((timesheet) => (timesheet.id === reviewedEntry.id ? reviewedEntry : timesheet))
-            .filter(
-              (timesheet) =>
-                timesheet.employeeId === input.employee!.id &&
-                timesheet.status === "approved",
-            );
+          const payableTimesheets = current.timesheets
+            .filter((timesheet) => timesheet.employeeId === employeeId)
+            .map((timesheet) => payableTimesheetView(timesheet.id === reviewedEntry.id ? reviewedEntry : timesheet))
+            .filter((timesheet): timesheet is TimesheetEntry => timesheet !== null);
           let monthDays = 0;
           let monthHours = 0;
-          for (const timesheet of allApprovedTimesheets) {
+          for (const timesheet of payableTimesheets) {
             for (const breakdown of timesheetMonthBreakdowns(timesheet)) {
               if (breakdown.monthKey === monthKey) {
                 monthDays += breakdown.days;
@@ -3300,7 +3660,7 @@ export async function reviewTimesheetFast(input: {
           salary = {
             id: existingPayroll?.id ?? createId("sal"),
             tenantId: input.employee.tenantId ?? input.tenantId ?? DEFAULT_TENANT_ID,
-            employeeId: input.employee.id,
+            employeeId,
             employeeNameSnapshot: input.employee.name,
             amount: proratedAmount > 0 ? proratedAmount : monthlyAmount,
             date: existingPayroll?.date ?? now,
@@ -3435,11 +3795,11 @@ export async function recallTimesheetForCorrection(input: {
     // approved timesheets, so without this cleanup the record would linger with the old amount.
     let pendingMonthlySalaryId: string | null = null;
     for (const monthKey of affectedMonthKeys) {
+      // Counts the recalled week's own approved month-end block, which stays payable after recall.
       const hasOtherApprovedForMonth = current.timesheets.some((t) => {
-        if (t.id === existing.id) return false;
         if (t.employeeId !== existing.employeeId) return false;
-        if (t.status !== "approved") return false;
-        return timesheetMonthBreakdowns(t).some((b) => b.monthKey === monthKey);
+        const payable = payableTimesheetView(t.id === existing.id ? recalledEntry : t);
+        return payable ? timesheetMonthBreakdowns(payable).some((b) => b.monthKey === monthKey) : false;
       });
       if (!hasOtherApprovedForMonth) {
         const orphan = current.salaries.find((s) =>

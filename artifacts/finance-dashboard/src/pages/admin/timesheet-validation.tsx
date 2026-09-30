@@ -16,6 +16,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { dayKeysThrough, formatMonthEndRange, formatRemainingDays } from "@/lib/timesheet-month-end";
+
+// A week whose month-end days are waiting for review while the rest of the week is still open.
+function isMonthEndOnlySubmission(entry: TimesheetEntry) {
+  return entry.status !== "submitted" && entry.partialSubmission?.status === "submitted";
+}
 
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 const DAY_LABELS: Record<(typeof DAYS)[number], string> = {
@@ -708,7 +714,10 @@ export default function AdminTimesheetValidationPage() {
   }, [departmentEmployees, selectedReviewEmployeeId]);
 
   const pendingTimesheets = useMemo(
-    () => timesheets.filter((entry) => entry.status === "submitted").sort((a, b) => new Date(b.weekStart).getTime() - new Date(a.weekStart).getTime()),
+    () =>
+      timesheets
+        .filter((entry) => entry.status === "submitted" || isMonthEndOnlySubmission(entry))
+        .sort((a, b) => new Date(b.weekStart).getTime() - new Date(a.weekStart).getTime()),
     [timesheets],
   );
   const reviewedTimesheets = useMemo(
@@ -729,6 +738,19 @@ export default function AdminTimesheetValidationPage() {
   }, [pendingTimesheets, selectedTimesheetId]);
 
   const selectedTimesheet = pendingTimesheets.find((entry) => entry.id === selectedTimesheetId) ?? pendingTimesheets[0] ?? null;
+  const selectedMonthEnd =
+    selectedTimesheet && isMonthEndOnlySubmission(selectedTimesheet) ? selectedTimesheet.partialSubmission ?? null : null;
+  const reviewDays = useMemo(
+    () =>
+      new Set<DayKey>(
+        selectedTimesheet && selectedMonthEnd
+          ? dayKeysThrough(selectedTimesheet.weekStart, selectedMonthEnd.throughDate)
+          : DAYS,
+      ),
+    [selectedMonthEnd, selectedTimesheet],
+  );
+  const monthEndRangeLabel =
+    selectedTimesheet && selectedMonthEnd ? formatMonthEndRange(selectedTimesheet.weekStart, selectedMonthEnd.throughDate) : "";
 
   const { data: monthCalendar } = useQuery({
     queryKey: ["employee-month-calendar", selectedEmployeeId, selectedMonth],
@@ -768,6 +790,61 @@ export default function AdminTimesheetValidationPage() {
         queryClient.invalidateQueries({ queryKey: ["timesheets"] }),
         queryClient.invalidateQueries({ queryKey: ["notifications"] }),
       ]);
+    },
+  });
+
+  const approveMonthEndMutation = useMutation({
+    mutationFn: () => {
+      if (!selectedTimesheet || !selectedMonthEnd) {
+        throw new Error("Select a month-end submission.");
+      }
+      return api.approveTimesheetMonthEnd(selectedTimesheet.id, reviewNote.trim() || undefined);
+    },
+    onSuccess: () => {
+      setReviewNote("");
+      toast({
+        title: `${monthEndRangeLabel} approved`,
+        description: "This month's payroll for these days has been queued. The rest of the week stays with the employee.",
+      });
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["timesheets"] }),
+        queryClient.invalidateQueries({ queryKey: ["salaries"] }),
+        queryClient.invalidateQueries({ queryKey: ["notifications"] }),
+      ]);
+    },
+    onError: (error) => {
+      toast({
+        title: "Could not approve month-end days",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const rejectMonthEndMutation = useMutation({
+    mutationFn: () => {
+      if (!selectedTimesheet || !selectedMonthEnd) {
+        throw new Error("Select a month-end submission.");
+      }
+      return api.rejectTimesheetMonthEnd(selectedTimesheet.id, reviewNote.trim() || "Please revise these days.");
+    },
+    onSuccess: () => {
+      setReviewNote("");
+      toast({
+        title: `${monthEndRangeLabel} returned`,
+        description: "The employee can edit these days and submit them again.",
+      });
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["timesheets"] }),
+        queryClient.invalidateQueries({ queryKey: ["notifications"] }),
+      ]);
+    },
+    onError: (error) => {
+      toast({
+        title: "Could not return month-end days",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
     },
   });
 
@@ -932,20 +1009,22 @@ export default function AdminTimesheetValidationPage() {
       return 0;
     }
     return selectedTimesheet.lines.reduce(
-      (sum, line) => sum + DAYS.reduce((lineSum, day) => lineSum + Number(line.hours[day] ?? 0), 0),
+      (sum, line) =>
+        sum + DAYS.reduce((lineSum, day) => lineSum + (reviewDays.has(day) ? Number(line.hours[day] ?? 0) : 0), 0),
       0,
     );
-  }, [selectedTimesheet]);
+  }, [reviewDays, selectedTimesheet]);
 
   const dailyTotals = useMemo(() => {
     if (!selectedTimesheet) {
-      return DAYS.map((day) => ({ day, total: 0 }));
+      return DAYS.map((day) => ({ day, total: 0, inReview: true }));
     }
     return DAYS.map((day) => ({
       day,
       total: selectedTimesheet.lines.reduce((sum, line) => sum + Number(line.hours[day] ?? 0), 0),
+      inReview: reviewDays.has(day),
     }));
-  }, [selectedTimesheet]);
+  }, [reviewDays, selectedTimesheet]);
 
   const detailDays = useMemo(() => {
     if (!selectedTimesheet) {
@@ -1174,9 +1253,15 @@ export default function AdminTimesheetValidationPage() {
                         <p className="truncate font-medium text-foreground">{entry.employeeNameSnapshot}</p>
                         <p className="text-xs text-muted-foreground">{weekLabel(entry.weekStart)}</p>
                       </div>
-                      <Badge className="rounded-full border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium text-sky-300 shadow-none">
-                        Submitted
-                      </Badge>
+                      {isMonthEndOnlySubmission(entry) && entry.partialSubmission ? (
+                        <Badge className="shrink-0 rounded-full border border-violet-500/20 bg-violet-500/10 px-2 py-0.5 text-[10px] font-medium text-violet-300 shadow-none">
+                          {formatMonthEndRange(entry.weekStart, entry.partialSubmission.throughDate)} only
+                        </Badge>
+                      ) : (
+                        <Badge className="rounded-full border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium text-sky-300 shadow-none">
+                          Submitted
+                        </Badge>
+                      )}
                     </button>
                   ))}
                 </div>
@@ -1196,6 +1281,16 @@ export default function AdminTimesheetValidationPage() {
                 </div>
               ) : (
                 <>
+                  {selectedMonthEnd ? (
+                    <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 px-4 py-3 text-sm">
+                      <p className="font-medium text-foreground">Month-end submission: {monthEndRangeLabel} only</p>
+                      <p className="mt-0.5 text-muted-foreground">
+                        Approving pays these days in this month's payroll. {formatRemainingDays(selectedTimesheet.weekStart, selectedMonthEnd.throughDate)} is
+                        still with the employee and will come in as a separate submission.
+                      </p>
+                    </div>
+                  ) : null}
+
                   <div className="grid gap-3 md:grid-cols-3">
                     <div className="rounded-xl border border-border/60 bg-background/70 px-4 py-3">
                       <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Employee</p>
@@ -1206,14 +1301,23 @@ export default function AdminTimesheetValidationPage() {
                       <p className="mt-1 font-medium">{weekLabel(selectedTimesheet.weekStart)}</p>
                     </div>
                     <div className="rounded-xl border border-border/60 bg-background/70 px-4 py-3">
-                      <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">Hours</p>
+                      <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+                        {selectedMonthEnd ? `Hours (${monthEndRangeLabel})` : "Hours"}
+                      </p>
                       <p className="mt-1 font-medium">{selectedHours.toFixed(1)}h</p>
                     </div>
                   </div>
 
                   <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-7">
                     {dailyTotals.map((day) => (
-                      <div key={day.day} className="rounded-lg border border-border/60 bg-background/70 px-3 py-2.5">
+                      <div
+                        key={day.day}
+                        className={cn(
+                          "rounded-lg border border-border/60 bg-background/70 px-3 py-2.5",
+                          !day.inReview && "border-dashed opacity-45",
+                        )}
+                        title={day.inReview ? undefined : "Not part of this submission"}
+                      >
                         <p className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">{day.day}</p>
                         <p className="mt-1 text-sm font-medium text-foreground">{day.total.toFixed(1)}h</p>
                       </div>
@@ -1228,7 +1332,7 @@ export default function AdminTimesheetValidationPage() {
                       <span className="text-right">Total</span>
                     </div>
                     {selectedTimesheet.lines.map((line, index) => {
-                      const total = DAYS.reduce((sum, day) => sum + Number(line.hours[day] ?? 0), 0);
+                      const total = DAYS.reduce((sum, day) => sum + (reviewDays.has(day) ? Number(line.hours[day] ?? 0) : 0), 0);
                       const workNoteSummary = lineWorkNoteSummary(line);
                       const { taskName, taskDescription } = taskLineDisplayParts(line, taskCatalogLookup);
                       return (
@@ -1291,23 +1395,47 @@ export default function AdminTimesheetValidationPage() {
                       <Eye className="mr-2 h-4 w-4" />
                       View in detail
                     </Button>
-                    <Button
-                      variant="outline"
-                      className="rounded-xl border-border/60"
-                      disabled={rejectMutation.isPending}
-                      onClick={() => void rejectMutation.mutateAsync()}
-                    >
-                      <RefreshCcw className="mr-2 h-4 w-4" />
-                      Revert For Changes
-                    </Button>
-                    <Button
-                      className="rounded-xl border border-emerald-500/20 bg-emerald-500 text-white hover:bg-emerald-500/90"
-                      disabled={approveMutation.isPending}
-                      onClick={() => void approveMutation.mutateAsync()}
-                    >
-                      <CheckCircle2 className="mr-2 h-4 w-4" />
-                      Approve & Queue Payroll
-                    </Button>
+                    {selectedMonthEnd ? (
+                      <>
+                        <Button
+                          variant="outline"
+                          className="rounded-xl border-border/60"
+                          disabled={rejectMonthEndMutation.isPending || approveMonthEndMutation.isPending}
+                          onClick={() => rejectMonthEndMutation.mutate()}
+                        >
+                          <RefreshCcw className="mr-2 h-4 w-4" />
+                          Return {monthEndRangeLabel}
+                        </Button>
+                        <Button
+                          className="rounded-xl border border-emerald-500/20 bg-emerald-500 text-white hover:bg-emerald-500/90"
+                          disabled={approveMonthEndMutation.isPending || rejectMonthEndMutation.isPending}
+                          onClick={() => approveMonthEndMutation.mutate()}
+                        >
+                          <CheckCircle2 className="mr-2 h-4 w-4" />
+                          Approve {monthEndRangeLabel}
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Button
+                          variant="outline"
+                          className="rounded-xl border-border/60"
+                          disabled={rejectMutation.isPending}
+                          onClick={() => void rejectMutation.mutateAsync()}
+                        >
+                          <RefreshCcw className="mr-2 h-4 w-4" />
+                          Revert For Changes
+                        </Button>
+                        <Button
+                          className="rounded-xl border border-emerald-500/20 bg-emerald-500 text-white hover:bg-emerald-500/90"
+                          disabled={approveMutation.isPending}
+                          onClick={() => void approveMutation.mutateAsync()}
+                        >
+                          <CheckCircle2 className="mr-2 h-4 w-4" />
+                          Approve & Queue Payroll
+                        </Button>
+                      </>
+                    )}
                   </div>
                 </>
               )}

@@ -1,0 +1,1 @@
+ALTER TABLE "timesheets" ADD COLUMN "partial_submission" jsonb;

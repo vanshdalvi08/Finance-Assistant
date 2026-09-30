@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { addDays, format } from "date-fns";
 import {
+  CalendarCheck,
   CalendarDays,
+  CalendarRange,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -28,7 +30,7 @@ import {
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
@@ -36,6 +38,15 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import {
+  dayKeysThrough,
+  formatMonthEndDate,
+  formatMonthEndRange,
+  formatRemainingDays,
+  locksWithMonthEnd,
+  monthEndLockedDays,
+  timesheetMonthEndCutoff,
+} from "@/lib/timesheet-month-end";
 
 const DAYS: Array<{ key: DayKey; label: string }> = [
   { key: "mon", label: "Mon" },
@@ -321,6 +332,7 @@ export default function EmployeeTimesheetPage() {
   const [hoveredRowId, setHoveredRowId] = useState<string | null>(null);
   const [hoveredCell, setHoveredCell] = useState<{ lineId: string; day: DayKey } | null>(null);
   const [activeNoteCell, setActiveNoteCell] = useState<{ lineId: string; day: DayKey } | null>(null);
+  const [submitChoiceOpen, setSubmitChoiceOpen] = useState(false);
   const [cellWorkNoteDraft, setCellWorkNoteDraft] = useState("");
   const [cellHoursDraft, setCellHoursDraft] = useState("");
 
@@ -739,12 +751,67 @@ export default function EmployeeTimesheetPage() {
     },
   });
 
+  const monthEndMutation = useMutation({
+    mutationFn: (entry: TimesheetEntry) => api.submitTimesheetMonthEnd(entry),
+    onSuccess: (submittedEntry) => {
+      setDraft(submittedEntry);
+      syncTimesheetCache(submittedEntry);
+      setSubmitChoiceOpen(false);
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["adminOverview"] }),
+        queryClient.invalidateQueries({ queryKey: ["notifications"] }),
+      ]);
+      const throughDate = submittedEntry.partialSubmission?.throughDate;
+      toast({
+        title: "Month-end days submitted",
+        description: throughDate
+          ? `Days through ${formatMonthEndDate(throughDate)} were sent for review. The rest of the week stays open.`
+          : "Your month-end days were sent for review.",
+      });
+    },
+    onError: (error) => {
+      toast({
+        title: "Could not submit month-end days",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const readOnly = draft?.status === "submitted" || draft?.status === "approved";
   const isRejected = draft?.status === "rejected";
   const canPersistDraft = hasDraftContent(draft);
+  // Days in a pending or approved month-end submission are locked just like admin-locked days.
+  const draftLocks = locksWithMonthEnd(draft);
+  const monthEndCutoff = draft ? timesheetMonthEndCutoff(draft.weekStart) : null;
+  const monthEndPartial = draft?.partialSubmission;
+  const monthEndDays = new Set(monthEndLockedDays(draft));
+  const monthEndHours =
+    draft && monthEndCutoff
+      ? dayKeysThrough(draft.weekStart, monthEndCutoff).reduce(
+          (sum, day) => sum + draft.lines.reduce((lineSum, line) => lineSum + Number(line.hours[day] ?? 0), 0),
+          0,
+        )
+      : 0;
+  const canSubmitMonthEnd =
+    Boolean(monthEndCutoff) && !readOnly && monthEndPartial?.status !== "submitted" && monthEndPartial?.status !== "approved";
+  const submitPending = submitMutation.isPending || monthEndMutation.isPending;
+  const submitButtonLabel =
+    monthEndCutoff && monthEndPartial && monthEndPartial.status !== "rejected" && draft
+      ? `Submit remaining days (${formatRemainingDays(draft.weekStart, monthEndCutoff)})`
+      : "Submit for Review";
   const activeDayLocked = activeNoteCell
-    ? isProtectedDayLocked(draft?.dailyReviewStatus, draft?.dailyReviewHolidays, draft?.dailyReviewLocks, activeNoteCell.day)
+    ? isProtectedDayLocked(draft?.dailyReviewStatus, draft?.dailyReviewHolidays, draftLocks, activeNoteCell.day)
     : false;
+
+  function lockedDayDescription(day: DayKey) {
+    if (monthEndDays.has(day)) {
+      return monthEndPartial?.status === "approved"
+        ? "This day was approved for month-end payroll and can't be changed."
+        : "This day is waiting for month-end review. You can change it only if your admin returns it.";
+    }
+    return "This day is protected by admin and cannot be edited.";
+  }
 
   function goToWeek(date: Date) {
     setSelectedWeek(weekStartIso(date));
@@ -788,10 +855,10 @@ export default function EmployeeTimesheetPage() {
   );
 
   function openWorkNoteDialog(line: TimesheetTaskLine, day: DayKey) {
-    if (isProtectedDayLocked(draft?.dailyReviewStatus, draft?.dailyReviewHolidays, draft?.dailyReviewLocks, day)) {
+    if (isProtectedDayLocked(draft?.dailyReviewStatus, draft?.dailyReviewHolidays, draftLocks, day)) {
       toast({
         title: "Day locked",
-        description: "This day is protected by admin and cannot be edited.",
+        description: lockedDayDescription(day),
       });
       return;
     }
@@ -850,10 +917,10 @@ export default function EmployeeTimesheetPage() {
       return;
     }
 
-    if (isProtectedDayLocked(draft?.dailyReviewStatus, draft?.dailyReviewHolidays, draft?.dailyReviewLocks, activeNoteCell.day)) {
+    if (isProtectedDayLocked(draft?.dailyReviewStatus, draft?.dailyReviewHolidays, draftLocks, activeNoteCell.day)) {
       toast({
         title: "Day locked",
-        description: "This day is protected by admin and cannot be edited.",
+        description: lockedDayDescription(activeNoteCell.day),
       });
       closeWorkNoteDialog();
       return;
@@ -884,10 +951,10 @@ export default function EmployeeTimesheetPage() {
   }
 
   function changeHour(lineId: string, day: DayKey, rawValue: string) {
-    if (isProtectedDayLocked(draft?.dailyReviewStatus, draft?.dailyReviewHolidays, draft?.dailyReviewLocks, day)) {
+    if (isProtectedDayLocked(draft?.dailyReviewStatus, draft?.dailyReviewHolidays, draftLocks, day)) {
       toast({
         title: "Day locked",
-        description: "This day is protected by admin and cannot be edited.",
+        description: lockedDayDescription(day),
       });
       return;
     }
@@ -928,6 +995,16 @@ export default function EmployeeTimesheetPage() {
                 {draft ? (
                   <Badge className={cn("rounded-full border px-2.5 py-1 text-[11px] font-medium shadow-none", statusBadgeClass(draft.status))}>
                     {statusLabel(draft.status)}
+                  </Badge>
+                ) : null}
+                {draft && monthEndPartial ? (
+                  <Badge
+                    className={cn(
+                      "rounded-full border px-2.5 py-1 text-[11px] font-medium shadow-none",
+                      statusBadgeClass(monthEndPartial.status),
+                    )}
+                  >
+                    {formatMonthEndRange(draft.weekStart, monthEndPartial.throughDate)} · {statusLabel(monthEndPartial.status)}
                   </Badge>
                 ) : null}
               </div>
@@ -973,6 +1050,21 @@ export default function EmployeeTimesheetPage() {
             <div className="space-y-1">
               <p className="font-medium text-foreground">Changes requested</p>
               <p className="text-muted-foreground">{draft.reviewNotes}</p>
+            </div>
+          </div>
+        ) : null}
+
+        {draft && monthEndPartial?.status === "rejected" ? (
+          <div className="flex items-start gap-3 rounded-2xl border border-amber-200/70 bg-amber-50/60 px-4 py-3 text-sm shadow-sm dark:border-amber-500/15 dark:bg-amber-500/5">
+            <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-full border border-amber-200/70 bg-white/80 text-amber-500 shadow-none dark:border-amber-500/15 dark:bg-slate-950/70 dark:text-amber-300">
+              <FilePenLine className="h-4 w-4" />
+            </div>
+            <div className="space-y-1">
+              <p className="font-medium text-foreground">
+                Changes requested for {formatMonthEndRange(draft.weekStart, monthEndPartial.throughDate)}
+              </p>
+              {monthEndPartial.reviewNotes ? <p className="text-muted-foreground">{monthEndPartial.reviewNotes}</p> : null}
+              <p className="text-xs text-muted-foreground">Update those days, then submit them again.</p>
             </div>
           </div>
         ) : null}
@@ -1028,24 +1120,33 @@ export default function EmployeeTimesheetPage() {
                         const dayReviewNote = draft?.dailyReviewNotes?.[day.key]?.trim() ?? "";
                         const isDayReviewed = dayReviewState === "reviewed";
                         const isDayReverted = dayReviewState === "reverted";
+                        const monthEndState = monthEndDays.has(day.key) ? monthEndPartial?.status : undefined;
                         const dayStatus = isAdminHoliday
                           ? "Holiday"
                           : isDayReviewed
                             ? "Verified"
                             : isDayReverted
                               ? "Returned"
-                              : isAdminLocked
-                                ? "Locked"
-                                : "Work";
+                              : monthEndState === "approved"
+                                ? "Approved"
+                                : monthEndState === "submitted"
+                                  ? "Submitted"
+                                  : isAdminLocked
+                                    ? "Locked"
+                                    : "Work";
                         const dayStatusClass = isAdminHoliday
                           ? "text-emerald-300"
                           : isDayReviewed
                           ? "text-emerald-400"
                           : isDayReverted
                             ? "text-rose-300/80"
-                            : isAdminLocked
-                              ? "text-slate-400"
-                            : "text-muted-foreground";
+                            : monthEndState === "approved"
+                              ? "text-emerald-400"
+                              : monthEndState === "submitted"
+                                ? "text-sky-300"
+                                : isAdminLocked
+                                  ? "text-slate-400"
+                                  : "text-muted-foreground";
 
                         return (
                           <th
@@ -1158,7 +1259,7 @@ export default function EmployeeTimesheetPage() {
                         line,
                         draft.dailyReviewStatus,
                         draft.dailyReviewHolidays,
-                        draft.dailyReviewLocks,
+                        draftLocks,
                       );
                       const rowEditDisabled = readOnly || rowHasProtectedContent;
 
@@ -1314,7 +1415,7 @@ export default function EmployeeTimesheetPage() {
                           const dayLocked = isProtectedDayLocked(
                             draft.dailyReviewStatus,
                             draft.dailyReviewHolidays,
-                            draft.dailyReviewLocks,
+                            draftLocks,
                             day.key,
                           );
                           const placeholder = isHoliday
@@ -1543,20 +1644,18 @@ export default function EmployeeTimesheetPage() {
           <Button
             size="sm"
             className="h-9 rounded-xl border border-sky-400/20 bg-sky-500 text-white shadow-sm hover:bg-sky-500/90"
-            disabled={!draft || readOnly || draftHours <= 0 || submitMutation.isPending}
-            onClick={() => draft && submitMutation.mutate(draft)}
+            disabled={!draft || readOnly || draftHours <= 0 || submitPending}
+            onClick={() => {
+              if (!draft) return;
+              if (canSubmitMonthEnd) {
+                setSubmitChoiceOpen(true);
+                return;
+              }
+              submitMutation.mutate(draft);
+            }}
           >
-            {isRejected ? (
-              <>
-                <FilePenLine className="mr-2 h-4 w-4" />
-                Submit for Review
-              </>
-            ) : (
-              <>
-                <ClipboardCheck className="mr-2 h-4 w-4" />
-                Submit for Review
-              </>
-            )}
+            {isRejected ? <FilePenLine className="mr-2 h-4 w-4" /> : <ClipboardCheck className="mr-2 h-4 w-4" />}
+            {submitButtonLabel}
           </Button>
         </div>
 
@@ -1731,6 +1830,63 @@ export default function EmployeeTimesheetPage() {
               </Button>
             </DialogFooter>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={submitChoiceOpen} onOpenChange={(open) => !submitPending && setSubmitChoiceOpen(open)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>This week runs into a new month</DialogTitle>
+            <DialogDescription>Choose what you'd like to send for review now.</DialogDescription>
+          </DialogHeader>
+          {draft && monthEndCutoff ? (
+            <div className="space-y-3">
+              <button
+                type="button"
+                disabled={submitPending || monthEndHours <= 0}
+                onClick={() => monthEndMutation.mutate(draft)}
+                className="group flex w-full items-start gap-3 rounded-xl border border-border/60 bg-secondary/10 p-4 text-left transition-colors hover:border-sky-400/40 hover:bg-sky-500/5 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sky-500/10 text-sky-400">
+                  <CalendarCheck className="h-4 w-4" />
+                </span>
+                <span className="space-y-1">
+                  <span className="block text-sm font-semibold text-foreground">
+                    Submit through {formatMonthEndDate(monthEndCutoff)}
+                  </span>
+                  <span className="block text-xs leading-relaxed text-muted-foreground">
+                    {monthEndHours > 0
+                      ? `Only ${formatMonthEndRange(draft.weekStart, monthEndCutoff)} goes for review now, so this month's payroll isn't held up. ${formatRemainingDays(draft.weekStart, monthEndCutoff)} stays open for you to finish.`
+                      : `Log hours for ${formatMonthEndRange(draft.weekStart, monthEndCutoff)} first to submit them separately.`}
+                  </span>
+                </span>
+              </button>
+              <button
+                type="button"
+                disabled={submitPending}
+                onClick={() => {
+                  setSubmitChoiceOpen(false);
+                  submitMutation.mutate(draft);
+                }}
+                className="group flex w-full items-start gap-3 rounded-xl border border-border/60 bg-secondary/10 p-4 text-left transition-colors hover:border-border hover:bg-secondary/20 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-secondary/60 text-muted-foreground">
+                  <CalendarRange className="h-4 w-4" />
+                </span>
+                <span className="space-y-1">
+                  <span className="block text-sm font-semibold text-foreground">Submit the whole week</span>
+                  <span className="block text-xs leading-relaxed text-muted-foreground">
+                    Send every day of this week for review. You won't be able to edit it afterwards.
+                  </span>
+                </span>
+              </button>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="ghost" size="sm" className="rounded-xl" disabled={submitPending} onClick={() => setSubmitChoiceOpen(false)}>
+              Cancel
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </DashboardLayout>

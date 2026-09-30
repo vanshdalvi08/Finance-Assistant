@@ -4,6 +4,7 @@ import { idempotencyKeysTable, type ActorRole } from "@workspace/db/schema";
 import {
   type BusinessStore,
   type SalaryRecord,
+  type TimesheetEntry,
   createId,
   daysInCalendarMonth,
   effectiveHourlyRate,
@@ -15,6 +16,7 @@ import {
   normalizeDate,
   normalizeWeekStart,
   nowIso,
+  payableTimesheetView,
   pushAuditEvent,
   readStore,
   salaryMatchesTimesheetMonth,
@@ -89,11 +91,9 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
 
   const employeeById = new Map(employees.map((employee) => [employee.id, employee]));
   const store = await readStore();
-  const approvedTimesheets = store.timesheets.filter(
-    (timesheet) =>
-      timesheet.status === "approved" &&
-      employeeById.has(timesheet.employeeId),
-  );
+  const approvedTimesheets = store.timesheets
+    .map(payableTimesheetView)
+    .filter((timesheet): timesheet is TimesheetEntry => timesheet !== null && employeeById.has(timesheet.employeeId));
   // For monthly employees, group by employeeId:actualCalendarMonth using breakdown dates
   const approvedMonthlyGroups = new Map<string, typeof store.timesheets>();
 
@@ -238,11 +238,9 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
     const updatedAt = nowIso();
     const currentApprovedGroups = new Map<string, typeof current.timesheets>();
 
-    for (const timesheet of current.timesheets) {
-      if (
-        timesheet.status !== "approved" ||
-        !employeeById.has(timesheet.employeeId)
-      ) {
+    for (const sourceTimesheet of current.timesheets) {
+      const timesheet: TimesheetEntry | null = payableTimesheetView(sourceTimesheet);
+      if (!timesheet || !employeeById.has(timesheet.employeeId)) {
         continue;
       }
       const employee = employeeById.get(timesheet.employeeId);
@@ -312,7 +310,7 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
         continue;
       }
       for (const breakdown of breakdowns) {
-        const key = `${timesheet.employeeId}:${breakdown.monthKey}`;
+        const key: string = `${timesheet.employeeId}:${breakdown.monthKey}`;
         if (!currentApprovedGroups.has(key)) {
           currentApprovedGroups.set(key, []);
         }
@@ -434,6 +432,10 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
 
     return { ...current, salaries: nextSalaries };
   });
+}
+
+export async function syncTimesheetPayroll(tenantId: string, employeeId?: string | null) {
+  await reconcileTimesheetPayroll(tenantId, employeeId);
 }
 
 function ensureFunds(store: BusinessStore, amount: number, label: string, tenantId: string, accountId: string) {
