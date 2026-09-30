@@ -1227,6 +1227,124 @@ test("a draft week with nothing approved can't be recalled", { concurrency: fals
   }
 });
 
+test("timesheets can't be submitted until every filled-in row has a project and a task", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const createdEmployee = await createEmployee(adminToken, randomSuffix("phase2-require-project"));
+  const employee = createdEmployee.user;
+  const employeeToken = await login(employee.email, createdEmployee.temporaryPassword);
+  const weekStart = "2026-10-12";
+  let timesheetId = null;
+
+  try {
+    const noProject = [{ id: "line-no-project", project: "", task: "", hours: { mon: 4 } }];
+    const draft = await api("/business/timesheets", {
+      method: "POST",
+      token: employeeToken,
+      body: { employeeId: employee.id, weekStart, lines: noProject },
+    });
+    assert.ok([200, 201].includes(draft.status), `Drafts may still be incomplete: ${JSON.stringify(draft.json)}`);
+    timesheetId = draft.json.timesheet.id;
+    const savedLineId = draft.json.timesheet.lines[0].id;
+
+    const submitById = await api(`/business/timesheets/${timesheetId}/submit`, { method: "POST", token: employeeToken, body: {} });
+    assert.equal(submitById.status, 400, JSON.stringify(submitById.json));
+    assert.match(String(submitById.json.message), /project and task/i);
+    assert.deepEqual(submitById.json.incompleteLineIds, [savedLineId]);
+
+    const missingTask = await api("/business/timesheets/submit", {
+      method: "POST",
+      token: employeeToken,
+      body: { id: timesheetId, employeeId: employee.id, weekStart, lines: [{ project: "Tanfac", task: "", hours: { mon: 4 } }] },
+    });
+    assert.equal(missingTask.status, 400, JSON.stringify(missingTask.json));
+
+    const noteOnly = await api("/business/timesheets/submit", {
+      method: "POST",
+      token: employeeToken,
+      body: {
+        id: timesheetId,
+        employeeId: employee.id,
+        weekStart,
+        lines: [
+          { project: "Tanfac", task: "Piping", hours: { mon: 4 } },
+          { project: "", task: "", hours: {}, workNotes: { tue: "Site visit" } },
+        ],
+      },
+    });
+    assert.equal(noteOnly.status, 400, `A row with only a work note still counts as filled in: ${JSON.stringify(noteOnly.json)}`);
+
+    const stillDraft = await api(`/business/timesheets/${timesheetId}`, { token: adminToken });
+    assert.equal(stillDraft.json.timesheet.status, "draft", "Rejected submissions leave the week as a draft");
+
+    const complete = await api("/business/timesheets/submit", {
+      method: "POST",
+      token: employeeToken,
+      body: {
+        id: timesheetId,
+        employeeId: employee.id,
+        weekStart,
+        lines: [
+          { project: "Tanfac", task: "Piping", hours: { mon: 4 } },
+          { project: "", task: "", hours: {} },
+        ],
+      },
+    });
+    assert.equal(complete.status, 200, `Empty rows are ignored: ${JSON.stringify(complete.json)}`);
+    assert.equal(complete.json.timesheet.status, "submitted");
+
+    const resubmit = await api("/business/timesheets/submit", {
+      method: "POST",
+      token: employeeToken,
+      body: { id: timesheetId, employeeId: employee.id, weekStart, lines: [{ project: "Tanfac", task: "Piping", hours: { mon: 4 } }] },
+    });
+    assert.equal(resubmit.status, 409, `An already-submitted week is a conflict, not a server error: ${JSON.stringify(resubmit.json)}`);
+  } finally {
+    await cleanupTimesheetTest(adminToken, { timesheetId, employeeId: employee.id });
+  }
+});
+
+test("month-end submission only requires a project and task on rows filled in through the month end", { concurrency: false }, async () => {
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const createdEmployee = await createEmployee(adminToken, randomSuffix("phase2-require-project-month-end"));
+  const employee = createdEmployee.user;
+  const employeeToken = await login(employee.email, createdEmployee.temporaryPassword);
+  const weekStart = "2026-09-28";
+  let timesheetId = null;
+
+  try {
+    const septemberIncomplete = await api("/business/timesheets/submit-month-end", {
+      method: "POST",
+      token: employeeToken,
+      body: { employeeId: employee.id, weekStart, lines: [{ project: "Tanfac", task: "", hours: { tue: 4 } }] },
+    });
+    assert.equal(septemberIncomplete.status, 400, JSON.stringify(septemberIncomplete.json));
+    const leftover = await api(`/business/timesheets?employeeId=${encodeURIComponent(employee.id)}`, { token: adminToken });
+    timesheetId = leftover.json?.timesheets?.[0]?.id ?? null;
+
+    const octoberStillOpen = await api("/business/timesheets/submit-month-end", {
+      method: "POST",
+      token: employeeToken,
+      body: {
+        ...(timesheetId ? { id: timesheetId } : {}),
+        employeeId: employee.id,
+        weekStart,
+        lines: [
+          { project: "Tanfac", task: "Piping", hours: { tue: 4 } },
+          { project: "", task: "", hours: { fri: 3 } },
+        ],
+      },
+    });
+    assert.ok([200, 201].includes(octoberStillOpen.status), `October rows can still be in progress: ${JSON.stringify(octoberStillOpen.json)}`);
+    timesheetId = octoberStillOpen.json.timesheet.id;
+    assert.equal(octoberStillOpen.json.timesheet.partialSubmission.status, "submitted");
+
+    const fullWeek = await api(`/business/timesheets/${timesheetId}/submit`, { method: "POST", token: employeeToken, body: {} });
+    assert.equal(fullWeek.status, 400, `The full week still needs the October row completed: ${JSON.stringify(fullWeek.json)}`);
+  } finally {
+    await cleanupTimesheetTest(adminToken, { timesheetId, employeeId: employee.id });
+  }
+});
+
 test("month-end submission is rejected for weeks that stay within one month", { concurrency: false }, async () => {
   const adminToken = await login("admin@yojak.in", "yojak123");
   const suffix = randomSuffix("phase2-month-end-single");

@@ -38,6 +38,7 @@ import {
   sumTimesheetHours,
   TaskHourLimitError,
   TaskWindowError,
+  TimesheetIncompleteLinesError,
   updateStore,
 } from "../../lib/business-store";
 import { DEFAULT_TENANT_ID } from "../../lib/tenants";
@@ -176,6 +177,15 @@ function handleWorkflowStateError(error: unknown, response: Response) {
   }
 
   response.status(409).json({ message: error.message });
+  return true;
+}
+
+function handleIncompleteLinesError(error: unknown, response: Response) {
+  if (!(error instanceof TimesheetIncompleteLinesError)) {
+    return false;
+  }
+
+  response.status(400).json({ message: error.message, incompleteLineIds: error.lineIds });
   return true;
 }
 
@@ -1522,10 +1532,14 @@ router.post("/timesheets/submit", requireTenantRole("admin", "employee"), async 
     if (idempotencyClaim?.created) {
       await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
     }
-    if (handleTaskHourLimitError(error, response)) {
+    if (handleIncompleteLinesError(error, response)) {
       return;
     }
-    if (handleWorkflowStateError(error, response)) {
+    // Both handlers rethrow errors they don't recognise, so check the workflow error first.
+    if (error instanceof WorkflowStateError && handleWorkflowStateError(error, response)) {
+      return;
+    }
+    if (handleTaskHourLimitError(error, response)) {
       return;
     }
     throw error;
@@ -1648,7 +1662,13 @@ router.post("/timesheets/:id/submit", requireTenantRole("admin", "employee"), as
     if (idempotencyClaim?.created) {
       await db.delete(idempotencyKeysTable).where(eq(idempotencyKeysTable.id, idempotencyClaim.row.id));
     }
-    if (handleWorkflowStateError(error, response)) {
+    if (handleIncompleteLinesError(error, response)) {
+      return;
+    }
+    if (error instanceof WorkflowStateError && handleWorkflowStateError(error, response)) {
+      return;
+    }
+    if (handleTaskHourLimitError(error, response)) {
       return;
     }
     throw error;
@@ -1841,6 +1861,9 @@ router.post("/timesheets/submit-month-end", requireTenantRole("admin", "employee
     }
   } catch (error) {
     await releaseIdempotency();
+    if (handleIncompleteLinesError(error, response)) {
+      return;
+    }
     // Both handlers rethrow errors they don't recognise, so check the workflow error first.
     if (error instanceof WorkflowStateError && handleWorkflowStateError(error, response)) {
       return;

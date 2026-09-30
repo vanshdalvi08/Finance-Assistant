@@ -208,6 +208,16 @@ function SubmitChoiceOption({
   );
 }
 
+const ALL_WEEK_DAYS: DayKey[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+
+// Mirrors the server rule: a row with hours or a work note on the given days needs a project and a task.
+function findIncompleteLines(lines: TimesheetTaskLine[], days: DayKey[]) {
+  return lines.filter((line) => {
+    const filledIn = days.some((day) => Number(line.hours[day] ?? 0) > 0 || Boolean(line.workNotes?.[day]?.trim()));
+    return filledIn && (!line.project.trim() || !line.task.trim());
+  });
+}
+
 function toDateInputValue(weekStart: string) {
   return format(new Date(weekStart), "yyyy-MM-dd");
 }
@@ -358,11 +368,16 @@ export default function EmployeeTimesheetPage() {
   const { toast } = useToast();
   const user = useAuthStore((state) => state.user);
   const [selectedWeek, setSelectedWeek] = useState(() => weekStartIso());
+
+  useEffect(() => {
+    setIncompleteFlagScope(null);
+  }, [selectedWeek]);
   const [draft, setDraft] = useState<TimesheetEntry | null>(null);
   const [hoveredRowId, setHoveredRowId] = useState<string | null>(null);
   const [hoveredCell, setHoveredCell] = useState<{ lineId: string; day: DayKey } | null>(null);
   const [activeNoteCell, setActiveNoteCell] = useState<{ lineId: string; day: DayKey } | null>(null);
   const [submitChoiceOpen, setSubmitChoiceOpen] = useState(false);
+  const [incompleteFlagScope, setIncompleteFlagScope] = useState<"week" | "month_end" | null>(null);
   const [cellWorkNoteDraft, setCellWorkNoteDraft] = useState("");
   const [cellHoursDraft, setCellHoursDraft] = useState("");
 
@@ -697,6 +712,9 @@ export default function EmployeeTimesheetPage() {
     };
   }
 
+  const flaggedFieldClass =
+    "border-rose-400/70 ring-[3px] ring-rose-500/10 focus:border-rose-400 focus:ring-rose-500/15 dark:border-rose-400/60 dark:focus:border-rose-400/80";
+  const flaggedHintClass = "px-1.5 text-[11px] font-medium text-rose-500 dark:text-rose-300/90";
   const fieldControlClass =
     "h-10 w-full appearance-none rounded-[18px] border border-slate-200 bg-white px-4 pr-10 text-[15px] font-medium text-slate-700 shadow-none outline-none transition focus:border-sky-300/80 focus:ring-2 focus:ring-sky-500/10 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-100 dark:focus:border-sky-400/70";
 
@@ -773,6 +791,9 @@ export default function EmployeeTimesheetPage() {
       });
     },
     onError: (error) => {
+      if (error instanceof Error && /project and task/i.test(error.message)) {
+        setIncompleteFlagScope("week");
+      }
       toast({
         title: "Could not submit timesheet",
         description: error instanceof Error ? error.message : "Please try again.",
@@ -800,6 +821,9 @@ export default function EmployeeTimesheetPage() {
       });
     },
     onError: (error) => {
+      if (error instanceof Error && /project and task/i.test(error.message)) {
+        setIncompleteFlagScope("month_end");
+      }
       toast({
         title: "Could not submit month-end days",
         description: error instanceof Error ? error.message : "Please try again.",
@@ -833,6 +857,35 @@ export default function EmployeeTimesheetPage() {
   const activeDayLocked = activeNoteCell
     ? isProtectedDayLocked(draft?.dailyReviewStatus, draft?.dailyReviewHolidays, draftLocks, activeNoteCell.day)
     : false;
+
+  const incompleteWeekLines = draft ? findIncompleteLines(draft.lines, ALL_WEEK_DAYS) : [];
+  const incompleteMonthEndLines =
+    draft && monthEndCutoff ? findIncompleteLines(draft.lines, dayKeysThrough(draft.weekStart, monthEndCutoff)) : [];
+  // Recomputed from the live draft, so a row's highlight clears as soon as it's fixed.
+  const flaggedLineIds = new Set(
+    (incompleteFlagScope === "month_end" ? incompleteMonthEndLines : incompleteFlagScope === "week" ? incompleteWeekLines : []).map(
+      (line) => line.id,
+    ),
+  );
+
+  function ensureRowsComplete(scope: "week" | "month_end") {
+    const incomplete = scope === "month_end" ? incompleteMonthEndLines : incompleteWeekLines;
+    if (incomplete.length === 0) {
+      return true;
+    }
+
+    setIncompleteFlagScope(scope);
+    setSubmitChoiceOpen(false);
+    toast({
+      title: "Select a project and task",
+      description:
+        incomplete.length === 1
+          ? "The highlighted row needs a project and task before you can submit."
+          : `The ${incomplete.length} highlighted rows need a project and task before you can submit.`,
+      variant: "destructive",
+    });
+    return false;
+  }
 
   function lockedDayDescription(day: DayKey) {
     if (monthEndDays.has(day)) {
@@ -1292,6 +1345,9 @@ export default function EmployeeTimesheetPage() {
                         draftLocks,
                       );
                       const rowEditDisabled = readOnly || rowHasProtectedContent;
+                      const rowFlagged = flaggedLineIds.has(line.id);
+                      const flagProject = rowFlagged && !line.project.trim();
+                      const flagTask = rowFlagged && !line.task.trim();
 
                       return (
                         <tr
@@ -1307,7 +1363,8 @@ export default function EmployeeTimesheetPage() {
                                   <select
                                     value={projectSelectionValue}
                                     disabled={rowEditDisabled}
-                                    className={fieldControlClass}
+                                    aria-invalid={flagProject || undefined}
+                                    className={cn(fieldControlClass, flagProject && !showProjectInput && flaggedFieldClass)}
                                     onChange={(event) => setProjectChoice(line.id, event.target.value)}
                                   >
                                     <option value="">Select project</option>
@@ -1326,7 +1383,11 @@ export default function EmployeeTimesheetPage() {
                                   value={line.project}
                                   placeholder="Project name"
                                   disabled={rowEditDisabled}
-                                  className="h-10 rounded-[18px] border-slate-200 bg-white px-4 text-[15px] font-medium text-slate-700 shadow-none dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-100"
+                                  aria-invalid={flagProject || undefined}
+                                  className={cn(
+                                    "h-10 rounded-[18px] border-slate-200 bg-white px-4 text-[15px] font-medium text-slate-700 shadow-none dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-100",
+                                    flagProject && flaggedFieldClass,
+                                  )}
                                   onChange={(event) =>
                                     updateLine(line.id, (currentLine) => ({
                                       ...currentLine,
@@ -1336,6 +1397,7 @@ export default function EmployeeTimesheetPage() {
                                   }
                                 />
                               ) : null}
+                              {flagProject ? <p className={flaggedHintClass}>Select a project</p> : null}
                             </div>
                           </td>
                           <td className="sticky left-[206px] z-20 border-b border-r border-border/50 bg-card px-4 py-3 align-top">
@@ -1348,7 +1410,8 @@ export default function EmployeeTimesheetPage() {
                                         <select
                                           value={taskSelectionValue}
                                           disabled={rowEditDisabled}
-                                          className={fieldControlClass}
+                                          aria-invalid={flagTask || undefined}
+                                          className={cn(fieldControlClass, flagTask && !showTaskInput && flaggedFieldClass)}
                                           onChange={(event) => setTaskChoice(line.id, event.target.value)}
                                         >
                                           <option value="">Select task</option>
@@ -1366,7 +1429,11 @@ export default function EmployeeTimesheetPage() {
                                           value={line.task}
                                           placeholder="Custom task name"
                                           disabled={rowEditDisabled}
-                                          className="h-10 rounded-[18px] border-slate-200 bg-white px-4 text-[15px] font-medium text-slate-700 shadow-none dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-100"
+                                          aria-invalid={flagTask || undefined}
+                                          className={cn(
+                                            "h-10 rounded-[18px] border-slate-200 bg-white px-4 text-[15px] font-medium text-slate-700 shadow-none dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-100",
+                                            flagTask && flaggedFieldClass,
+                                          )}
                                           onChange={(event) =>
                                             updateLine(line.id, (currentLine) => ({
                                               ...currentLine,
@@ -1415,7 +1482,11 @@ export default function EmployeeTimesheetPage() {
                                   value={line.task}
                                   placeholder="Custom task name"
                                   disabled={rowEditDisabled}
-                                          className="h-10 rounded-[18px] border-slate-200 bg-white px-4 text-[15px] font-medium text-slate-700 shadow-none dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-100"
+                                  aria-invalid={flagTask || undefined}
+                                  className={cn(
+                                    "h-10 rounded-[18px] border-slate-200 bg-white px-4 text-[15px] font-medium text-slate-700 shadow-none dark:border-slate-700/80 dark:bg-slate-950/90 dark:text-slate-100",
+                                    flagTask && flaggedFieldClass,
+                                  )}
                                   onChange={(event) =>
                                     updateLine(line.id, (currentLine) => ({
                                       ...currentLine,
@@ -1426,10 +1497,16 @@ export default function EmployeeTimesheetPage() {
                                 />
                               )
                               ) : (
-                                        <div className="flex h-10 items-center rounded-[18px] border border-dashed border-slate-200 bg-slate-50 px-4 text-[15px] font-medium text-slate-500 dark:border-slate-700/90 dark:bg-slate-950/90 dark:text-slate-400">
+                                        <div
+                                          className={cn(
+                                            "flex h-10 items-center rounded-[18px] border border-dashed border-slate-200 bg-slate-50 px-4 text-[15px] font-medium text-slate-500 transition-colors dark:border-slate-700/90 dark:bg-slate-950/90 dark:text-slate-400",
+                                            flagTask && "border-rose-400/50 dark:border-rose-400/40",
+                                          )}
+                                        >
                                           Choose a project first
                                         </div>
                               )}
+                              {flagTask && hasProjectValue ? <p className={flaggedHintClass}>Select a task</p> : null}
                             </div>
                           </td>
                           {weekDates.map((day) => (
@@ -1684,7 +1761,7 @@ export default function EmployeeTimesheetPage() {
                 disabled={!draft || readOnly || draftHours <= 0 || submitPending}
                 onClick={() => {
                   // On a week that runs into a new month the popover handles the choice instead.
-                  if (draft && !canSubmitMonthEnd) submitMutation.mutate(draft);
+                  if (draft && !canSubmitMonthEnd && ensureRowsComplete("week")) submitMutation.mutate(draft);
                 }}
               >
                 {isRejected ? <FilePenLine className="mr-2 h-4 w-4" /> : <ClipboardCheck className="mr-2 h-4 w-4" />}
@@ -1703,6 +1780,7 @@ export default function EmployeeTimesheetPage() {
                   range={formatWeekSpan(draft.weekStart)}
                   disabled={submitPending}
                   onSelect={() => {
+                    if (!ensureRowsComplete("week")) return;
                     setSubmitChoiceOpen(false);
                     submitMutation.mutate(draft);
                   }}
@@ -1712,7 +1790,9 @@ export default function EmployeeTimesheetPage() {
                   range={formatMonthEndRange(draft.weekStart, monthEndCutoff)}
                   disabled={submitPending || monthEndHours <= 0}
                   title={monthEndHours <= 0 ? `Log hours through ${formatMonthEndDate(monthEndCutoff)} first` : undefined}
-                  onSelect={() => monthEndMutation.mutate(draft)}
+                  onSelect={() => {
+                    if (ensureRowsComplete("month_end")) monthEndMutation.mutate(draft);
+                  }}
                 />
               </PopoverContent>
             ) : null}

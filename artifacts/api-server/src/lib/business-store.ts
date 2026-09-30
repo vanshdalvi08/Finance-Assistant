@@ -118,6 +118,21 @@ export class TaskWindowError extends Error {
   }
 }
 
+export class TimesheetIncompleteLinesError extends Error {
+  code = "timesheet_incomplete_lines" as const;
+  lineIds: string[];
+
+  constructor(lineIds: string[]) {
+    super(
+      lineIds.length === 1
+        ? "Select a project and task for the row you've filled in before submitting."
+        : `Select a project and task for all ${lineIds.length} rows you've filled in before submitting.`,
+    );
+    this.name = "TimesheetIncompleteLinesError";
+    this.lineIds = lineIds;
+  }
+}
+
 export interface AuditTrailDetailsRecord {
   entityLabel?: string;
   requestId?: string;
@@ -733,6 +748,22 @@ export function employeeProtectedLocks(
     ...(entry.dailyReviewLocks ?? {}),
     ...Object.fromEntries(partialDays.map((day) => [day, true as const])),
   };
+}
+
+// A row counts as filled in once it has hours or a work note on any of the given days, and a
+// filled-in row can't be submitted without a project and a task.
+export function findIncompleteTimesheetLines(lines: TimesheetTaskLine[], days: readonly DayKey[] = DAY_KEYS) {
+  return lines.filter((line) => {
+    const filledIn = days.some((day) => Number(line.hours[day] ?? 0) > 0 || Boolean(line.workNotes?.[day]?.trim()));
+    return filledIn && (!line.project?.trim() || !line.task?.trim());
+  });
+}
+
+function assertTimesheetLinesComplete(lines: TimesheetTaskLine[], days?: readonly DayKey[]) {
+  const incomplete = findIncompleteTimesheetLines(lines, days);
+  if (incomplete.length > 0) {
+    throw new TimesheetIncompleteLinesError(incomplete.map((line) => line.id));
+  }
 }
 
 // Submitting the whole week folds a pending or returned month-end block into the full review;
@@ -3201,6 +3232,7 @@ export async function submitTimesheetFast(input: {
     }
 
     assertWorkflowTransition("timesheetSubmission", existing.status, "submitted");
+    assertTimesheetLinesComplete(existing.lines);
 
     const updatedEntry = normalizeStore({
       timesheets: [
@@ -3272,6 +3304,7 @@ export async function submitTimesheetEntryFast(input: {
       ? { ...normalizedEntry, id: existing.id, createdAt: existing.createdAt ?? normalizedEntry.createdAt }
       : normalizedEntry;
     assertWorkflowTransition("timesheetSubmission", existing?.status ?? "draft", "submitted");
+    assertTimesheetLinesComplete(normalizedEntry.lines);
     const submittedEntry = normalizeStore({
       timesheets: [
         {
@@ -3378,6 +3411,7 @@ export async function submitPartialTimesheetFast(input: {
     }
 
     const partialDays = timesheetDaysThrough(normalizedEntry.weekStart, throughDate);
+    assertTimesheetLinesComplete(normalizedEntry.lines, partialDays);
     const hasPartialContent = normalizedEntry.lines.some((line) =>
       partialDays.some((day) => Number(line.hours[day] ?? 0) > 0 || Boolean(line.workNotes?.[day]?.trim())),
     );
