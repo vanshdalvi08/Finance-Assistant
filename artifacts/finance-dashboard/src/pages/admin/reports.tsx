@@ -146,7 +146,7 @@ export default function AdminReportsPage() {
   const [selectedExportEmployeeIds, setSelectedExportEmployeeIds] = useState<string[] | null>(null);
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
-  const { data: timesheets = [] } = useQuery({
+  const { data: timesheets = [], isPending: timesheetsLoading } = useQuery({
     queryKey: ["timesheets", "reports", selectedMonth],
     queryFn: () => api.getTimesheets({ month: selectedMonth }),
   });
@@ -297,6 +297,8 @@ export default function AdminReportsPage() {
       .sort((left, right) => right.hours - left.hours);
 
     return {
+      monthTimesheets,
+      buildTaskHourRows,
       totalHoursLogged,
       salariesPayable,
       approvedExpenses,
@@ -466,27 +468,27 @@ export default function AdminReportsPage() {
         : allEmployeeExportReports.filter((entry) => selectedExportEmployeeIds.includes(entry.employee.id)),
     [allEmployeeExportReports, selectedExportEmployeeIds],
   );
+  // The selection is kept across month changes (people without hours that month are simply left
+  // out), so "everyone" means every employee with hours this month is in it.
   const allExportEmployeesSelected =
     selectedExportEmployeeIds === null ||
-    (allEmployeeExportReports.length > 0 && selectedExportEmployeeIds.length === allEmployeeExportReports.length);
-  const canGenerateExport =
-    (includeProjectTaskSummary || includeEmployeeDetails) &&
-    (!includeEmployeeDetails || employeeExportReports.length > 0);
-
-  useEffect(() => {
-    if (selectedExportEmployeeIds === null) {
-      return;
+    (allEmployeeExportReports.length > 0 &&
+      allEmployeeExportReports.every((entry) => selectedExportEmployeeIds.includes(entry.employee.id)));
+  // The people picked for the export scope the whole PDF: the project/task summary and every
+  // total count only their hours. With everyone picked it stays the company-wide view.
+  const exportSummary = useMemo(() => {
+    if (allExportEmployeesSelected) {
+      return { taskHourRows: report.allTaskHourRows, totalHours: report.totalHoursLogged, scoped: false };
     }
-
-    const availableIds = new Set(allEmployeeExportReports.map((entry) => entry.employee.id));
-    setSelectedExportEmployeeIds((current) => {
-      if (current === null) {
-        return current;
-      }
-      const next = current.filter((id) => availableIds.has(id));
-      return next.length === current.length ? current : next;
-    });
-  }, [allEmployeeExportReports, selectedExportEmployeeIds]);
+    const selectedIds = new Set(employeeExportReports.map((entry) => entry.employee.id));
+    const scopedTimesheets = report.monthTimesheets.filter((entry) => selectedIds.has(entry.employeeId));
+    const scopedHours = employeeExportReports.reduce((sum, entry) => sum + entry.totalHours, 0);
+    return { taskHourRows: report.buildTaskHourRows(scopedTimesheets, scopedHours), totalHours: scopedHours, scoped: true };
+  }, [allExportEmployeesSelected, employeeExportReports, report]);
+  const canGenerateExport =
+    !timesheetsLoading &&
+    (includeProjectTaskSummary || includeEmployeeDetails) &&
+    (employeeExportReports.length > 0 || (selectedExportEmployeeIds === null && !includeEmployeeDetails));
 
   function exportPdf() {
     if (!canGenerateExport) {
@@ -511,9 +513,20 @@ export default function AdminReportsPage() {
     const footerAddress =
       companyInfo?.address?.trim() || "Vastu Anand, Building No. 16, Parsik Nagar, Thane, Maharashtra, India";
     const footerWebsite = companyInfo?.website?.trim() || "www.reforix.com";
+    const selectedNames = employeeExportReports.map((entry) => entry.employee.name);
+    // Name the people when there are only a few; past that a count reads better than a long list.
+    const selectedPeopleText =
+      selectedNames.length === 1
+        ? selectedNames[0]
+        : selectedNames.length <= 4
+          ? `${selectedNames.slice(0, -1).join(", ")} and ${selectedNames[selectedNames.length - 1]}`
+          : `${selectedNames.length} selected employees`;
+    const summaryScopeText = exportSummary.scoped
+      ? `Consolidated hours for ${selectedPeopleText} for ${reportMonthLabel}.`
+      : `Consolidated hours across all employees for ${reportMonthLabel}.`;
     const projectRowsHtml =
-      report.allTaskHourRows.length > 0
-        ? report.allTaskHourRows
+      exportSummary.taskHourRows.length > 0
+        ? exportSummary.taskHourRows
             .map(
               (row, index) => `
                 <tr>
@@ -972,7 +985,7 @@ export default function AdminReportsPage() {
                 <span>Monthly Consolidated Report - ${escapeHtml(reportMonthLabel)}</span>
               </div>
               <div class="metrics">
-                <div class="metric"><div class="label">Total Hours</div><div class="value">${formatHours(report.totalHoursLogged)}</div></div>
+                <div class="metric"><div class="label">Total Hours</div><div class="value">${formatHours(exportSummary.totalHours)}</div></div>
               </div>
             </section>
             ${
@@ -982,9 +995,9 @@ export default function AdminReportsPage() {
                     <div class="section-heading">
                       <div>
                         <h2>Project, Task & Short Description Hours</h2>
-                        <p>Consolidated hours across all employees for ${escapeHtml(reportMonthLabel)}.</p>
+                        <p>${escapeHtml(summaryScopeText)}</p>
                       </div>
-                      <div class="total-pill">${formatHours(report.totalHoursLogged)}</div>
+                      <div class="total-pill">${formatHours(exportSummary.totalHours)}</div>
                     </div>
                     <table class="report-table summary-table">
                       <thead>
@@ -1480,87 +1493,100 @@ export default function AdminReportsPage() {
               </span>
             </label>
 
-            <div className="py-4">
-              <label className="flex cursor-pointer items-start gap-3">
-                <Checkbox
-                  className="mt-0.5"
-                  checked={includeEmployeeDetails}
-                  onCheckedChange={(checked) => setIncludeEmployeeDetails(checked === true)}
-                />
-                <span>
-                  <span className="block text-sm font-medium text-foreground">Employee detail pages</span>
-                  <span className="mt-1 block text-xs leading-5 text-muted-foreground">
-                    Task contribution and daily work log for selected employees.
-                  </span>
+            <label className="flex cursor-pointer items-start gap-3 border-b border-border/50 py-4">
+              <Checkbox
+                className="mt-0.5"
+                checked={includeEmployeeDetails}
+                onCheckedChange={(checked) => setIncludeEmployeeDetails(checked === true)}
+              />
+              <span>
+                <span className="block text-sm font-medium text-foreground">Employee detail pages</span>
+                <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+                  Task contribution and daily work log for each selected employee.
                 </span>
-              </label>
+              </span>
+            </label>
 
-              {includeEmployeeDetails ? (
-                <div className="ml-7 mt-3 overflow-hidden rounded-lg border border-border/60">
-                  <label className="flex cursor-pointer items-center justify-between gap-3 bg-secondary/15 px-3 py-2.5">
-                    <span className="flex items-center gap-3">
-                      <Checkbox
-                        checked={allExportEmployeesSelected}
-                        onCheckedChange={(checked) => setSelectedExportEmployeeIds(checked === true ? null : [])}
-                      />
-                      <span className="text-sm font-medium">All employees</span>
-                    </span>
-                    <span className="text-xs text-muted-foreground">{allEmployeeExportReports.length}</span>
-                  </label>
+            {includeProjectTaskSummary || includeEmployeeDetails ? (
+              <div className="py-4">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-sm font-medium text-foreground">Employees</span>
+                  <span className="text-xs tabular-nums text-muted-foreground">
+                    {allExportEmployeesSelected ? "All" : employeeExportReports.length} selected
+                    {employeeExportReports.length > 0 ? ` · ${formatHours(exportSummary.totalHours)}` : ""}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  The summary and total hours count only the employees selected here.
+                </p>
 
-                  <div className="max-h-44 overflow-y-auto border-t border-border/50">
-                    {allEmployeeExportReports.length === 0 ? (
-                      <p className="px-3 py-4 text-sm text-muted-foreground">No employees have logged hours for this month.</p>
-                    ) : (
-                      allEmployeeExportReports.map(({ employee, totalHours }) => {
-                        const checked =
-                          selectedExportEmployeeIds === null || selectedExportEmployeeIds.includes(employee.id);
+                <div className="mt-3 overflow-hidden rounded-lg border border-border/60">
+                    <label className="flex cursor-pointer items-center justify-between gap-3 bg-secondary/15 px-3 py-2.5">
+                      <span className="flex items-center gap-3">
+                        <Checkbox
+                          checked={allExportEmployeesSelected}
+                          onCheckedChange={(checked) => setSelectedExportEmployeeIds(checked === true ? null : [])}
+                        />
+                        <span className="text-sm font-medium">All employees</span>
+                      </span>
+                      <span className="text-xs text-muted-foreground">{allEmployeeExportReports.length}</span>
+                    </label>
 
-                        return (
-                          <label
-                            key={employee.id}
-                            className="flex cursor-pointer items-center justify-between gap-3 border-b border-border/40 px-3 py-2.5 last:border-b-0"
-                          >
-                            <span className="flex min-w-0 items-center gap-3">
-                              <Checkbox
-                                checked={checked}
-                                onCheckedChange={(nextChecked) => {
-                                  setSelectedExportEmployeeIds((current) => {
-                                    const selectedIds =
-                                      current === null
-                                        ? allEmployeeExportReports.map((entry) => entry.employee.id)
-                                        : current;
+                    <div className="max-h-44 overflow-y-auto border-t border-border/50">
+                      {allEmployeeExportReports.length === 0 ? (
+                        <p className="px-3 py-4 text-sm text-muted-foreground">No employees have logged hours for this month.</p>
+                      ) : (
+                        allEmployeeExportReports.map(({ employee, totalHours }) => {
+                          const checked =
+                            selectedExportEmployeeIds === null || selectedExportEmployeeIds.includes(employee.id);
 
-                                    return nextChecked === true
-                                      ? [...new Set([...selectedIds, employee.id])]
-                                      : selectedIds.filter((id) => id !== employee.id);
-                                  });
-                                }}
-                              />
-                              <span className="min-w-0">
-                                <span className="block truncate text-sm text-foreground">{employee.name}</span>
-                                <span className="block truncate text-xs text-muted-foreground">
-                                  {employee.department || "Department not set"}
+                          return (
+                            <label
+                              key={employee.id}
+                              className="flex cursor-pointer items-center justify-between gap-3 border-b border-border/40 px-3 py-2.5 last:border-b-0"
+                            >
+                              <span className="flex min-w-0 items-center gap-3">
+                                <Checkbox
+                                  checked={checked}
+                                  onCheckedChange={(nextChecked) => {
+                                    setSelectedExportEmployeeIds((current) => {
+                                      const selectedIds =
+                                        current === null
+                                          ? allEmployeeExportReports.map((entry) => entry.employee.id)
+                                          : current;
+
+                                      return nextChecked === true
+                                        ? [...new Set([...selectedIds, employee.id])]
+                                        : selectedIds.filter((id) => id !== employee.id);
+                                    });
+                                  }}
+                                />
+                                <span className="min-w-0">
+                                  <span className="block truncate text-sm text-foreground">{employee.name}</span>
+                                  <span className="block truncate text-xs text-muted-foreground">
+                                    {employee.department || "Department not set"}
+                                  </span>
                                 </span>
                               </span>
-                            </span>
-                            <span className="shrink-0 text-xs font-medium tabular-nums text-muted-foreground">
-                              {formatHours(totalHours)}
-                            </span>
-                          </label>
-                        );
-                      })
-                    )}
+                              <span className="shrink-0 text-xs font-medium tabular-nums text-muted-foreground">
+                                {formatHours(totalHours)}
+                              </span>
+                            </label>
+                          );
+                        })
+                      )}
+                    </div>
                   </div>
-                </div>
-              ) : null}
-            </div>
+              </div>
+            ) : null}
 
-            {!includeProjectTaskSummary && !includeEmployeeDetails ? (
+            {timesheetsLoading ? (
+              <p className="pb-3 text-sm text-muted-foreground">Loading hours for {monthLabel}...</p>
+            ) : !includeProjectTaskSummary && !includeEmployeeDetails ? (
               <p className="pb-3 text-sm text-amber-500">
                 Select at least one section before generating the PDF.
               </p>
-            ) : includeEmployeeDetails && employeeExportReports.length === 0 ? (
+            ) : employeeExportReports.length === 0 && (selectedExportEmployeeIds !== null || includeEmployeeDetails) ? (
               <p className="pb-3 text-sm text-amber-500">Select at least one employee with logged hours.</p>
             ) : null}
           </div>
