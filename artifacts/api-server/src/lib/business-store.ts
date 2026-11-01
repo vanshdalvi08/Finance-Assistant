@@ -3630,8 +3630,8 @@ export async function reviewTimesheetFast(input: {
           item.employeeId === employeeId &&
           item.rate == null &&
           item.status === "paid" &&
-          (payrollMonthKey(item.weekStart ?? item.date) === monthKey ||
-            item.timesheetId?.match(/:(\d{4}-\d{2})$/)?.[1] === monthKey),
+          // The month-scoped link decides the month; work-start is only a fallback for unscoped rows.
+          (item.timesheetId?.match(/:(\d{4}-\d{2})$/)?.[1] ?? payrollMonthKey(item.weekStart ?? item.date)) === monthKey,
       );
 
     let salary: SalaryRecord | undefined;

@@ -257,7 +257,13 @@ export default function Salary() {
   const [recallSelectedIds, setRecallSelectedIds] = useState<Set<string>>(new Set());
 
   const { data: employees = [] } = useQuery({ queryKey: ["employees"], queryFn: api.getEmployees });
-  const { data: salaryData = [] } = useQuery({ queryKey: ["salaries"], queryFn: api.getSalaries });
+  const {
+    data: salaryData = [],
+    isPending: salariesLoading,
+    isError: salariesFailed,
+    isFetching: salariesRefetching,
+    refetch: refetchSalaries,
+  } = useQuery({ queryKey: ["salaries"], queryFn: api.getSalaries });
   const { data: adminOverview } = useQuery({ queryKey: ["adminOverview"], queryFn: api.getAdminOverview });
   const { data: financialAccounts = [] } = useQuery({ queryKey: ["financialAccounts"], queryFn: api.getFinancialAccounts });
   const { data: timesheets = [] } = useQuery({ queryKey: ["timesheets"], queryFn: () => api.getTimesheets() });
@@ -987,7 +993,28 @@ export default function Salary() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {pendingPayrollGroups.length === 0 ? (
+                    {salariesFailed && salaryData.length === 0 ? (
+                      <TableRow className="border-border/50">
+                        <TableCell colSpan={6} className="py-10 text-center">
+                          <p className="text-sm text-muted-foreground">Payroll records couldn't be loaded.</p>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="mt-3"
+                            disabled={salariesRefetching}
+                            onClick={() => void refetchSalaries()}
+                          >
+                            {salariesRefetching ? "Retrying..." : "Try again"}
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ) : salariesLoading ? (
+                      <TableRow className="border-border/50">
+                        <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
+                          Loading payroll records...
+                        </TableCell>
+                      </TableRow>
+                    ) : pendingPayrollGroups.length === 0 ? (
                       <TableRow className="border-border/50">
                         <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
                           No pending payroll records.

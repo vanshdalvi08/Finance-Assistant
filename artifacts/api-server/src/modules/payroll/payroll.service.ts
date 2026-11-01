@@ -25,6 +25,7 @@ import {
   updateStore,
 } from "../../lib/business-store";
 import { assertEmployeeSelfAccess, assertTenantAccess } from "../../lib/policies";
+import { logger } from "../../lib/logger";
 import { hashSha256 } from "../../lib/security";
 import { DEFAULT_TENANT_ID } from "../../lib/tenants";
 import { assertFinancialAccount, availableFundsByAccount, preferredFinancialAccount } from "../../lib/financial-accounts";
@@ -70,6 +71,13 @@ function tenantSalaryFilter(salary: SalaryRecord, tenantId: string) {
 
 function monthKeyFromTimesheetId(value?: string): string | undefined {
   return value?.match(/:(\d{4}-\d{2})$/)?.[1];
+}
+
+// The month a monthly salary pays for. The month-scoped timesheet link is authoritative; the
+// work-start date is only a fallback for older rows linked without a month. Matching on either
+// one let an October row whose work-start fell in September be taken for September's salary.
+function salaryPayrollMonth(salary: Pick<SalaryRecord, "timesheetId" | "weekStart" | "date">): string {
+  return monthKeyFromTimesheetId(salary.timesheetId) ?? payrollMonthKey(salary.weekStart ?? salary.date);
 }
 
 function payrollMonthKey(value: string) {
@@ -175,10 +183,7 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
           salary.source === "timesheet" &&
           salary.employeeId === groupEmployeeId &&
           salary.rate == null &&
-          (
-            payrollMonthKey(salary.weekStart ?? salary.date) === monthKey ||
-            monthKeyFromTimesheetId(salary.timesheetId) === monthKey
-          ),
+          salaryPayrollMonth(salary) === monthKey,
       );
       let totalDays = 0;
       let totalHours = 0;
@@ -198,10 +203,7 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
           salary.employeeId === groupEmployeeId &&
           salary.rate == null &&
           salary.status === "pending" &&
-          (
-            payrollMonthKey(salary.weekStart ?? salary.date) === monthKey ||
-            monthKeyFromTimesheetId(salary.timesheetId) === monthKey
-          ),
+          salaryPayrollMonth(salary) === monthKey,
       );
       if (allForMonth.length > 1) {
         return true;
@@ -211,12 +213,6 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
       const reconciledAmount = monthlyAmount > 0
         ? Math.round(monthlyAmount / maxDays * reconciledDays)
         : 0;
-      // Also re-reconcile if a stale record's timesheetId is scoped to a different month
-      // (mismatch between weekStart and timesheetId means the record is inconsistent).
-      const existingMonthViaTimesheetId = monthKeyFromTimesheetId(existing?.timesheetId);
-      if (existing && existingMonthViaTimesheetId != null && existingMonthViaTimesheetId !== monthKey) {
-        return true;
-      }
       return (
         !existing ||
         (existing.status === "pending" && (
@@ -236,6 +232,18 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
   await updateStore((current) => {
     const nextSalaries = [...current.salaries];
     const updatedAt = nowIso();
+    // salaries.timesheet_id is unique, so a single conflicting insert would fail the whole sync
+    // (and with it every Salary page load). Never insert a row whose link another row already holds.
+    const insertWouldReuseTimesheetLink = (salary: SalaryRecord) => {
+      const holder = salary.timesheetId ? nextSalaries.find((item) => item.timesheetId === salary.timesheetId) : undefined;
+      if (holder) {
+        logger.warn(
+          { tenantId, timesheetId: salary.timesheetId, holderId: holder.id, holderStatus: holder.status },
+          "Skipped creating a payroll record whose timesheet link is already in use",
+        );
+      }
+      return Boolean(holder);
+    };
     const currentApprovedGroups = new Map<string, typeof current.timesheets>();
 
     for (const sourceTimesheet of current.timesheets) {
@@ -282,7 +290,7 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
 
           if (existingIndex >= 0) {
             nextSalaries[existingIndex] = salary;
-          } else {
+          } else if (!insertWouldReuseTimesheetLink(salary)) {
             nextSalaries.unshift(salary);
           }
         }
@@ -349,29 +357,19 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
 
       const monthlyAmount = effectiveMonthlySalary(employee);
 
-      const existingIndex = nextSalaries.findIndex(
-        (salary) =>
-          tenantSalaryFilter(salary, tenantId) &&
-          salary.source === "timesheet" &&
-          salary.employeeId === employee.id &&
-          salary.rate == null &&
-          (
-            payrollMonthKey(salary.weekStart ?? salary.date) === monthKey ||
-            monthKeyFromTimesheetId(salary.timesheetId) === monthKey
-          ),
-      );
-      const existingCandidate = existingIndex >= 0 ? nextSalaries[existingIndex] : undefined;
-      // Skip records whose scoped timesheetId maps to a different month — they are stale
-      // (mismatched weekStart vs timesheetId). The deduplication pass will clean them up.
-      const candidateMonthViaId = monthKeyFromTimesheetId(existingCandidate?.timesheetId);
-      const existing = existingCandidate && candidateMonthViaId != null && candidateMonthViaId !== monthKey
-        ? undefined
-        : existingCandidate;
-      const effectiveExistingIndex = existing ? existingIndex : -1;
-
-      if (existing?.status === "paid") {
+      const isMonthlySalaryForThisMonth = (salary: SalaryRecord) =>
+        tenantSalaryFilter(salary, tenantId) &&
+        salary.source === "timesheet" &&
+        salary.employeeId === employee.id &&
+        salary.rate == null &&
+        salaryPayrollMonth(salary) === monthKey;
+      // A paid salary for the month always wins, even when a stray pending row sorts ahead of it.
+      const paidIndex = nextSalaries.findIndex((salary) => isMonthlySalaryForThisMonth(salary) && salary.status === "paid");
+      if (paidIndex >= 0) {
         continue;
       }
+      const effectiveExistingIndex = nextSalaries.findIndex(isMonthlySalaryForThisMonth);
+      const existing = effectiveExistingIndex >= 0 ? nextSalaries[effectiveExistingIndex] : undefined;
 
       const firstTimesheet = sortedTimesheets[0];
       if (!firstTimesheet) {
@@ -405,6 +403,8 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
 
       if (effectiveExistingIndex >= 0) {
         nextSalaries[effectiveExistingIndex] = salary;
+      } else if (insertWouldReuseTimesheetLink(salary)) {
+        continue;
       } else {
         nextSalaries.unshift(salary);
       }
@@ -413,18 +413,7 @@ async function reconcileTimesheetPayroll(tenantId: string, employeeId?: string |
       const keptId = salary.id;
       for (let i = nextSalaries.length - 1; i >= 0; i--) {
         const s = nextSalaries[i]!;
-        if (
-          s.id !== keptId &&
-          tenantSalaryFilter(s, tenantId) &&
-          s.source === "timesheet" &&
-          s.employeeId === employee.id &&
-          s.rate == null &&
-          s.status !== "paid" &&
-          (
-            payrollMonthKey(s.weekStart ?? s.date) === monthKey ||
-            monthKeyFromTimesheetId(s.timesheetId) === monthKey
-          )
-        ) {
+        if (s.id !== keptId && s.status !== "paid" && isMonthlySalaryForThisMonth(s)) {
           nextSalaries.splice(i, 1);
         }
       }

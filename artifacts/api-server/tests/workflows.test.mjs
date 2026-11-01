@@ -1497,6 +1497,106 @@ test("split-month timesheet for monthly employee creates separate prorated recor
   }
 });
 
+test("salaries still load when a paid month is followed by a split week whose new-month salary starts in the paid month", { concurrency: false }, async () => {
+  // Production regression: a monthly employee's September salary was paid, then a week starting
+  // Mon 28 Sep was approved. Its October salary row carries work-start 2026-09-28, which the payroll
+  // sync took for September's salary and tried to re-create September's (already paid) record,
+  // failing the unique timesheet link and returning 500 on every salary list load.
+  const adminToken = await login("admin@yojak.in", "yojak123");
+  const accountId = await getTestFinancialAccountId(adminToken);
+  const suffix = randomSuffix("paid-month-split-week");
+  // Annual salary 360000 -> monthly = 30000. September daily rate = 1000, October ~= 967.74.
+  const createdEmployee = await createMonthlyEmployee(adminToken, suffix, 360000);
+  const employee = createdEmployee.user;
+  const timesheetIds = [];
+  const salaryIds = [];
+  let fundId = null;
+
+  const approveWeek = async (weekStart) => {
+    const createResponse = await api("/business/timesheets", {
+      method: "POST",
+      token: adminToken,
+      body: {
+        employeeId: employee.id,
+        weekStart,
+        lines: [
+          {
+            project: "Paid Month Split",
+            task: "Weekday work",
+            hours: { mon: 8, tue: 8, wed: 8, thu: 8, fri: 8, sat: 0, sun: 0 },
+          },
+        ],
+      },
+    });
+    assert.ok([200, 201].includes(createResponse.status), JSON.stringify(createResponse.json));
+    const id = createResponse.json.timesheet.id;
+    timesheetIds.push(id);
+    const submitResponse = await api(`/business/timesheets/${id}/submit`, { method: "POST", token: adminToken, body: {} });
+    assert.equal(submitResponse.status, 200, JSON.stringify(submitResponse.json));
+    const approveResponse = await api(`/business/timesheets/${id}/approve`, { method: "POST", token: adminToken, body: { note: "ok" } });
+    assert.equal(approveResponse.status, 200, JSON.stringify(approveResponse.json));
+    return id;
+  };
+  const listSalaries = async () => {
+    const response = await api(`/business/salaries?employeeId=${encodeURIComponent(employee.id)}`, { token: adminToken });
+    assert.equal(response.status, 200, JSON.stringify(response.json));
+    for (const salary of response.json.salaries) {
+      if (!salaryIds.includes(salary.id)) salaryIds.push(salary.id);
+    }
+    return response.json.salaries;
+  };
+
+  try {
+    const fundCreate = await api("/business/funds", {
+      method: "POST",
+      token: adminToken,
+      body: { accountId, source: `Paid month fund ${randomSuffix("fund")}`, amount: 10000, date: "2026-09-30", note: "paid-month-split-week" },
+    });
+    assert.equal(fundCreate.status, 201, JSON.stringify(fundCreate.json));
+    fundId = fundCreate.json.fund?.id ?? null;
+
+    const septemberWeek = await approveWeek("2026-09-14");
+    const september = (await listSalaries()).find((salary) => salaryBelongsToTimesheetMonth(salary, septemberWeek));
+    assert.ok(september, "September salary should exist");
+    assert.equal(payrollMonthKey(september), "2026-09");
+    const payResponse = await api(`/business/salaries/${september.id}/pay`, {
+      method: "POST",
+      token: adminToken,
+      headers: { "Idempotency-Key": randomSuffix("pay-september") },
+      body: { note: "September payroll", accountId },
+    });
+    assert.equal(payResponse.status, 200, JSON.stringify(payResponse.json));
+
+    const splitWeek = await approveWeek("2026-09-28");
+
+    // Load twice: the first load runs the payroll sync, the second confirms it settled.
+    await listSalaries();
+    const salaries = await listSalaries();
+    const paidSeptember = salaries.find((salary) => salary.id === september.id);
+    assert.equal(paidSeptember?.status, "paid", JSON.stringify(salaries));
+    assert.equal(paidSeptember?.amount, september.amount, "paid September salary must not change");
+
+    const pending = salaries.filter((salary) => salary.status === "pending");
+    assert.equal(pending.length, 1, JSON.stringify(pending));
+    const october = pending[0];
+    assert.equal(october.timesheetId, `${splitWeek}:2026-10`, JSON.stringify(october));
+    // Thu 1 and Fri 2 October.
+    assert.equal(october.days, 2, JSON.stringify(october));
+    assert.equal(october.amount, Math.round((30000 / 31) * 2), JSON.stringify(october));
+  } finally {
+    for (const id of salaryIds) {
+      await api(`/business/salaries/${id}`, { method: "DELETE", token: adminToken });
+    }
+    for (const id of timesheetIds) {
+      await api(`/business/timesheets/${id}`, { method: "DELETE", token: adminToken });
+    }
+    if (fundId) {
+      await api(`/business/funds/${fundId}`, { method: "DELETE", token: adminToken });
+    }
+    await api(`/admin/employees/${employee.id}`, { method: "DELETE", token: adminToken });
+  }
+});
+
 test("employee timesheet edits preserve reviewed days that were not changed", { concurrency: false }, async () => {
   const adminToken = await login("admin@yojak.in", "yojak123");
   const suffix = randomSuffix("phase2-timesheet-daily-review");
